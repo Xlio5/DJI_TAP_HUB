@@ -1,0 +1,36 @@
+[Unit]
+Description=TUN NAT Hub USB Bridge
+Documentation=https://github.com/example/tun_nat_hub
+After=network.target
+Requires=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+# 启动前配置 TUN + NAT
+ExecStartPre=/usr/local/bin/setup_nat.sh
+
+# 守护进程本体
+ExecStart=/usr/local/bin/usb_tund
+
+# 崩溃自动重启
+Restart=always
+RestartSec=5
+
+# 防止无限重启循环（60 秒内最多 5 次）
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# 资源限制
+LimitNOFILE=65536
+LimitNPROC=256
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tun_nat_hub
+
+[Install]
+WantedBy=multi-user.target
