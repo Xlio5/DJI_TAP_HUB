@@ -66,11 +66,63 @@ TUN_NAT_HUB/
 - Git commit: `feat(android|ubuntu|protocol): 描述`
 - 所有注释使用中文
 
-## 知识回流
+## 知识回流规则
 
-开发中产生的知识写入 Obsidian Vault：
-- 技术笔记 → `40_知识库/嵌入式/`
-- 项目进展 → `20_项目/Vibe-Coding-全栈开发.md`
+开发中产生的知识**自动写入** Obsidian Vault。这是多项目知识积累的核心机制。
+
+### 触发条件
+
+以下情况必须回流到知识库：
+- 解决了一个非显而易见的 bug 或错误
+- 做出了架构/技术选型决策及理由
+- 学到了新的 API、工具、模式用法
+- 澄清了一个容易误解的概念
+- 产出了可复用的代码片段或配置
+- 用户明确说"记下这个"
+
+### 目标路径
+
+```
+c:\Users\xlong\Documents\Obsidian Vault\00_收件箱\YYYY-MM-DD-{主题}.md
+```
+
+### 写入格式
+
+```markdown
+---
+type: backflow
+created: YYYY-MM-DD
+source_project: TUN_NAT_HUB
+topic: {主题}
+status: captured
+tags:
+  - backflow
+---
+
+# {标题}
+
+## 来源
+- 项目: [[TUN_NAT_HUB]]
+- 场景: {一句话描述讨论上下文}
+
+## 要点
+1. {核心结论}
+2. {关键细节}
+
+## 代码/配置（如有）
+{可复用的片段}
+
+## 关联
+- {相关技术/概念}
+- {相关笔记wikilink}
+```
+
+### 约束
+- 每篇只记一个主题，保持原子化
+- 中文撰写，技术术语保留英文
+- 路径中的 {主题} 用英文短横线命名
+- 写完后告诉用户"已回流到知识库"
+- 之后在主 Vault 执行 `/ingest-backflow` 可将回流条目归档到 `30_研究/` 或 `40_知识库/`
 
 ## 可用的 Skills
 
