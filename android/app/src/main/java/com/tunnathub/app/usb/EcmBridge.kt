@@ -1,12 +1,13 @@
 /**
- * EcmBridge.kt — ECM/RNDIS UDP 隧道桥接
+ * EcmBridge.kt — UDP 隧道桥接 (WiFi 模式)
  *
- * 替换 UsbBridge (USB Host API + Bulk 端点)。
- * 通过 ECM/RNDIS 虚拟网卡 (usb0) 的 UDP socket 收发原始 IP 包。
+ * 通过 WiFi/UDP socket 收发原始 IP 包，替代 USB Host API。
+ * RK3588 和 Android 在同一 WiFi 网段 (172.24.91.x)，
+ * 无需 ECM/RNDIS USB 网卡，直接用标准 socket。
  *
  * 双协程:
- *   Coroutine 1 (tunToUdp): TUN.read() → DatagramPacket → UDP socket → RK3588
- *   Coroutine 2 (udpToTun): UDP socket → DatagramPacket → TUN.write()
+ *   Coroutine 1 (tunToUdp): TUN.read() → UDP send → RK3588
+ *   Coroutine 2 (udpToTun): UDP recv → TUN.write()
  *
  * 无帧协议！UDP 数据报文直接携带原始 IP 包。
  */
@@ -19,28 +20,21 @@ import kotlinx.coroutines.*
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.*
+import kotlin.coroutines.coroutineContext
 
 class EcmBridge(
     private val tunFd: ParcelFileDescriptor,
-    /** 由 VpnService 提供，将 socket 排除在 VPN 路由之外（防止回环） */
-    private val protect: ((DatagramSocket) -> Boolean)
+    /** VpnService.protect() — 将 UDP socket 排除在 VPN 路由之外 */
+    private val protect: ((DatagramSocket) -> Boolean),
+    /** RK3588 地址 (默认 WiFi IP) */
+    private val serverAddr: String = "172.24.91.28"
 ) {
     companion object {
         private const val TAG = "EcmBridge"
-
-        /** RK3588 usb0 监听端口 */
         const val UDP_PORT = 8899
-
-        /** 最大 IP 包大小 (含 IP 头，对齐 TUN MTU 1400) */
         private const val MAX_IP_PACKET = 1500
-
-        /** 心跳间隔 ms */
         private const val HB_INTERVAL_MS = 1000L
-
-        /** 心跳超时 ms */
         private const val HB_TIMEOUT_MS = 5000L
-
-        /** 心跳字节 */
         private const val HB_PING: Byte = 0x00
         private const val HB_PONG: Byte = 0x01
     }
@@ -50,60 +44,30 @@ class EcmBridge(
 
     var onLinkStateChange: ((LinkState) -> Unit)? = null
 
-    /** 对端地址 (RK3588 usb0:8899) */
-    private var peerAddr = InetSocketAddress("10.0.0.1", UDP_PORT)
-
+    private var peerAddr = InetSocketAddress(serverAddr, UDP_PORT)
     private var udpSocket: DatagramSocket? = null
-
-    /**
-     * 查找 ECM/RNDIS 网卡接口名。
-     * 返回匹配 usb0/usb1/rndis0 的接口名，找不到返回 null。
-     */
-    private fun findEcmInterface(): NetworkInterface? {
-        val candidates = listOf("usb0", "usb1", "rndis0")
-        val ifaces = NetworkInterface.getNetworkInterfaces()
-        while (ifaces.hasMoreElements()) {
-            val iface = ifaces.nextElement()
-            if (iface.name in candidates && iface.isUp) {
-                Log.i(TAG, "找到 ECM/RNDIS 接口: ${iface.name}")
-                return iface
-            }
-        }
-        return null
-    }
 
     /**
      * 启动双协程转发
      */
     suspend fun start(scope: CoroutineScope) {
-        val iface = findEcmInterface()
-            ?: throw IllegalStateException(
-                "未找到 ECM/RNDIS 网卡接口 (预期 usb0/rndis0)。请确认 USB Gadget 已连接。")
-
-        // 获取接口上的 IPv4 地址
-        val localIp = iface.interfaceAddresses
-            ?.firstOrNull { it.address is Inet4Address }
-            ?.address as? Inet4Address
-            ?: InetAddress.getByName("0.0.0.0") as Inet4Address
-
-        Log.i(TAG, "ECM 接口: ${iface.name}, 本端 IP: ${localIp.hostAddress}")
-
-        // 创建 UDP socket 并绑定
+        // 创建 UDP socket，绑定到任意可用地址
         val socket = DatagramSocket(null).apply {
             reuseAddress = true
-            bind(InetSocketAddress(localIp, UDP_PORT))
-            soTimeout = 500  // 500ms 接收超时，允许周期性检查连接状态
+            bind(InetSocketAddress(InetAddress.getByName("0.0.0.0"), 0))  // 随机端口
+            soTimeout = 500
         }
 
-        // 关键: 将 socket 排除在 VPN 路由之外，防止数据包循环回 TUN
+        // 关键: protect() 防止 UDP 包被 VPN 路由回 TUN
         if (!protect(socket)) {
-            Log.w(TAG, "protect() 返回 false，socket 可能被 VPN 路由，有回环风险")
+            Log.w(TAG, "protect() 返回 false，有回环风险")
         } else {
-            Log.i(TAG, "protect() 成功，socket 已排除在 VPN 路由之外")
+            Log.i(TAG, "protect() 成功")
         }
 
         udpSocket = socket
-        Log.i(TAG, "UDP socket 已绑定 ${localIp.hostAddress}:$UDP_PORT → 10.0.0.1:$UDP_PORT")
+        val local = socket.localPort
+        Log.i(TAG, "UDP socket 已绑定 :${local} → ${serverAddr}:${UDP_PORT}")
 
         isConnected = true
         onLinkStateChange?.invoke(LinkState.Connected)
@@ -114,10 +78,8 @@ class EcmBridge(
         val job1 = scope.launch(Dispatchers.IO) { tunToUdpLoop(tunInput) }
         val job2 = scope.launch(Dispatchers.IO) { udpToTunLoop(tunOutput) }
 
-        try {
-            job1.join()
-            job2.join()
-        } catch (_: CancellationException) {}
+        try { job1.join(); job2.join() }
+        catch (_: CancellationException) {}
     }
 
     /* ── Coroutine 1: TUN → UDP ─────────────────────── */
@@ -130,25 +92,18 @@ class EcmBridge(
             try {
                 val n = tunInput.read(buf)
                 if (n <= 0) {
-                    if (n < 0) break  // TUN fd 关闭
-                    // n == 0: 非阻塞空读
+                    if (n < 0) break
                     delay(1)
-                    val now = System.currentTimeMillis()
-                    if (now - lastHb >= HB_INTERVAL_MS) {
+                    if (System.currentTimeMillis() - lastHb >= HB_INTERVAL_MS) {
                         sendHeartbeat(HB_PING)
-                        lastHb = now
+                        lastHb = System.currentTimeMillis()
                     }
                     continue
                 }
-
-                // 发送 IP 包到 RK3588
-                val packet = DatagramPacket(buf, n, peerAddr)
-                udpSocket?.send(packet)
+                udpSocket?.send(DatagramPacket(buf, n, peerAddr))
                 lastHb = System.currentTimeMillis()
             } catch (e: Exception) {
-                if (coroutineContext.isActive) {
-                    Log.e(TAG, "TUN→UDP 异常", e)
-                }
+                if (coroutineContext.isActive) Log.e(TAG, "TUN→UDP", e)
                 break
             }
         }
@@ -164,39 +119,25 @@ class EcmBridge(
         while (coroutineContext.isActive && isConnected) {
             try {
                 val packet = DatagramPacket(buf, buf.size)
-                udpSocket?.receive(packet)  // 阻塞直到收到包或超时
-
+                udpSocket?.receive(packet)
                 val n = packet.length
                 if (n <= 0) continue
                 lastPkt = System.currentTimeMillis()
 
-                // 心跳处理
                 if (n == 1) {
-                    when (buf[0]) {
-                        HB_PING -> sendHeartbeat(HB_PONG)
-                        HB_PONG -> { /* 对端回复，仅重置计时器 */ }
-                    }
+                    if (buf[0] == HB_PING) sendHeartbeat(HB_PONG)
                     continue
                 }
-
-                // 数据包: 写入 TUN
-                if (n <= MAX_IP_PACKET) {
-                    tunOutput.write(buf, 0, n)
-                }
+                if (n <= MAX_IP_PACKET) tunOutput.write(buf, 0, n)
             } catch (e: SocketTimeoutException) {
-                // 正常超时，检查链路是否断开
-                val now = System.currentTimeMillis()
-                if (now - lastPkt > HB_TIMEOUT_MS && isConnected) {
-                    Log.w(TAG, "对端超时 ${(now - lastPkt) / 1000}s，断开")
+                if (System.currentTimeMillis() - lastPkt > HB_TIMEOUT_MS && isConnected) {
+                    Log.w(TAG, "对端超时")
                     isConnected = false
                     onLinkStateChange?.invoke(LinkState.Disconnected)
                     break
                 }
-                continue
             } catch (e: Exception) {
-                if (coroutineContext.isActive) {
-                    Log.e(TAG, "UDP→TUN 异常", e)
-                }
+                if (coroutineContext.isActive) Log.e(TAG, "UDP→TUN", e)
                 break
             }
         }
@@ -205,17 +146,10 @@ class EcmBridge(
         Log.i(TAG, "UDP→TUN 退出")
     }
 
-    /* ── 心跳 ────────────────────────────────────────── */
-
     private fun sendHeartbeat(byte: Byte) {
-        try {
-            val data = byteArrayOf(byte)
-            val pkt = DatagramPacket(data, 1, peerAddr)
-            udpSocket?.send(pkt)
-        } catch (_: Exception) { /* 忽略发送失败，下轮重试 */ }
+        try { udpSocket?.send(DatagramPacket(byteArrayOf(byte), 1, peerAddr)) }
+        catch (_: Exception) {}
     }
-
-    /* ── 断开 ────────────────────────────────────────── */
 
     fun disconnect() {
         isConnected = false
@@ -224,3 +158,5 @@ class EcmBridge(
         udpSocket = null
     }
 }
+
+enum class LinkState { Disconnected, Connected, Reconnecting }

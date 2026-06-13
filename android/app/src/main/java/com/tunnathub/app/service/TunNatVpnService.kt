@@ -88,7 +88,7 @@ class TunNatVpnService : VpnService() {
         }
 
         // 启动 ECM Bridge（带自动重试）
-        ecmBridge = EcmBridge(tunFd!!) { socket -> this@TunNatVpnService.protect(socket) }
+        ecmBridge = EcmBridge(tunFd!!, protect = { socket -> this@TunNatVpnService.protect(socket) })
 
         scope.launch {
             var lastError: Exception? = null
