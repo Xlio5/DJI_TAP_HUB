@@ -33,8 +33,21 @@ class BootReceiver : BroadcastReceiver() {
                 if (device != null &&
                     device.vendorId == UsbBridge.USB_VID &&
                     device.productId == UsbBridge.USB_PID) {
-                    Log.i(TAG, "TUN_NAT_HUB USB 设备已插入，启动 VPN")
-                    startVpnService(context)
+                    Log.i(TAG, "TUN_NAT_HUB USB 已插入，自动启动 VPN")
+                    // 等 USB 完全就绪后再启动（内核枚举需要时间）
+                    Thread {
+                        Thread.sleep(2000)
+                        startVpnService(context)
+                    }.start()
+                }
+            }
+            UsbManager.ACTION_USB_DEVICE_DETACHED -> {
+                val device = intent.getParcelableExtra<android.hardware.usb.UsbDevice>(UsbManager.EXTRA_DEVICE)
+                if (device != null &&
+                    device.vendorId == UsbBridge.USB_VID &&
+                    device.productId == UsbBridge.USB_PID) {
+                    Log.i(TAG, "TUN_NAT_HUB USB 已拔出，停止 VPN")
+                    context.stopService(Intent(context, TunNatVpnService::class.java))
                 }
             }
         }
