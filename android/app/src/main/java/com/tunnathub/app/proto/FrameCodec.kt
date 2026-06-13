@@ -24,7 +24,7 @@ object FrameCodec {
 
     // 心跳参数
     const val HEARTBEAT_INTERVAL_MS = 1000L
-    const val HEARTBEAT_TIMEOUT_MS = 5000L  // Android 端判定断开的超时
+    const val HEARTBEAT_TIMEOUT_MS = 20000L  // Android 端判定断开的超时
 
     // ── 打包 ────────────────────────────────────────────
     /**
