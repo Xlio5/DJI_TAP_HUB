@@ -106,7 +106,7 @@ static void ttyToTun(TunIface& tun, Stats& s) {
             int oldFd = gTtyFd.exchange(-1); if (oldFd >= 0) ::close(oldFd); pos = 0;
             continue;
         }
-        if (n == 0) { usleep(5000); continue; }
+        if (n == 0) { usleep(1000); continue; }
 
         pos += n;
         int off = 0;
