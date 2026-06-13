@@ -71,36 +71,38 @@ static int udpBind() {
 
 /* ── TUN -> UDP ──────────────────────────────────────── */
 
-static void tunToUdp(TunIface& tun, int udpFd, Stats& s) {
+static void tunToUdp(TunIface& tun, int udpFd, Stats& s,
+                   const std::atomic<struct sockaddr_in*>& peerAddr,
+                   const std::atomic<bool>& havePeer) {
     uint8_t buf[MAX_IP_PACKET];
     auto lastHb = std::chrono::steady_clock::now();
-
-    struct sockaddr_in dst = {};
-    dst.sin_family = AF_INET;
-    dst.sin_port = htons(UDP_PORT);
-    dst.sin_addr.s_addr = inet_addr("172.24.91.255");
-    bool havePeer = false;
 
     while (gRunning) {
         int n = tun.readPacket(buf, sizeof(buf));
         if (n > 0) {
-            if (havePeer) {
-                ssize_t sent = sendto(udpFd, buf, n, 0,
-                                      (struct sockaddr*)&dst, sizeof(dst));
-                if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    std::cerr << "[TUN->UDP] sendto: " << strerror(errno) << std::endl;
-                    s.err++;
-                } else if (sent > 0) { s.tx++; s.txB += sent; }
+            if (havePeer.load()) {
+                struct sockaddr_in* dst = peerAddr.load();
+                if (dst) {
+                    ssize_t sent = sendto(udpFd, buf, n, 0,
+                                          (struct sockaddr*)dst, sizeof(*dst));
+                    if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                        std::cerr << "[TUN->UDP] sendto: " << strerror(errno) << std::endl;
+                        s.err++;
+                    } else if (sent > 0) { s.tx++; s.txB += sent; }
+                }
             }
             lastHb = std::chrono::steady_clock::now();
         } else if (n < 0) { s.err++; break; }
         else {
             auto now = std::chrono::steady_clock::now();
             if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastHb).count() >= HB_INTERVAL_MS) {
-                if (havePeer) {
-                    uint8_t hb = HB_PING;
-                    sendto(udpFd, &hb, 1, 0, (struct sockaddr*)&dst, sizeof(dst));
-                    s.hb++;
+                if (havePeer.load()) {
+                    struct sockaddr_in* dst = peerAddr.load();
+                    if (dst) {
+                        uint8_t hb = HB_PING;
+                        sendto(udpFd, &hb, 1, 0, (struct sockaddr*)dst, sizeof(*dst));
+                        s.hb++;
+                    }
                 }
                 lastHb = now;
             }
@@ -111,7 +113,9 @@ static void tunToUdp(TunIface& tun, int udpFd, Stats& s) {
 
 /* ── UDP -> TUN ──────────────────────────────────────── */
 
-static void udpToTun(TunIface& tun, int udpFd, Stats& s) {
+static void udpToTun(TunIface& tun, int udpFd, Stats& s,
+                   std::atomic<struct sockaddr_in*>& peerAddr,
+                   std::atomic<bool>& havePeer) {
     uint8_t buf[MAX_IP_PACKET];
     struct sockaddr_in src = {};
     socklen_t srclen = sizeof(src);
@@ -139,6 +143,17 @@ static void udpToTun(TunIface& tun, int udpFd, Stats& s) {
 
         lastPkt = std::chrono::steady_clock::now();
         timedOutLogged = false;
+
+        // Learn peer address from first packet
+        if (!havePeer.load()) {
+            struct sockaddr_in* p = new struct sockaddr_in(src);
+            struct sockaddr_in* old = peerAddr.exchange(p);
+            delete old;
+            havePeer.store(true);
+            char ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &src.sin_addr, ip, sizeof(ip));
+            std::cout << "[UDP->TUN] peer learned: " << ip << ":" << ntohs(src.sin_port) << std::endl;
+        }
 
         if (n == 1) {
             if (buf[0] == HB_PING) {
@@ -174,13 +189,17 @@ int main(int argc, char* argv[]) {
     try {
         TunIface tun(tunName);
         Stats stats;
+        std::atomic<struct sockaddr_in*> peerAddr{nullptr};
+        std::atomic<bool> havePeer{false};
 
         int udpFd = udpBind();
         if (udpFd < 0)
             throw std::runtime_error("UDP socket bind failed");
 
-        std::thread t1(tunToUdp, std::ref(tun), udpFd, std::ref(stats));
-        std::thread t2(udpToTun, std::ref(tun), udpFd, std::ref(stats));
+        std::thread t1(tunToUdp, std::ref(tun), udpFd, std::ref(stats),
+                       std::ref(peerAddr), std::ref(havePeer));
+        std::thread t2(udpToTun, std::ref(tun), udpFd, std::ref(stats),
+                       std::ref(peerAddr), std::ref(havePeer));
 
         std::cout << "[main] IO threads started" << std::endl;
 
