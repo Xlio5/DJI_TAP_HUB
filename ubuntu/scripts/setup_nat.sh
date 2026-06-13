@@ -1,17 +1,17 @@
 #!/bin/bash
-# setup_nat.sh — 自动检测 LAN 网口并配置 TUN + NAT
-# 等待网口获得 IP，支持开机慢 DHCP
-
+# setup_nat.sh - Auto-detect LAN interface and configure TUN + NAT
+# Waits for LAN interface to get IP via DHCP (cold boot)
 set -e
+
 TUN_NAME="tun_hub"
 TUN_IP="10.0.0.1"
 TUN_PREFIX="24"
 TUN_MTU="1400"
 TUN_SUBNET="${TUN_IP%.*}.0/24"
 
-echo "=== TUN_NAT_HUB NAT 配置 ==="
+echo "=== TUN_NAT_HUB NAT Setup ==="
 
-# ── 等待并检测 LAN 网口 ───────────────────────────
+# Detect LAN interface (has an IP)
 get_lan_iface() {
     for pattern in "end[0-9]*" "eth[0-9]*" "en[0-9]*"; do
         for iface in $(ip -br link 2>/dev/null | awk '{print $1}' | grep "^$pattern\$" 2>/dev/null); do
@@ -24,23 +24,22 @@ get_lan_iface() {
     return 1
 }
 
-# 开机时 DHCP 可能慢，等待最多 60 秒
+# Wait up to 60s for DHCP on cold boot
 LAN_IF=""
 for i in $(seq 1 60); do
     LAN_IF=$(get_lan_iface)
     [ -n "$LAN_IF" ] && break
-    [ $i -eq 1 ] && echo "等待 LAN 网口获得 IP..."
+    [ $i -eq 1 ] && echo "Waiting for LAN interface to get IP..."
     sleep 1
 done
 
 if [ -z "$LAN_IF" ]; then
-    echo "错误: 60 秒后仍未检测到 LAN 网口，TUN 隧道数据无法转发"
-    # 仍然创建 TUN 接口供 USB 通信使用
+    echo "ERROR: No LAN interface with IP after 60s"
 else
-    echo "检测到 LAN 网口: $LAN_IF ($(ip addr show $LAN_IF | grep 'inet ' | awk '{print $2}'))"
+    echo "LAN interface: $LAN_IF ($(ip addr show $LAN_IF | grep 'inet ' | awk '{print $2}'))"
 fi
 
-# ── TUN 接口 ──────────────────────────────────────
+# Create TUN interface
 if ! ip link show "$TUN_NAME" &>/dev/null; then
     ip tuntap add dev "$TUN_NAME" mode tun
 fi
@@ -50,26 +49,26 @@ ip link set "$TUN_NAME" txqueuelen 10
 ip link set "$TUN_NAME" up
 tc qdisc replace dev "$TUN_NAME" root pfifo limit 10 2>/dev/null || true
 
-# ── IP 转发 ────────────────────────────────────────
+# Enable IP forwarding
 echo 1 > /proc/sys/net/ipv4/ip_forward
 
-# ── iptables ───────────────────────────────────────
+# iptables rules
 if [ -n "$LAN_IF" ]; then
-    # 清除旧规则（忽略不存在的）
+    # Clean old rules
     iptables -t nat -D POSTROUTING -s "$TUN_SUBNET" -o "$LAN_IF" -j MASQUERADE 2>/dev/null || true
     iptables -D FORWARD -i "$TUN_NAME" -o "$LAN_IF" -j ACCEPT 2>/dev/null || true
     iptables -D FORWARD -i "$LAN_IF" -o "$TUN_NAME" -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
     iptables -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
 
-    # 添加规则
+    # Add rules
     iptables -t nat -A POSTROUTING -s "$TUN_SUBNET" -o "$LAN_IF" -j MASQUERADE
     iptables -A FORWARD -i "$TUN_NAME" -o "$LAN_IF" -j ACCEPT
     iptables -A FORWARD -i "$LAN_IF" -o "$TUN_NAME" -m state --state ESTABLISHED,RELATED -j ACCEPT
     iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 
-    echo "NAT 规则已添加: $TUN_NAME ↔ $LAN_IF"
+    echo "NAT rules: $TUN_NAME <-> $LAN_IF"
 else
-    echo "警告: LAN 网口不可用，数据无法转发到局域网"
+    echo "WARNING: LAN unavailable, no NAT forwarding"
 fi
 
-echo "NAT 配置完成 (g_serial 纯 Bulk 模式)"
+echo "NAT setup complete (g_serial Pure Bulk mode)"

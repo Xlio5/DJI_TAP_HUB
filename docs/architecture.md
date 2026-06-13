@@ -3,64 +3,81 @@
 > 三方案并行设计 + 综合评审 · 2026-06-13  
 > **最终方案：以 MVP 为主体骨架，分阶段吸收稳健/性能设计**
 >
-> **2026-06-14 更新：新增 ECM/RNDIS 模式** — 针对 DJI RC 等受限 Android 设备的 USB 以太网方案
+> **2026-06-14 更新：DJI RC 兼容方案** — 最终采用 g_serial + RTL8812AU VID/PID 伪装
 
 ---
 
-## 〇、架构演进：g_serial → ECM/RNDIS
+## 〇、架构演进：DJI RC 适配
 
-### 背景
+### 问题
 
-DJI RC PLUS 2 的 Android 系统限制了 `UsbManager.openDevice()`，非白名单 USB 设备返回 null。原有的 `g_serial` (VID=0x2207) 方案在 DJI RC 上无法打开 USB 设备。
+DJI RC PLUS 2 的 Android 系统限制了 `UsbManager.openDevice()`，非白名单 USB 设备返回 null。
+原有的 `g_serial` (VID=0x2207, PID=0x0010) 在 DJI RC 上无法通过 `openDevice()`。
 
-### ECM/RNDIS 方案原理
+### 尝试过的方案
 
-ECM/RNDIS (USB Ethernet Gadget) 的关键优势：**Android 内核的 CDC-ECM/RNDIS 驱动在内核层认领设备**。这会创建 `usb0`/`rndis0` 网络接口，**完全不经过 Java UsbManager**。DJI RC 要阻止这个，等于禁用 Android 自带的 USB 网络共享功能。
+| 方案 | 结果 | 原因 |
+|------|------|------|
+| ECM/RNDIS Ethernet Gadget | ❌ RJI RC 内核创建 usb0，但 DJI 内部限制了 IP 通信 | DJI 在 RNDIS 层做了封锁 |
+| WiFi UDP 隧道 | ❌ DJI RC 正常没有 WiFi | 不符合使用场景 |
+| 直接 ADB root | ❌ DJI RC 是 production build | `adbd cannot run as root` |
 
-### 新架构数据流
+### 最终方案：g_serial + RNDIS 同款 VID/PID 伪装
+
+**原理**：DJI RC 的 `UsbManager.openDevice()` 是通过内部白名单控制的。
+PixelPilot 在 DJI RC 上能访问 RTL8812AU (VID=0x0BDA, PID=0x8812)，
+因为 dumpsys 记录了 PixelPilot 对该设备的权限。
+
+**方案**：RK3588 的 g_serial Gadget 使用与 RTL8812AU 相同的 VID/PID，
+让 DJI RC 认为这是一个"白名单内的 WiFi 适配器"，从而允许 `openDevice()`。
+
+**证据**（dumpsys usb）：
+```
+device_preferences={
+  filter={
+    vendor_id=3034          ← 0x0BDA (Realtek)
+    product_id=34834        ← 0x8812 (RTL8812AU)
+    manufacturer_name=Realtek
+    product_name=802.11n NIC
+  }
+  user_package=com.openipc.pixelpilot   ← PixelPilot 曾使用
+}
+```
+
+### 最终架构数据流
 
 ```
-Android VpnService                         RK3588
-┌──────────────────────┐    USB ECM       ┌─────────────────────┐
-│ TUN: 10.0.0.2/24     │◄═══════════════►│ usb0: 10.0.0.1/24   │
-│ Route: 192.168.88.0  │  内核 cdc_ether  │ g_ether gadget      │
-│                      │  创建 usb0       │                     │
-│ EcmBridge.kt         │                 │ usb_tund (UDP模式)  │
-│ UDP socket :8899     │  标准 IP 通信    │ TUN ↔ UDP 双线程    │
-│ protect() 防回环     │  无帧协议！       │                     │
-└──────────────────────┘                 └─────────┬───────────┘
-                                                    │ MASQUERADE
-                                           ┌────────▼───────────┐
-                                           │ LAN 192.168.88.x   │
-                                           └────────────────────┘
+Android VpnService                        RK3588
+┌──────────────────────┐    USB Bulk     ┌─────────────────────┐
+│ TUN: 10.0.0.2/24     │◄══════════════►│ /dev/ttyGS0         │
+│ Route: 192.168.88.0  │  VID=0x0BDA     │ g_serial use_acm=0  │
+│                      │  PID=0x8812     │ idVendor=0x0BDA     │
+│ UsbBridge.kt         │  帧协议:        │ idProduct=0x8812    │
+│ USB Host API         │  [0x544E][len]  │                     │
+│ bulkTransfer()       │  [payload]      │ usb_tund v5         │
+│                      │  心跳 PING/PONG │ TUN ↔ TTY 双线程    │
+└──────────────────────┘                └─────────┬───────────┘
+                                                   │ MASQUERADE
+                                          ┌────────▼───────────┐
+                                          │ LAN 192.168.88.x   │
+                                          └────────────────────┘
 ```
 
-### 新旧对比
+### 关键对比
 
-| 方面 | g_serial (旧) | ECM/RNDIS (新) |
-|------|-------------|---------------|
-| USB 驱动 | g_serial (use_acm=0) | g_ether / g_rndis |
-| Android API | UsbManager + bulkTransfer | DatagramSocket (标准) |
-| 帧协议 | Magic(0x544E)+Length(2B)+Payload | 无 (UDP 数据报 = IP 包) |
-| 心跳 | PING/PONG 帧 (4 bytes) | 1-byte UDP 数据报 |
-| Android 权限 | USB Host (required=true) | 无额外权限 (仅 VpnService + INTERNET) |
-| DJI RC 兼容 | ❌ 被封锁 | ✅ 内核驱动通过 |
-| 传输开销 | 4 bytes/包 (帧头) | 8 bytes/包 (UDP 头) |
-| 数据边界 | 自定义 Magic 扫描 | UDP 天然数据边界 |
+| 方面 | g_serial (原版) | g_serial (RTL8812AU VID) |
+|------|---------------|--------------------------|
+| USB VID:PID | 0x2207:0x0010 | 0x0BDA:0x8812 |
+| DJI RC openDevice() | ❌ 返回 null | ✅ 成功 |
+| 传输方式 | USB Bulk (TTY) | USB Bulk (TTY) |
+| 帧协议 | Magic+Len+Payload | 不变 |
+| 心跳 | PING/PONG 4B | 不变 |
+| DJI dumpsys 识别 | vendor-specific device | "802.11n NIC" (RTL8812AU) |
 
-### 关键文件变化
+### 参考项目
 
-| g_serial (旧) | ECM/RNDIS (新) | 说明 |
-|---------------|---------------|------|
-| `UsbBridge.kt` | `EcmBridge.kt` | USB Host API → DatagramSocket |
-| `FrameCodec.kt` | *(已删除)* | 不再需要帧协议 |
-| `main.cpp` (TTY) | `main.cpp` (UDP) | TTY I/O → UDP Socket I/O |
-| `setup_gadget.sh` (g_serial) | `setup_gadget.sh` (g_ether) | USB Gadget 模块切换 |
-| *(不需要)* | `protect()` 调用 | 防止 UDP 包回环到 TUN |
-
-### 保留的 g_serial 分支
-
-原 `master` 分支的 g_serial 方案保留在 `feature/openipc-raw-usb` 分支，供不需要 ECM/RNDIS 的场景使用（如标准 Android 手机直连 RK3588）。
+- **PixelPilot** ([ref/PixelPilot](ref/PixelPilot/)): Android FPV 地面站，通过 `UsbManager.openDevice()` → JNI `libusb_wrap_sys_device()` 控制 RTL8812AU
+- **devourer** ([PixelPilot submodule](ref/PixelPilot/app/wfbngrtl8812/src/main/cpp/devourer/)): RTL8812AU 用户态驱动，通过 libusb Bulk/Control Transfer 直接操控 WiFi 芯片
 
 ---
 
@@ -165,8 +182,8 @@ USB链路内部网段:          10.0.0.0/24 (点到点)
 4. 帧打包: [Magic(0x544E)][Length][IP_Packet]
 5. USB Bulk OUT 传输 → RK3588
 6. RK3588 usb_tund 接收、解帧、写入 tun_hub
-7. 内核路由 + MASQUERADE SNAT (src 10.0.0.2 → eth0 IP)
-8. 从 eth0 发出到局域网
+7. 内核路由 + MASQUERADE SNAT (src 10.0.0.2 → end1 IP)
+8. 从 end1 发出到局域网
 9. 回包沿反向路径经 conntrack DNAT 回到 Android
 ```
 
