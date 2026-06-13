@@ -135,9 +135,7 @@ class TunNatVpnService : VpnService() {
             .addRoute(LAN_ROUTE, LAN_PREFIX)
             .addDnsServer(LAN_DNS)
             .setBlocking(true)   // 阻塞模式，配合 Dispatchers.IO
-
-        // 不排除自身 — ExoPlayer 需要通过 TUN 访问摄像头
-        // USB 通信走 android.hardware.usb 而非网络栈，无循环依赖
+            .allowBypass()       // 允许 protect() 的 socket 绕过 VPN
 
         return builder.establish()
             ?: throw IllegalStateException("VpnService.Builder.establish() 返回 null")

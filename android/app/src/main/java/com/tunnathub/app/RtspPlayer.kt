@@ -41,7 +41,7 @@ fun RtspPlayerPanel(modifier: Modifier = Modifier) {
     val focusManager = LocalFocusManager.current
 
     // 默认摄像头 URL
-    var rtspUrl by remember { mutableStateOf("rtsp://192.168.88.100:554/stream1") }
+    var rtspUrl by remember { mutableStateOf("rtsp://172.24.91.28:554/stream1") }
     var isPlaying by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
 

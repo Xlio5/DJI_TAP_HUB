@@ -61,6 +61,16 @@ if [ -n "$LAN_IF" ]; then
     # TCP MSS Clamping
     iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
     iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+
+    # WiFi→LAN RTSP 中继（Android VPN 应用无法直连 TUN，走 WiFi 绕行）
+    WIFI_IF=$(ip -br link | awk '/wlan/{print $1; exit}')
+    if [ -n "$WIFI_IF" ] && [ "$WIFI_IF" != "$LAN_IF" ]; then
+        iptables -t nat -D PREROUTING -i "$WIFI_IF" -p tcp --dport 554 -j DNAT --to-destination 192.168.88.100:554 2>/dev/null || true
+        iptables -t nat -A PREROUTING -i "$WIFI_IF" -p tcp --dport 554 -j DNAT --to-destination 192.168.88.100:554
+        iptables -D FORWARD -i "$WIFI_IF" -o "$LAN_IF" -p tcp --dport 554 -j ACCEPT 2>/dev/null || true
+        iptables -A FORWARD -i "$WIFI_IF" -o "$LAN_IF" -p tcp --dport 554 -j ACCEPT
+        echo "RTSP WiFi 中继: $WIFI_IF:554 → 192.168.88.100:554"
+    fi
 fi
 
 echo "NAT 配置完成 ($TUN_NAME → $LAN_IF)"
