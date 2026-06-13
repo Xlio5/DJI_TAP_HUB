@@ -41,6 +41,10 @@ TunIface::TunIface(const std::string& name, int mtu)
         throw std::runtime_error("ioctl TUNSETIFF 失败: " + std::string(strerror(savedErr)));
     }
 
+    // 设为非阻塞模式（配合心跳逻辑）
+    int flags = fcntl(fd_, F_GETFL, 0);
+    fcntl(fd_, F_SETFL, flags | O_NONBLOCK);
+
     // 实际名称可能被内核截断
     name_ = ifr.ifr_name;
 
