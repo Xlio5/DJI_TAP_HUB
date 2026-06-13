@@ -121,7 +121,7 @@ static void tunToTtyThread(TunIface& tun, int ttyFd, Stats& stats) {
                 stats.bytesTx += FRAME_HEADER_LEN;
                 lastHb = now;
             }
-            usleep(50000); // 50ms 粒度，避免 CPU 空转
+            usleep(5000);  // 5ms 粒度，降低转发延迟
         }
     }
     std::cout << "[IO-TUN→TTY] 线程退出" << std::endl;
@@ -142,7 +142,7 @@ static void ttyToTunThread(TunIface& tun, int ttyFd, Stats& stats) {
             std::cerr << "[IO-TTY→TUN] read 错误: " << strerror(errno) << std::endl;
             stats.errors++; break;
         }
-        if (n == 0) { usleep(50000); continue; }  // 50ms yield
+        if (n == 0) { usleep(5000); continue; }  // 5ms yield
 
         ringPos += n;
 

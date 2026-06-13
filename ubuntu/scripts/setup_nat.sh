@@ -37,7 +37,11 @@ if ! ip link show "$TUN_NAME" &>/dev/null; then
 fi
 ip addr replace "${TUN_IP}/${TUN_PREFIX}" dev "$TUN_NAME"
 ip link set "$TUN_NAME" mtu "$TUN_MTU"
+# 低延迟优化: 小队列=低缓冲=低延迟
+ip link set "$TUN_NAME" txqueuelen 10
 ip link set "$TUN_NAME" up
+# pfifo 简单队列，比 fq_codel 排队更少
+tc qdisc replace dev "$TUN_NAME" root pfifo limit 10 2>/dev/null || true
 
 # ── IP 转发 ────────────────────────────────────────
 echo 1 > /proc/sys/net/ipv4/ip_forward

@@ -29,7 +29,7 @@ class UsbBridge(
         private const val TAG = "UsbBridge"
         const val USB_VID = 0x2207
         const val USB_PID = 0x0010
-        private const val USB_TIMEOUT_MS = 1000
+        private const val USB_TIMEOUT_MS = 100  // 100ms 低延迟（原 1000ms）
 
         /** 预分配的 PONG 缓冲区（避免重复分配） */
         private val PONG_FRAME: ByteArray = run {
