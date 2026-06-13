@@ -24,6 +24,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.unit.dp
 import com.tunnathub.app.service.TunNatVpnService
 import com.tunnathub.app.usb.UsbBridge
@@ -159,21 +161,48 @@ fun TunNatScreen(usbFound: Boolean, vpnRunning: Boolean, onTap: () -> Unit) {
                 TopAppBar(title = { Text("TUN NAT Hub") }) }
         ) { padding ->
             Column(
-                Modifier.fillMaxSize().padding(padding).padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text(if (usbFound) "USB 设备已检测到" else "未检测到 USB 设备",
-                    color = if (usbFound) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.error)
-                Spacer(Modifier.height(12.dp))
-                Text(if (vpnRunning) "● VPN 已连接" else "○ VPN 未连接",
-                    color = if (vpnRunning) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(20.dp))
-                Button(onClick = onTap, enabled = usbFound) {
-                    Text(if (vpnRunning) "停止 VPN" else "启动 VPN")
+                // ── VPN 状态栏 ────────────────────────────
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (vpnRunning)
+                            MaterialTheme.colorScheme.primaryContainer
+                        else
+                            MaterialTheme.colorScheme.surfaceVariant
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (vpnRunning) "● VPN 已连接" else "○ VPN 未连接",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = if (usbFound) "USB 已检测" else "USB 未连接",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Button(onClick = onTap, enabled = usbFound) {
+                            Text(if (vpnRunning) "断开" else "连接")
+                        }
+                    }
                 }
+
+                Spacer(Modifier.height(12.dp))
+
+                // ── RTSP 播放器 ──────────────────────────
+                RtspPlayerPanel()
             }
         }
     }
