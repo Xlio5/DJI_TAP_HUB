@@ -36,6 +36,10 @@ class TunNatVpnService : VpnService() {
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "tun_nat_hub_vpn"
 
+        /** 供 MainActivity 查询 VPN 运行状态 */
+        @Volatile var isRunning = false
+            private set
+
         // TUN 配置
         private const val TUN_ADDRESS = "10.0.0.2"
         private const val TUN_PREFIX = 24
@@ -60,6 +64,7 @@ class TunNatVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "VpnService 启动")
+        isRunning = true
 
         // 前台服务
         startForeground(NOTIFICATION_ID, buildNotification("正在启动..."))
@@ -126,6 +131,7 @@ class TunNatVpnService : VpnService() {
      * 停止 VPN
      */
     private fun stopVpn() {
+        isRunning = false
         usbBridge?.disconnect()
         usbBridge = null
 

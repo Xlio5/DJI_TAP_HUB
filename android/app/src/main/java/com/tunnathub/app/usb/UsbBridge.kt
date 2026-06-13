@@ -68,9 +68,6 @@ class UsbBridge(
             throw IllegalStateException("未找到 Bulk 端点")
         }
 
-        // 发送 CDC ACM 控制命令，激活数据通道
-        initCdcAcm()
-
         Log.i(TAG, "USB 已连接: epOut=0x${epOut!!.address.toString(16)}, epIn=0x${epIn!!.address.toString(16)}")
         isConnected = true
         onLinkStateChange?.invoke(LinkState.Connected)
@@ -115,50 +112,6 @@ class UsbBridge(
         }
     }
 
-    /* ── CDC ACM 初始化 ────────────────────────────── */
-    /**
-     * 发送 CDC ACM 控制命令 (SET_LINE_CODING + SET_CONTROL_LINE_STATE)
-     * 不发送这些命令，CDC ACM 设备不会传输数据。
-     */
-    private fun initCdcAcm() {
-        val conn = usbConnection ?: return
-        val device = findDevice() ?: return
-
-        // CDC 控制接口通常是 interface 0
-        val ctrlIface = device.getInterface(0)
-        val ifaceNum = ctrlIface.id
-
-        // SET_LINE_CODING: 115200 baud, 8N1
-        val lineCoding = byteArrayOf(
-            0x00.toByte(), 0xC2.toByte(), 0x01.toByte(), 0x00.toByte(),  // 115200 baud (LE)
-            0x00.toByte(),                      // 1 stop bit
-            0x00.toByte(),                      // no parity
-            0x08.toByte()                       // 8 data bits
-        )
-        var ret = conn.controlTransfer(
-            0x21,  // bmRequestType: Host-to-device, Class, Interface
-            0x20,  // bRequest: SET_LINE_CODING
-            0,     // wValue
-            ifaceNum,  // wIndex: interface number
-            lineCoding,
-            lineCoding.size,
-            1000
-        )
-        Log.i(TAG, "SET_LINE_CODING: $ret")
-
-        // SET_CONTROL_LINE_STATE: DTR=1, RTS=1
-        ret = conn.controlTransfer(
-            0x21,  // bmRequestType
-            0x22,  // bRequest: SET_CONTROL_LINE_STATE
-            0x03,  // wValue: DTR(1) | RTS(2)
-            ifaceNum,
-            null,
-            0,
-            1000
-        )
-        Log.i(TAG, "SET_CONTROL_LINE_STATE: $ret")
-    }
-
     /* ── Coroutine 1: TUN → USB ────────────────────────────── */
 
     private suspend fun tunToUsbLoop(tunInput: FileInputStream) {
@@ -187,22 +140,17 @@ class UsbBridge(
 
     private suspend fun usbToTunLoop(tunOutput: FileOutputStream) {
         val buf = acquireBuffer()
-        var lastRxTime = System.currentTimeMillis()
 
         while (coroutineContext.isActive && isConnected) {
             try {
                 val n = usbConnection!!.bulkTransfer(epIn, buf, buf.size, USB_TIMEOUT_MS)
 
                 if (n < 0) {
-                    val now = System.currentTimeMillis()
-                    if (now - lastRxTime > FrameCodec.HEARTBEAT_TIMEOUT_MS) {
-                        Log.w(TAG, "心跳超时")
-                        break
-                    }
+                    // USB timeout/busy — no data available, keep waiting
+                    if (!isConnected) break
                     continue
                 }
                 if (n == 0) continue
-                lastRxTime = System.currentTimeMillis()
 
                 when (val result = FrameCodec.unpack(buf, n)) {
                     is FrameCodec.UnpackResult.Data -> tunOutput.write(result.payload)
@@ -212,8 +160,10 @@ class UsbBridge(
                         usbConnection!!.bulkTransfer(epOut, pong, 0, pong.size, 100)
                     }
                     is FrameCodec.UnpackResult.Credit -> {} // Phase 3
-                    is FrameCodec.UnpackResult.MagicMismatch -> Log.w(TAG, "Magic mismatch")
-                    is FrameCodec.UnpackResult.Error -> Log.w(TAG, "Frame error: ${result.message}")
+                    is FrameCodec.UnpackResult.MagicMismatch -> {
+                        // Skip corrupt byte and resync
+                    }
+                    is FrameCodec.UnpackResult.Error -> {} // Ignore
                 }
             } catch (e: Exception) {
                 if (coroutineContext.isActive) Log.e(TAG, "USB→TUN 异常", e)
