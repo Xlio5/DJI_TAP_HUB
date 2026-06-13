@@ -28,32 +28,15 @@ object FrameCodec {
 
     // ── 打包 ────────────────────────────────────────────
     /**
-     * 将 IP 包封装为帧写入 buf。
-     * @param buf     输出缓冲区（前 4 字节会被覆盖）
-     * @param payload IP 包数据
-     * @return 完整帧长度
+     * 原地写帧头（不拷贝 payload）。调用前 payload 已在 buf[4..] 中。
+     * @return 完整帧长度 = HEADER_LEN + payloadLen
      */
-    fun pack(buf: ByteArray, payload: ByteArray): Int {
-        require(payload.size <= FRAME_MAX_PAYLOAD) {
-            "Payload 过长: ${payload.size} > $FRAME_MAX_PAYLOAD"
-        }
-        require(buf.size >= FRAME_HEADER_LEN + payload.size) {
-            "缓冲区太小: ${buf.size} < ${FRAME_HEADER_LEN + payload.size}"
-        }
-
-        // Magic（大端）
-        buf[0] = (FRAME_MAGIC.toInt() shr 8 and 0xFF).toByte()  // 0x54 'T'
-        buf[1] = (FRAME_MAGIC.toInt() and 0xFF).toByte()         // 0x4E 'N'
-
-        // Length（大端）
-        val len = payload.size
-        buf[2] = (len shr 8 and 0xFF).toByte()
-        buf[3] = (len and 0xFF).toByte()
-
-        // Payload
-        System.arraycopy(payload, 0, buf, FRAME_HEADER_LEN, len)
-
-        return FRAME_HEADER_LEN + len
+    fun writeHeader(buf: ByteArray, payloadLen: Int): Int {
+        buf[0] = (FRAME_MAGIC.toInt() shr 8 and 0xFF).toByte()
+        buf[1] = (FRAME_MAGIC.toInt() and 0xFF).toByte()
+        buf[2] = (payloadLen shr 8 and 0xFF).toByte()
+        buf[3] = (payloadLen and 0xFF).toByte()
+        return FRAME_HEADER_LEN + payloadLen
     }
 
     /**

@@ -87,17 +87,29 @@ class TunNatVpnService : VpnService() {
             return START_NOT_STICKY
         }
 
-        // 启动 USB Bridge
+        // 启动 USB Bridge（带自动重试）
         usbBridge = UsbBridge(this, tunFd!!)
 
         scope.launch {
-            try {
-                updateNotification("连接中...")
-                usbBridge!!.start(this)
-            } catch (e: Exception) {
-                Log.e(TAG, "USB Bridge 异常", e)
-                updateNotification("已断开: ${e.message}")
-            } finally {
+            var lastError: Exception? = null
+            for (attempt in 1..3) {
+                try {
+                    updateNotification("连接中...($attempt/3)")
+                    usbBridge!!.start(this)
+                    lastError = null
+                    break  // 成功，跳出重试循环
+                } catch (e: Exception) {
+                    Log.w(TAG, "USB Bridge 启动失败 (尝试 $attempt/3)", e)
+                    lastError = e
+                    if (attempt < 3) {
+                        updateNotification("重试中...(${attempt}/3)")
+                        delay(1500)  // 等待 USB 设备就绪
+                    }
+                }
+            }
+            if (lastError != null) {
+                Log.e(TAG, "USB Bridge 3 次重试均失败")
+                updateNotification("连接失败: ${lastError.message}")
                 stopVpn()
             }
         }

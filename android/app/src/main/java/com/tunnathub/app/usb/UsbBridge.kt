@@ -30,6 +30,13 @@ class UsbBridge(
         const val USB_VID = 0x2207
         const val USB_PID = 0x0010
         private const val USB_TIMEOUT_MS = 1000
+
+        /** 预分配的 PONG 缓冲区（避免重复分配） */
+        private val PONG_FRAME: ByteArray = run {
+            val b = ByteArray(FrameCodec.FRAME_HEADER_LEN)
+            FrameCodec.packHeartbeat(b)
+            b
+        }
     }
 
     @Volatile var isConnected = false
@@ -116,11 +123,12 @@ class UsbBridge(
 
         while (coroutineContext.isActive && isConnected) {
             try {
+                // 直接读入 buf[4..]，省去一次拷贝
                 val n = tunInput.read(buf, FrameCodec.FRAME_HEADER_LEN, FrameCodec.FRAME_MAX_PAYLOAD)
                 if (n <= 0) { if (n < 0) break; delay(1); continue }
 
-                val payload = buf.copyOfRange(FrameCodec.FRAME_HEADER_LEN, FrameCodec.FRAME_HEADER_LEN + n)
-                val frameLen = FrameCodec.pack(buf, payload)
+                // 原地写帧头（零拷贝）
+                val frameLen = FrameCodec.writeHeader(buf, n)
                 val written = usbConnection!!.bulkTransfer(epOut, buf, 0, frameLen, USB_TIMEOUT_MS)
 
                 if (written < 0) { Log.e(TAG, "USB write 失败"); break }
@@ -152,9 +160,7 @@ class UsbBridge(
                 when (val result = FrameCodec.unpack(buf, n)) {
                     is FrameCodec.UnpackResult.Data -> tunOutput.write(result.payload)
                     is FrameCodec.UnpackResult.Heartbeat -> {
-                        val pong = ByteArray(FrameCodec.FRAME_HEADER_LEN)
-                        FrameCodec.packHeartbeat(pong)
-                        usbConnection!!.bulkTransfer(epOut, pong, 0, pong.size, 100)
+                        usbConnection!!.bulkTransfer(epOut, PONG_FRAME, 0, PONG_FRAME.size, 100)
                     }
                     is FrameCodec.UnpackResult.Credit -> {} // Phase 3
                     is FrameCodec.UnpackResult.MagicMismatch -> {
