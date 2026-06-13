@@ -33,10 +33,12 @@ class BootReceiver : BroadcastReceiver() {
                 if (device != null &&
                     device.vendorId == UsbBridge.USB_VID &&
                     device.productId == UsbBridge.USB_PID) {
-                    Log.i(TAG, "TUN_NAT_HUB USB 已插入，自动启动 VPN")
-                    // 等 USB 完全就绪后再启动（内核枚举需要时间）
+                    Log.i(TAG, "TUN_NAT_HUB USB 已插入，重启 VPN")
+                    // 先停止再启动，确保用新的 USB 连接
                     Thread {
-                        Thread.sleep(2000)
+                        Thread.sleep(1500)
+                        context.stopService(Intent(context, TunNatVpnService::class.java))
+                        Thread.sleep(1000)
                         startVpnService(context)
                     }.start()
                 }

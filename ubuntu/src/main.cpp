@@ -1,12 +1,8 @@
 /**
- * main.cpp — TUN_NAT_HUB Ubuntu 守护进程 v3
+ * main.cpp — TUN_NAT_HUB Ubuntu 守护进程 v4
  *
- * 优化: 心跳合并到 TUN→TTY 线程（省一个线程），epoll 替代 busy-wait
- *
- * 架构: 2 线程
- *   主线程: 信号处理 + 统计输出
- *   IO-1:   TUN → TTY（含心跳: 1 秒无数据自动发 PING）
- *   IO-2:   TTY → TUN
+ *  2线程: TUN→TTY（含心跳） | TTY→TUN
+ *  TTY 断线自动重连 — 等待 /dev/ttyGS0 重新出现并打开
  */
 
 #include "tun_iface.h"
@@ -23,7 +19,6 @@
 #include <fcntl.h>
 #include <termios.h>
 #include <errno.h>
-#include <sys/epoll.h>
 
 extern "C" {
 #include "frame.h"
@@ -39,154 +34,170 @@ static void signalHandler(int sig) {
     gRunning = false;
 }
 
+/* ── 统计 ────────────────────────────────────────────────── */
+
 struct Stats {
-    std::atomic<uint64_t> framesRx{0};
-    std::atomic<uint64_t> framesTx{0};
-    std::atomic<uint64_t> bytesRx{0};
-    std::atomic<uint64_t> bytesTx{0};
-    std::atomic<uint64_t> errors{0};
+    std::atomic<uint64_t> tx{0};
+    std::atomic<uint64_t> rx{0};
+    std::atomic<uint64_t> txBytes{0};
+    std::atomic<uint64_t> rxBytes{0};
+    std::atomic<uint64_t> err{0};
+    std::atomic<uint64_t> reconn{0};  // 重连次数
 };
 
-// 打开 TTY 并设为 raw 模式（可等待设备出现）
-static int openTtyRaw(const std::string& path) {
-    int fd = -1;
-    for (int retry = 0; retry < 30; retry++) {
-        fd = ::open(path.c_str(), O_RDWR | O_NOCTTY | O_NDELAY);
-        if (fd >= 0) break;
-        if (errno != ENOENT && errno != ENODEV) {
-            throw std::runtime_error("无法打开 " + path + ": " + strerror(errno));
+/* ── TTY 打开 ────────────────────────────────────────────── */
+
+static int ttyOpen(const std::string& path, int waitSec) {
+    for (int i = 0; i < waitSec; i++) {
+        int fd = ::open(path.c_str(), O_RDWR | O_NOCTTY | O_NDELAY);
+        if (fd >= 0) {
+            int flags = fcntl(fd, F_GETFL, 0);
+            fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+            struct termios tty = {};
+            tcgetattr(fd, &tty);
+            cfmakeraw(&tty);
+            tty.c_cflag |= CLOCAL;
+            tty.c_cc[VTIME] = 1;
+            tty.c_cc[VMIN]  = 0;
+            tcsetattr(fd, TCSANOW, &tty);
+            std::cout << "[TTY] " << path << " 已打开 (fd=" << fd << ")" << std::endl;
+            return fd;
         }
-        std::cerr << "[TTY] 等待 " << path << " 出现... (" << (retry + 1) << "/30)" << std::endl;
+        if (errno != ENOENT && errno != ENODEV) break;
+        if (i == 0) std::cerr << "[TTY] 等待 " << path << "..." << std::endl;
         sleep(1);
     }
-    if (fd < 0) {
-        throw std::runtime_error("无法打开 " + path + " (等待 30s 后仍不存在): " + strerror(errno));
-    }
-
-    int flags = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-
-    struct termios tty = {};
-    if (tcgetattr(fd, &tty) != 0) {
-        ::close(fd);
-        throw std::runtime_error("tcgetattr 失败: " + std::string(strerror(errno)));
-    }
-
-    cfmakeraw(&tty);
-    tty.c_cflag |= CLOCAL;
-    tty.c_cc[VTIME] = 1;
-    tty.c_cc[VMIN]  = 0;
-
-    if (tcsetattr(fd, TCSANOW, &tty) != 0) {
-        ::close(fd);
-        throw std::runtime_error("tcsetattr 失败: " + std::string(strerror(errno)));
-    }
-
-    std::cout << "[TTY] " << path << " 已打开 (fd=" << fd << ")" << std::endl;
-    return fd;
+    throw std::runtime_error("无法打开 " + path + ": " + strerror(errno));
 }
 
-/* ── IO Thread 1: TUN → TTY（含心跳） ──────────────────────── */
+/* ── TUN→TTY（含心跳，支持重连）──────────────────────────── */
 
-static void tunToTtyThread(TunIface& tun, int ttyFd, Stats& stats) {
-    std::cout << "[IO-TUN→TTY] 线程启动（含心跳）" << std::endl;
+static void tunToTtyThread(TunIface& tun, const std::string& ttyPath, Stats& stats) {
+    std::cout << "[IO-TUN→TTY] 启动" << std::endl;
+
     uint8_t frameBuf[FRAME_MAX_LEN];
-    uint8_t hbFrame[FRAME_HEADER_LEN];
-    frame_pack(hbFrame, 0); // 预建心跳帧
-
-    auto lastHb = steady_clock::now();
+    uint8_t hb[FRAME_HEADER_LEN];
+    frame_pack(hb, 0);
 
     while (gRunning) {
-        int n = tun.readPacket(frameBuf + FRAME_HEADER_LEN, FRAME_MAX_PAYLOAD);
-
-        if (n > 0) {
-            int frameLen = frame_pack(frameBuf, n);
-            ssize_t w = ::write(ttyFd, frameBuf, frameLen);
-            if (w < 0) {
-                if (errno == EAGAIN) continue;
-                std::cerr << "[IO-TUN→TTY] write 错误: " << strerror(errno) << std::endl;
-                stats.errors++; break;
+        // 打开或重连 TTY
+        int fd = -1;
+        while (gRunning) {
+            try {
+                fd = ttyOpen(ttyPath, 30);
+                break;
+            } catch (...) {
+                stats.reconn++;
+                sleep(2);
             }
-            stats.framesTx++;
-            stats.bytesTx += frameLen;
-            lastHb = steady_clock::now(); // 有数据流过，重置心跳计时器
-        } else if (n < 0) {
-            stats.errors++; break;
-        } else {
-            // n == 0: TUN 无数据，检查是否需要发心跳
-            auto now = steady_clock::now();
-            if (duration_cast<milliseconds>(now - lastHb).count() >= 1000) {
-                ::write(ttyFd, hbFrame, FRAME_HEADER_LEN);
-                stats.framesTx++;
-                stats.bytesTx += FRAME_HEADER_LEN;
-                lastHb = now;
-            }
-            usleep(5000);  // 5ms 粒度，降低转发延迟
         }
+        if (!gRunning) break;
+
+        auto lastHb = steady_clock::now();
+        bool fdValid = true;
+
+        // IO循环
+        while (gRunning && fdValid) {
+            int n = tun.readPacket(frameBuf + FRAME_HEADER_LEN, FRAME_MAX_PAYLOAD);
+            if (n > 0) {
+                int fl = frame_pack(frameBuf, n);
+                if (::write(fd, frameBuf, fl) < 0) {
+                    if (errno == EAGAIN) continue;
+                    std::cerr << "[IO-TUN→TTY] write 错误: " << strerror(errno) << ", 重连..." << std::endl;
+                    fdValid = false;
+                    stats.reconn++;
+                    continue;
+                }
+                stats.tx++; stats.txBytes += fl;
+                lastHb = steady_clock::now();
+            } else if (n < 0) {
+                stats.err++; break;
+            } else {
+                // 无数据，发心跳
+                auto now = steady_clock::now();
+                if (duration_cast<milliseconds>(now - lastHb).count() >= 1000) {
+                    if (::write(fd, hb, FRAME_HEADER_LEN) < 0) {
+                        fdValid = false;
+                        stats.reconn++;
+                        continue;
+                    }
+                    stats.tx++; stats.txBytes += FRAME_HEADER_LEN;
+                    lastHb = now;
+                }
+                usleep(5000);
+            }
+        }
+        if (fd >= 0) ::close(fd);
     }
-    std::cout << "[IO-TUN→TTY] 线程退出" << std::endl;
+    std::cout << "[IO-TUN→TTY] 退出" << std::endl;
 }
 
-/* ── IO Thread 2: TTY → TUN ─────────────────────────────────── */
+/* ── TTY→TUN（支持重连）──────────────────────────────────── */
 
-static void ttyToTunThread(TunIface& tun, int ttyFd, Stats& stats) {
-    std::cout << "[IO-TTY→TUN] 线程启动" << std::endl;
+static void ttyToTunThread(TunIface& tun, const std::string& ttyPath, Stats& stats) {
+    std::cout << "[IO-TTY→TUN] 启动" << std::endl;
 
-    uint8_t ringBuf[FRAME_MAX_LEN * 2];
+    uint8_t ring[FRAME_MAX_LEN * 2];
     int ringPos = 0;
 
     while (gRunning) {
-        ssize_t n = ::read(ttyFd, ringBuf + ringPos, FRAME_MAX_LEN - ringPos);
-        if (n < 0) {
-            if (errno == EAGAIN) continue;
-            std::cerr << "[IO-TTY→TUN] read 错误: " << strerror(errno) << std::endl;
-            stats.errors++; break;
-        }
-        if (n == 0) { usleep(5000); continue; }  // 5ms yield
-
-        ringPos += n;
-
-        int consumed = 0;
-        while (consumed + FRAME_HEADER_LEN <= ringPos) {
-            uint8_t* p = nullptr;
-            int payloadLen = frame_unpack(ringBuf + consumed, ringPos - consumed, &p);
-            if (payloadLen < 0) {
-                if (payloadLen == -1) { consumed++; continue; }
-                break;  // 帧不完整，等更多数据
+        // 打开或重连 TTY
+        int fd = -1;
+        while (gRunning) {
+            try {
+                fd = ttyOpen(ttyPath, 30);
+                break;
+            } catch (...) {
+                sleep(2);
             }
+        }
+        if (!gRunning) break;
 
-            if (frame_is_heartbeat(payloadLen)) {
-                // 回 PONG
-                uint8_t pong[FRAME_HEADER_LEN];
-                frame_pack(pong, 0);
-                ::write(ttyFd, pong, FRAME_HEADER_LEN);
-                consumed += FRAME_HEADER_LEN;
+        bool fdValid = true;
+        while (gRunning && fdValid) {
+            ssize_t n = ::read(fd, ring + ringPos, FRAME_MAX_LEN);
+            if (n < 0) {
+                if (errno == EAGAIN) continue;
+                std::cerr << "[IO-TTY→TUN] read 错误: " << strerror(errno) << ", 重连..." << std::endl;
+                fdValid = false;
+                ringPos = 0;
                 continue;
             }
+            if (n == 0) { usleep(5000); continue; }
 
-            if (frame_is_credit(payloadLen)) {
-                consumed += FRAME_HEADER_LEN + payloadLen;
-                continue;
+            ringPos += n;
+            int off = 0;
+            while (off + FRAME_HEADER_LEN <= ringPos) {
+                uint8_t* p = nullptr;
+                int pl = frame_unpack(ring + off, ringPos - off, &p);
+                if (pl < 0) { if (pl == -1) off++; else break; continue; }
+
+                if (frame_is_heartbeat(pl)) {
+                    uint8_t pong[FRAME_HEADER_LEN];
+                    frame_pack(pong, 0);
+                    ::write(fd, pong, FRAME_HEADER_LEN);
+                    off += FRAME_HEADER_LEN;
+                    continue;
+                }
+
+                if (pl > 0) {
+                    if (tun.writePacket(p, pl) < 0) stats.err++;
+                    else { stats.rx++; stats.rxBytes += FRAME_HEADER_LEN + pl; }
+                }
+                off += FRAME_HEADER_LEN + pl;
             }
-
-            int written = tun.writePacket(p, payloadLen);
-            if (written < 0) { stats.errors++; }
-            else { stats.framesRx++; stats.bytesRx += FRAME_HEADER_LEN + payloadLen; }
-            consumed += FRAME_HEADER_LEN + payloadLen;
+            if (off > 0 && off < ringPos) memmove(ring, ring + off, ringPos - off);
+            ringPos -= off;
         }
-
-        if (consumed > 0 && consumed < ringPos) {
-            memmove(ringBuf, ringBuf + consumed, ringPos - consumed);
-        }
-        ringPos -= consumed;
+        if (fd >= 0) ::close(fd);
     }
-    std::cout << "[IO-TTY→TUN] 线程退出" << std::endl;
+    std::cout << "[IO-TTY→TUN] 退出" << std::endl;
 }
 
-/* ── main ───────────────────────────────────────────────────── */
+/* ── main ────────────────────────────────────────────────── */
 
 int main(int argc, char* argv[]) {
-    std::cout << "=== TUN_NAT_HUB 守护进程 v3 ===" << std::endl;
+    std::cout << "=== TUN_NAT_HUB v4 (auto-reconnect) ===" << std::endl;
 
     struct sigaction sa = {};
     sa.sa_handler = signalHandler;
@@ -197,54 +208,35 @@ int main(int argc, char* argv[]) {
 
     std::string tunName = "tun_hub";
     std::string ttyPath = "/dev/ttyGS0";
-
     for (int i = 1; i < argc; i++) {
-        std::string arg = argv[i];
-        if (arg == "--tun" && i + 1 < argc) tunName = argv[++i];
-        else if (arg == "--tty" && i + 1 < argc) ttyPath = argv[++i];
-        else if (arg == "--help" || arg == "-h") {
-            std::cout << "用法: usb_tund [--tun NAME] [--tty PATH]\n";
-            return 0;
-        }
+        std::string a = argv[i];
+        if (a == "--tun" && i+1 < argc) tunName = argv[++i];
+        else if (a == "--tty" && i+1 < argc) ttyPath = argv[++i];
     }
 
     try {
-        std::cout << "\n--- TUN 接口 ---" << std::endl;
         TunIface tun(tunName);
-
-        std::cout << "\n--- TTY 设备 ---" << std::endl;
-        int ttyFd = openTtyRaw(ttyPath);
-
         Stats stats;
-        std::cout << "\n=== 启动 IO 线程 === (2 threads)" << std::endl;
 
-        std::thread io1(tunToTtyThread, std::ref(tun), ttyFd, std::ref(stats));
-        std::thread io2(ttyToTunThread, std::ref(tun), ttyFd, std::ref(stats));
+        std::thread io1(tunToTtyThread, std::ref(tun), ttyPath, std::ref(stats));
+        std::thread io2(ttyToTunThread, std::ref(tun), ttyPath, std::ref(stats));
 
-        // 主循环: 每秒检查退出标志（而非 5 秒阻塞）
         while (gRunning) {
             sleep(1);
-            static int tick = 0;
-            if (++tick % 5 == 0) {  // 每 5 秒输出统计
-                std::cout << "[统计] TX=" << stats.framesTx
-                          << "/" << stats.bytesTx
-                          << "B RX=" << stats.framesRx
-                          << "/" << stats.bytesRx
-                          << "B err=" << stats.errors << std::endl;
+            static int t = 0;
+            if (++t % 5 == 0) {
+                std::cout << "[统计] TX=" << stats.tx << "/" << stats.txBytes
+                          << "B RX=" << stats.rx << "/" << stats.rxBytes
+                          << "B err=" << stats.err << " reconn=" << stats.reconn << std::endl;
             }
         }
 
-        std::cout << "\n=== 退出... ===" << std::endl;
         tun.close();
-        ::close(ttyFd);
-
-        io1.join();
-        io2.join();
-
-        std::cout << "=== 守护进程已退出 (" << stats.framesTx
-                  << " tx, " << stats.framesRx << " rx)" << std::endl;
+        io1.join(); io2.join();
+        std::cout << "=== 退出 (tx=" << stats.tx << " rx=" << stats.rx
+                  << " reconn=" << stats.reconn << ") ===" << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "[致命错误] " << e.what() << std::endl;
+        std::cerr << "[致命] " << e.what() << std::endl;
         return 1;
     }
     return 0;

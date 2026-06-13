@@ -66,10 +66,10 @@ class TunNatVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "VpnService 启动")
 
-        // 防止重复启动（Android 可能多次调用 onStartCommand）
+        // 防重复 + 自动重启（USB 热插拔后需用新连接）
         if (isStarted) {
-            Log.w(TAG, "VpnService 已在运行，忽略重复启动")
-            return START_STICKY
+            Log.w(TAG, "VpnService 已在运行，停在旧连接并重启")
+            stopVpn()
         }
         isStarted = true
         isRunning = true
