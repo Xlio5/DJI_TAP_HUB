@@ -49,11 +49,21 @@ struct Stats {
     std::atomic<uint64_t> errors{0};
 };
 
-// 打开 TTY 并设为 raw 模式
+// 打开 TTY 并设为 raw 模式（可等待设备出现）
 static int openTtyRaw(const std::string& path) {
-    int fd = ::open(path.c_str(), O_RDWR | O_NOCTTY | O_NDELAY);
+    // 等待设备出现，最多重试 30 秒
+    int fd = -1;
+    for (int retry = 0; retry < 30; retry++) {
+        fd = ::open(path.c_str(), O_RDWR | O_NOCTTY | O_NDELAY);
+        if (fd >= 0) break;
+        if (errno != ENOENT && errno != ENODEV) {
+            throw std::runtime_error("无法打开 " + path + ": " + strerror(errno));
+        }
+        std::cerr << "[TTY] 等待 " << path << " 出现... (" << (retry + 1) << "/30)" << std::endl;
+        sleep(1);
+    }
     if (fd < 0) {
-        throw std::runtime_error("无法打开 " + path + ": " + strerror(errno));
+        throw std::runtime_error("无法打开 " + path + " (等待 30s 后仍不存在): " + strerror(errno));
     }
 
     // 设为阻塞模式
