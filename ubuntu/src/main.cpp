@@ -40,8 +40,8 @@ static int ttyOpen(const std::string& path) {
             tcgetattr(fd, &t);
             cfmakeraw(&t);
             t.c_cflag |= CLOCAL;
-            t.c_cc[VTIME] = 1;
-            t.c_cc[VMIN]  = 0;
+            t.c_cc[VTIME] = 0;  // 立即返回，不等待（低延迟）
+            t.c_cc[VMIN]  = 0;  // 有数据就返回
             tcsetattr(fd, TCSANOW, &t);
             return fd;
         }
@@ -61,7 +61,7 @@ static void tunToTty(TunIface& tun, Stats& s) {
 
     while (gRunning) {
         int fd = gTtyFd.load();
-        if (fd < 0) { usleep(100000); continue; }
+        if (fd < 0) { usleep(10000); continue; }
 
         int n = tun.readPacket(buf + FRAME_HEADER_LEN, FRAME_MAX_PAYLOAD);
         if (n > 0) {
@@ -84,7 +84,7 @@ static void tunToTty(TunIface& tun, Stats& s) {
                 s.tx++; s.txB += FRAME_HEADER_LEN;
                 lastHb = now;
             }
-            usleep(5000);
+            usleep(1000);
         }
     }
 }
