@@ -1,5 +1,5 @@
 /**
- * MainActivity.kt — 底部导航: VPN 控制 | RTSP 播放器
+ * MainActivity.kt — VPN 控制 + RTSP 播放器（同一界面）
  */
 
 package com.tunnathub.app
@@ -22,9 +22,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -62,7 +59,7 @@ class MainActivity : ComponentActivity() {
         usbDevice = findUsbDevice()
 
         setContent {
-            TabsScreen(
+            MainScreen(
                 usbFound = usbDevice != null,
                 vpnRunning = isVpnRunning.value,
                 onVpnTap = {
@@ -123,67 +120,61 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun TabsScreen(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
-    var selectedTab by remember { mutableIntStateOf(0) }
-
+fun MainScreen(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
     MaterialTheme {
         Scaffold(
             topBar = {
                 @OptIn(ExperimentalMaterial3Api::class)
                 TopAppBar(title = { Text("TUN NAT Hub") })
-            },
-            bottomBar = {
-                NavigationBar {
-                    NavigationBarItem(
-                        icon = { Icon(Icons.Default.VpnKey, contentDescription = null) },
-                        label = { Text("VPN") },
-                        selected = selectedTab == 0,
-                        onClick = { selectedTab = 0 }
-                    )
-                    NavigationBarItem(
-                        icon = { Icon(Icons.Default.PlayArrow, contentDescription = null) },
-                        label = { Text("播放器") },
-                        selected = selectedTab == 1,
-                        onClick = { selectedTab = 1 }
-                    )
-                }
             }
         ) { padding ->
-            when (selectedTab) {
-                0 -> VpnTab(usbFound, vpnRunning, onVpnTap, Modifier.padding(padding))
-                1 -> PlayerScreen(Modifier.padding(padding).padding(horizontal = 16.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                // ── VPN 状态卡 ──────────────────────────
+                VpnCard(usbFound, vpnRunning, onVpnTap)
+
+                Spacer(Modifier.height(12.dp))
+
+                // ── RTSP 播放器 ─────────────────────────
+                PlayerScreen()
             }
         }
     }
 }
 
 @Composable
-fun VpnTab(usbFound: Boolean, vpnRunning: Boolean, onTap: () -> Unit, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+fun VpnCard(usbFound: Boolean, vpnRunning: Boolean, onTap: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (vpnRunning)
+                MaterialTheme.colorScheme.primaryContainer
+            else
+                MaterialTheme.colorScheme.surfaceVariant
+        )
     ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = if (vpnRunning) MaterialTheme.colorScheme.primaryContainer
-                                 else MaterialTheme.colorScheme.surfaceVariant
-            )
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(if (vpnRunning) "● VPN 已连接" else "○ VPN 未连接",
-                            style = MaterialTheme.typography.titleMedium)
-                        Text(if (usbFound) "USB 已检测" else "USB 未连接",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Button(onClick = onTap, enabled = usbFound) {
-                        Text(if (vpnRunning) "断开" else "连接")
-                    }
-                }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (vpnRunning) "● VPN 已连接" else "○ VPN 未连接",
+                    style = MaterialTheme.typography.titleSmall
+                )
+                Text(
+                    text = if (usbFound) "USB 已检测" else "USB 未连接",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Button(onClick = onTap, enabled = usbFound) {
+                Text(if (vpnRunning) "断开" else "连接")
             }
         }
     }
