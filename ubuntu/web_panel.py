@@ -177,43 +177,72 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 
     <div class="card" style="margin-bottom:16px">
       <h3>🔗 完整数据链路</h3>
-      <div class="arch-box"><div class="arch">
-┌─────────────────────────────────┐     ╔══════════════╗     ┌────────────────────────────┐
-│  <span class="box">DJI RC PLUS 2 (Android 11)</span>  │     ║   USB 2.0    ║     │  <span class="box2">RK3588 (Rock 5C · Ubuntu)</span> │
-│                                 │     ║  线缆 (A-C)   ║     │                            │
-│  <span class="arrow">App → VpnService TUN</span>        │     ╚══════════════╝     │  <span class="arrow">USB Gadget: g_serial</span>  │
-│  <span class="label">IP: 10.0.0.2/24</span>              │                            │  <span class="label">VID=0x0BDA PID=0x8812</span>  │
-│  <span class="label">路由: 192.168.88.0/24 → tun0</span>  │                            │  <span class="label">(伪装 RTL8812AU 过 DJI 白名单)</span>│
-│         │                        │                            │         │                  │
-│         ▼                        │                            │         ▼                  │
-│  <span class="box3">UsbBridge.kt</span>                 │  ──── USB Bulk ────→      │  <span class="box3">/dev/ttyGS0</span>         │
-│  <span class="label">bulkTransfer(EP OUT/IN)</span>     │  ←── USB Bulk ────       │  <span class="label">usb_tund v5 守护进程</span>  │
-│  <span class="label">帧协议: [0x544E][Len][Payload]</span>│                           │  <span class="label">TUN ↔ TTY 双线程</span>    │
-│         │                        │                            │         │                  │
-│  <span class="label">心跳: PING/PONG 1s</span>             │                            │  <span class="label">心跳: PING/PONG 1s</span>  │
-│         │                        │                            │         ▼                  │
-│  <span class="arrow">EasyPlayer 解码</span>              │                            │  <span class="box3">tun_hub (10.0.0.1/24)</span> │
-│  <span class="arrow">→ SurfaceView 渲染</span>           │                            │         │                  │
-└─────────────────────────────────┘                            │  <span class="arrow">内核路由 + NAT</span>      │
-                                                               │  <span class="label">MASQUERADE SNAT</span>      │
-                                                               │  <span class="label">ip_forward=1</span>         │
-                                                               │         │                  │
-                                                               │         ▼                  │
-                                                               │  <span class="box2">end1 (192.168.88.66)</span>  │
-                                                               │         │                  │
-                                                               └─────────┼──────────────────┘
-                                                                         │
-                                                               ╔═════════╪═════════╗
-                                                               ║  交换机 / 局域网  ║
-                                                               ║ 192.168.88.0/24  ║
-                                                               ╚════╤══════╤══════╝
-                                                                    │      │
-                                                            ┌───────▼─┐ ┌──▼──────────┐
-                                                            │ IP Camera│ │ Windows PC  │
-                                                            │ .88.100  │ │ .88.x       │
-                                                            │ RTSP     │ │ 网络助手     │
-                                                            └──────────┘ └─────────────┘
-      </div></div>
+      <div style="display:flex;flex-direction:column;gap:8px;padding:10px 0">
+        <!-- Row 1: DJI RC -->
+        <div style="display:flex;align-items:stretch;gap:0">
+          <div style="flex:1;background:rgba(56,189,248,0.08);border:2px solid rgba(56,189,248,0.4);border-radius:12px;padding:12px 16px">
+            <div style="font-weight:700;color:var(--cyan);font-size:0.95em;margin-bottom:6px">📱 DJI RC PLUS 2 · Android 11</div>
+            <div style="font-size:0.8em;color:var(--muted);line-height:1.6">
+              App 发起请求<br>→ <b>VpnService TUN</b> (<code>10.0.0.2/24</code>)<br>
+              → 路由 <code>192.168.88.0/24</code> 进入 TUN<br>
+              → <b>UsbBridge.kt</b> (双协程)<br>
+              → <code>bulkTransfer()</code> USB Host API<br>
+              → 帧打包 <code>[0x544E][Len][IP包]</code><br>
+              → <b>EasyPlayer</b> 解码 → SurfaceView
+            </div>
+          </div>
+        </div>
+
+        <!-- Arrow down -->
+        <div style="text-align:center;color:var(--cyan);font-size:1.4em;line-height:1">⬇ ⬆<br><span style="font-size:0.55em;color:var(--dim)">USB 2.0 线缆 (Bulk IN/OUT)</span></div>
+
+        <!-- Row 2: RK3588 -->
+        <div style="display:flex;align-items:stretch;gap:0">
+          <div style="flex:1;background:rgba(245,158,11,0.08);border:2px solid rgba(245,158,11,0.4);border-radius:12px;padding:12px 16px">
+            <div style="font-weight:700;color:var(--amber);font-size:0.95em;margin-bottom:6px">🖥 RK3588 · Rock 5C · Ubuntu</div>
+            <div style="display:flex;gap:12px">
+              <div style="flex:1;font-size:0.8em;color:var(--muted);line-height:1.6">
+                <b>USB Gadget</b>: <code>g_serial use_acm=0</code><br>
+                VID=<code>0x0BDA</code> PID=<code>0x8812</code><br>
+                (伪装 RTL8812AU 过 DJI 白名单)<br>
+                → <code>/dev/ttyGS0</code>
+              </div>
+              <div style="width:2px;background:var(--bd)"></div>
+              <div style="flex:1;font-size:0.8em;color:var(--muted);line-height:1.6">
+                <b>usb_tund v5</b> (C++ 守护进程)<br>
+                → 帧解包 → <code>tun_hub</code><br>
+                (<code>10.0.0.1/24</code>)<br>
+                → 内核路由 + <b>MASQUERADE</b>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Arrow down -->
+        <div style="text-align:center;color:var(--amber);font-size:1.4em;line-height:1">⬇ ⬆<br><span style="font-size:0.55em;color:var(--dim)">千兆以太网 (end1 · 192.168.88.66)</span></div>
+
+        <!-- Row 3: LAN -->
+        <div style="display:flex;gap:12px">
+          <div style="flex:1;background:rgba(34,197,94,0.08);border:2px solid rgba(34,197,94,0.4);border-radius:12px;padding:12px 16px">
+            <div style="font-weight:700;color:var(--green);font-size:0.95em;margin-bottom:6px">📹 IP Camera</div>
+            <div style="font-size:0.8em;color:var(--muted)"><code>192.168.88.100</code><br>RTSP <code>:554/stream1</code></div>
+          </div>
+          <div style="flex:1;background:rgba(139,92,246,0.08);border:2px solid rgba(139,92,246,0.4);border-radius:12px;padding:12px 16px">
+            <div style="font-weight:700;color:#a78bfa;font-size:0.95em;margin-bottom:6px">💻 Windows PC</div>
+            <div style="font-size:0.8em;color:var(--muted)"><code>192.168.88.x</code><br>网络助手 / 浏览器</div>
+          </div>
+        </div>
+
+        <div style="text-align:center;font-size:0.7em;color:var(--dim);margin-top:8px">
+          ═══ 交换机 · LAN <code>192.168.88.0/24</code> ═══
+        </div>
+      </div>
+
+      <div class="info" style="margin-top:12px">
+        <b>数据方向:</b><br>
+        🟢 <b>出向 (DJI RC → LAN)</b>: App → TUN → USB → RK3588 → MASQ NAT → 交换机 → 目标设备 (自动，无需配置)<br>
+        🔵 <b>入向 (LAN → DJI RC)</b>: 需要在「配置」Tab 添加 <b>端口转发</b>，iptables DNAT 到 <code>10.0.0.2</code>
+      </div>
     </div>
 
     <div class="grid2">
