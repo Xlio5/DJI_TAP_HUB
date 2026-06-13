@@ -73,6 +73,10 @@ class UsbBridge(
         }
 
         Log.i(TAG, "USB 已连接: epOut=0x${epOut!!.address.toString(16)}, epIn=0x${epIn!!.address.toString(16)}")
+
+        // 发送 DTR/RTS 激活 g_serial TTY 数据通道
+        activateTty()
+
         isConnected = true
         onLinkStateChange?.invoke(LinkState.Connected)
 
@@ -114,6 +118,20 @@ class UsbBridge(
                 }
             }
         }
+    }
+
+    /**
+     * 通过 USB Control Transfer 发送 DTR/RTS 信号。
+     * g_serial 的 TTY 层需要 DTR 才能开始传输数据。
+     * 即使在 use_acm=0 模式下，gs_tty 驱动也会检查 DTR 信号。
+     */
+    private fun activateTty() {
+        val conn = usbConnection ?: return
+        // SET_CONTROL_LINE_STATE: bmReqType=0x21(Host→IFace,Class), bReq=0x22, wVal=DTR|RTS
+        val ret = conn.controlTransfer(
+            0x21, 0x22, 0x03, 0, null, 0, 100
+        )
+        Log.i(TAG, "SET_CONTROL_LINE_STATE(DTR+RTS): ret=$ret (${if (ret >= 0) "OK" else "ignored"})")
     }
 
     /* ── Coroutine 1: TUN → USB ────────────────────────────── */
