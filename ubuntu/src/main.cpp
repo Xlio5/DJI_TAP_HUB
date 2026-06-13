@@ -173,6 +173,26 @@ static void ttyToTunThread(TunIface& tun, int ttyFd, Stats& stats) {
     std::cout << "[IO-TTY→TUN] 线程退出" << std::endl;
 }
 
+/* ── 心跳线程: 每 1000ms 发送 PING ──────────────────────────── */
+
+static void heartbeatThread(int ttyFd, Stats& stats) {
+    std::cout << "[心跳] 线程启动" << std::endl;
+    uint8_t pingFrame[FRAME_HEADER_LEN];
+    frame_pack(pingFrame, 0);  // Length=0 = PING
+
+    while (gRunning) {
+        ::write(ttyFd, pingFrame, FRAME_HEADER_LEN);
+        stats.framesTx++;
+        stats.bytesTx += FRAME_HEADER_LEN;
+
+        // Sleep 1000ms in 100ms chunks to check gRunning
+        for (int i = 0; i < 10 && gRunning; i++) {
+            usleep(100000);
+        }
+    }
+    std::cout << "[心跳] 线程退出" << std::endl;
+}
+
 /* ── main ───────────────────────────────────────────────────── */
 
 int main(int argc, char* argv[]) {
@@ -210,6 +230,7 @@ int main(int argc, char* argv[]) {
 
         std::thread io1(tunToTtyThread, std::ref(tun), ttyFd, std::ref(stats));
         std::thread io2(ttyToTunThread, std::ref(tun), ttyFd, std::ref(stats));
+        std::thread hb(heartbeatThread, ttyFd, std::ref(stats));
 
         while (gRunning) {
             sleep(5);
@@ -226,6 +247,7 @@ int main(int argc, char* argv[]) {
 
         io1.join();
         io2.join();
+        hb.join();
 
         std::cout << "=== 守护进程已退出 ===" << std::endl;
     } catch (const std::exception& e) {
