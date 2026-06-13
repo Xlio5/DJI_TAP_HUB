@@ -68,6 +68,7 @@ static int openTtyRaw(const std::string& path) {
 
     // Raw 模式: 无行处理、无回显、无信号字符
     cfmakeraw(&tty);
+    tty.c_cflag |= CLOCAL;   // 忽略 modem 控制线 (DCD)，无需 DTR 即可收发
     tty.c_cc[VTIME] = 1;    // 100ms 超时
     tty.c_cc[VMIN]  = 0;    // 非阻塞式读取
 
