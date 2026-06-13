@@ -1,0 +1,20 @@
+# Build outputs
+android/app/build/
+android/.gradle/
+android/build/
+android/local.properties
+ubuntu/build/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+*.swp
+*.swo
+*~

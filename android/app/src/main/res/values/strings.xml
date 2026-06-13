@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TUN NAT Hub</string>
+    <string name="vpn_service_name">TUN NAT Hub VPN</string>
+    <string name="usb_permission_request">请授权 USB 设备访问权限</string>
+    <string name="notification_channel">TUN_NAT_HUB</string>
+</resources>

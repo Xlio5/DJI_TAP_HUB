@@ -83,7 +83,7 @@ Android 设备通过 **USB 线**（自定义 Bulk 传输）访问 RK3588 Ubuntu 
                                              │
                     ┌────────────────────────▼─────────────────────────┐
                     │              局域网设备                            │
-                    │  IP Camera: 192.168.1.100:554 (RTSP)             │
+                    │  IP Camera: 192.168.88.100:554 (RTSP)            │
                     │  NAS / PC / 其他设备                              │
                     └──────────────────────────────────────────────────┘
 ```
@@ -94,14 +94,14 @@ Android 设备通过 **USB 线**（自定义 Bulk 传输）访问 RK3588 Ubuntu 
 Android TUN (tun0):      10.0.0.2/24
 RK3588 TUN (tun_hub):    10.0.0.1/24
 USB链路内部网段:          10.0.0.0/24 (点到点)
-目标局域网:               192.168.x.0/24 (可配置)
+目标局域网:               192.168.88.0/24 (可配置)
 ```
 
-### 数据流路径（以 Android ping 192.168.1.100 为例）
+### 数据流路径（以 Android ping 192.168.88.100 为例）
 
 ```
-1. Android App 发出 ICMP Echo Request (dst=192.168.1.100)
-2. Android 内核路由: 192.168.0.0/16 via tun0 → TUN 接口
+1. Android App 发出 ICMP Echo Request (dst=192.168.88.100)
+2. Android 内核路由: 192.168.88.0/24 via tun0 → TUN 接口
 3. VpnService 从 tunFd 读取原始 IP 包
 4. 帧打包: [Magic(0x544E)][Length][IP_Packet]
 5. USB Bulk OUT 传输 → RK3588
@@ -181,8 +181,8 @@ VpnService.Builder()
     .setSession("TUN_NAT_HUB")
     .setMtu(1400)                       // MTU 1400，减少分片
     .addAddress("10.0.0.2", 24)         // Android TUN IP
-    .addRoute("192.168.0.0", 16)        // 只路由局域网流量
-    .addDnsServer("192.168.1.1")        // 局域网 DNS
+    .addRoute("192.168.88.0", 24)       // 只路由局域网流量
+    .addDnsServer("192.168.88.1")       // 局域网 DNS（可配置）
     .setBlocking(true)                  // 阻塞模式，配合 Dispatchers.IO
     .establish()
 ```
