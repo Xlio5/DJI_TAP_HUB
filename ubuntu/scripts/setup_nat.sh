@@ -50,38 +50,6 @@ ip link set "$TUN_NAME" txqueuelen 10
 ip link set "$TUN_NAME" up
 tc qdisc replace dev "$TUN_NAME" root pfifo limit 10 2>/dev/null || true
 
-# ── USB ECM/RNDIS 接口 ──────────────────────────────
-USB_IFACE=""
-for candidate in usb0 usb1 rndis0; do
-    if ip link show "$candidate" &>/dev/null; then
-        USB_IFACE="$candidate"
-        break
-    fi
-done
-
-if [ -n "$USB_IFACE" ]; then
-    ip addr replace "10.0.0.1/24" dev "$USB_IFACE"
-    ip link set "$USB_IFACE" up
-    echo "USB Gadget 接口已配置: $USB_IFACE (10.0.0.1/24)"
-
-    # ── DHCP for Android ECM client (可选) ──────────
-    # Android 内核检测到 ECM gadget 后会自动 DHCP 获取 IP
-    if command -v dnsmasq &>/dev/null; then
-        if ! pgrep -f "dnsmasq.*$USB_IFACE" &>/dev/null; then
-            dnsmasq --interface="$USB_IFACE" \
-                    --bind-interfaces \
-                    --dhcp-range=10.0.0.100,10.0.0.200,255.255.255.0,12h \
-                    --port=0 \
-                    --no-resolv \
-                    --no-hosts \
-                    2>/dev/null || echo "dnsmasq 启动失败（可能端口冲突，非致命）"
-            echo "DHCP 服务已启动: $USB_IFACE (10.0.0.100-200)"
-        fi
-    fi
-else
-    echo "警告: 未检测到 USB Gadget 接口，请先运行 setup_gadget.sh"
-fi
-
 # ── IP 转发 ────────────────────────────────────────
 echo 1 > /proc/sys/net/ipv4/ip_forward
 
@@ -104,4 +72,4 @@ else
     echo "警告: LAN 网口不可用，数据无法转发到局域网"
 fi
 
-echo "NAT 配置完成 (ECM/RNDIS 模式)"
+echo "NAT 配置完成 (g_serial 纯 Bulk 模式)"

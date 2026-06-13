@@ -1,9 +1,8 @@
 /**
- * main.cpp — TUN_NAT_HUB UDP 隧道 (WiFi + USB 通用)
+ * main.cpp — TUN_NAT_HUB v5 (single-fd, auto-reconnect)
  *
- * 创建 TUN + UDP socket，通过 WiFi 或 USB ECM/RNDIS 收发原始 IP 包。
- * 无需帧协议 — IP 包直接装入 UDP 数据报文。
- * 同时支持 WiFi (172.24.91.x) 和 USB (usb0/rndis0)。
+ * 主线程打开 /dev/ttyGS0 → 二线程共享同一 fd
+ * TTY 断开 → 主线程重开 fd → 线程继续
  */
 
 #include "tun_iface.h"
@@ -15,95 +14,74 @@
 #include <string>
 #include <unistd.h>
 #include <fcntl.h>
-#include <cerrno>
+#include <termios.h>
+#include <errno.h>
 
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <sys/ioctl.h>
-#include <net/if.h>
-
+extern "C" {
+#include "frame.h"
+}
 using namespace tun_nat;
 
 static std::atomic<bool> gRunning{true};
+static std::atomic<int> gTtyFd{-1};
 
 static void sigHandler(int s) { gRunning = false; }
 
-static constexpr int UDP_PORT         = 8899;
-static constexpr int MAX_IP_PACKET    = 1500;
-static constexpr int HB_INTERVAL_MS   = 1000;
-static constexpr int HB_TIMEOUT_MS    = 5000;
-static constexpr uint8_t HB_PING      = 0x00;
-static constexpr uint8_t HB_PONG      = 0x01;
-
 struct Stats {
-    std::atomic<uint64_t> tx{0}, rx{0}, txB{0}, rxB{0}, err{0}, hb{0};
+    std::atomic<uint64_t> tx{0}, rx{0}, txB{0}, rxB{0}, err{0};
 };
 
-/**
- * 创建 UDP socket，绑定所有接口 (INADDR_ANY:8899)。
- * 同时支持 WiFi 和 USB ECM/RNDIS。
- */
-static int udpBind() {
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) {
-        std::cerr << "[UDP] socket failed: " << strerror(errno) << std::endl;
-        return -1;
+static int ttyOpen(const std::string& path) {
+    for (int i = 0; i < 30 && gRunning; i++) {
+        int fd = ::open(path.c_str(), O_RDWR | O_NOCTTY | O_NDELAY);
+        if (fd >= 0) {
+            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK);
+            struct termios t = {};
+            tcgetattr(fd, &t);
+            cfmakeraw(&t);
+            t.c_cflag |= CLOCAL;
+            t.c_cc[VTIME] = 1;
+            t.c_cc[VMIN]  = 0;
+            tcsetattr(fd, TCSANOW, &t);
+            return fd;
+        }
+        if (errno != ENOENT && errno != ENODEV) break;
+        if (i == 0) std::cerr << "[TTY] 等待 " << path << std::endl;
+        sleep(1);
     }
-    int flags = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-    int reuse = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-
-    struct sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(UDP_PORT);
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        std::cerr << "[UDP] bind failed: " << strerror(errno) << std::endl;
-        close(fd);
-        return -1;
-    }
-    std::cout << "[UDP] bound 0.0.0.0:" << UDP_PORT << " (fd=" << fd << ")" << std::endl;
-    return fd;
+    return -1;
 }
 
-/* ── TUN -> UDP ──────────────────────────────────────── */
+/* ── TUN→TTY（含心跳）───────────────────────────────────── */
 
-static void tunToUdp(TunIface& tun, int udpFd, Stats& s,
-                   const std::atomic<struct sockaddr_in*>& peerAddr,
-                   const std::atomic<bool>& havePeer) {
-    uint8_t buf[MAX_IP_PACKET];
+static void tunToTty(TunIface& tun, Stats& s) {
+    uint8_t buf[FRAME_MAX_LEN], hb[FRAME_HEADER_LEN];
+    frame_pack(hb, 0);
     auto lastHb = std::chrono::steady_clock::now();
 
     while (gRunning) {
-        int n = tun.readPacket(buf, sizeof(buf));
+        int fd = gTtyFd.load();
+        if (fd < 0) { usleep(100000); continue; }
+
+        int n = tun.readPacket(buf + FRAME_HEADER_LEN, FRAME_MAX_PAYLOAD);
         if (n > 0) {
-            if (havePeer.load()) {
-                struct sockaddr_in* dst = peerAddr.load();
-                if (dst) {
-                    ssize_t sent = sendto(udpFd, buf, n, 0,
-                                          (struct sockaddr*)dst, sizeof(*dst));
-                    if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                        std::cerr << "[TUN->UDP] sendto: " << strerror(errno) << std::endl;
-                        s.err++;
-                    } else if (sent > 0) { s.tx++; s.txB += sent; }
-                }
+            int fl = frame_pack(buf, n);
+            if (::write(fd, buf, fl) < 0 && errno != EAGAIN) {
+                std::cerr << "[TUN→TTY] write err, fd=" << fd << std::endl;
+                int oldFd = gTtyFd.exchange(-1); if (oldFd >= 0) ::close(oldFd);
+                continue;
             }
+            s.tx++; s.txB += fl;
             lastHb = std::chrono::steady_clock::now();
         } else if (n < 0) { s.err++; break; }
         else {
             auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastHb).count() >= HB_INTERVAL_MS) {
-                if (havePeer.load()) {
-                    struct sockaddr_in* dst = peerAddr.load();
-                    if (dst) {
-                        uint8_t hb = HB_PING;
-                        sendto(udpFd, &hb, 1, 0, (struct sockaddr*)dst, sizeof(*dst));
-                        s.hb++;
-                    }
+            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastHb).count() >= 1000) {
+                if (::write(fd, hb, FRAME_HEADER_LEN) < 0 && errno != EAGAIN) {
+                    int oldFd = gTtyFd.exchange(-1); if (oldFd >= 0) ::close(oldFd);
+                    continue;
                 }
+                s.tx++; s.txB += FRAME_HEADER_LEN;
                 lastHb = now;
             }
             usleep(5000);
@@ -111,114 +89,102 @@ static void tunToUdp(TunIface& tun, int udpFd, Stats& s,
     }
 }
 
-/* ── UDP -> TUN ──────────────────────────────────────── */
+/* ── TTY→TUN ────────────────────────────────────────────── */
 
-static void udpToTun(TunIface& tun, int udpFd, Stats& s,
-                   std::atomic<struct sockaddr_in*>& peerAddr,
-                   std::atomic<bool>& havePeer) {
-    uint8_t buf[MAX_IP_PACKET];
-    struct sockaddr_in src = {};
-    socklen_t srclen = sizeof(src);
-    auto lastPkt = std::chrono::steady_clock::now();
-    bool timedOutLogged = false;
+static void ttyToTun(TunIface& tun, Stats& s) {
+    uint8_t ring[FRAME_MAX_LEN * 2];
+    int pos = 0;
 
     while (gRunning) {
-        ssize_t n = recvfrom(udpFd, buf, sizeof(buf), 0,
-                             (struct sockaddr*)&src, &srclen);
+        int fd = gTtyFd.load();
+        if (fd < 0) { usleep(100000); pos = 0; continue; }
+
+        ssize_t n = ::read(fd, ring + pos, FRAME_MAX_LEN);
         if (n < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                auto now = std::chrono::steady_clock::now();
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastPkt).count() > HB_TIMEOUT_MS) {
-                    if (!timedOutLogged) {
-                        std::cout << "[UDP->TUN] peer timeout, waiting..." << std::endl;
-                        timedOutLogged = true;
-                    }
-                }
-                usleep(10000);
+            if (errno == EAGAIN) continue;
+            std::cerr << "[TTY→TUN] read err, fd=" << fd << std::endl;
+            int oldFd = gTtyFd.exchange(-1); if (oldFd >= 0) ::close(oldFd); pos = 0;
+            continue;
+        }
+        if (n == 0) { usleep(5000); continue; }
+
+        pos += n;
+        int off = 0;
+        while (off + FRAME_HEADER_LEN <= pos) {
+            uint8_t* p = nullptr;
+            int pl = frame_unpack(ring + off, pos - off, &p);
+            if (pl < 0) { if (pl == -1) off++; else break; continue; }
+            if (frame_is_heartbeat(pl)) {
+                uint8_t pong[FRAME_HEADER_LEN];
+                frame_pack(pong, 0);
+                ::write(fd, pong, FRAME_HEADER_LEN);
+                off += FRAME_HEADER_LEN;
                 continue;
             }
-            std::cerr << "[UDP->TUN] recvfrom: " << strerror(errno) << std::endl;
-            s.err++; break;
-        }
-
-        lastPkt = std::chrono::steady_clock::now();
-        timedOutLogged = false;
-
-        // Learn peer address from first packet
-        if (!havePeer.load()) {
-            struct sockaddr_in* p = new struct sockaddr_in(src);
-            struct sockaddr_in* old = peerAddr.exchange(p);
-            delete old;
-            havePeer.store(true);
-            char ip[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &src.sin_addr, ip, sizeof(ip));
-            std::cout << "[UDP->TUN] peer learned: " << ip << ":" << ntohs(src.sin_port) << std::endl;
-        }
-
-        if (n == 1) {
-            if (buf[0] == HB_PING) {
-                uint8_t pong = HB_PONG;
-                sendto(udpFd, &pong, 1, 0, (struct sockaddr*)&src, sizeof(src));
+            if (pl > 0) {
+                if (tun.writePacket(p, pl) < 0) s.err++;
+                else { s.rx++; s.rxB += FRAME_HEADER_LEN + pl; }
             }
-            s.hb++; continue;
+            off += FRAME_HEADER_LEN + pl;
         }
-
-        if (n > 0 && n <= MAX_IP_PACKET) {
-            int written = tun.writePacket(buf, n);
-            if (written < 0) s.err++;
-            else { s.rx++; s.rxB += written; }
-        }
+        if (off > 0 && off < pos) memmove(ring, ring + off, pos - off);
+        pos -= off;
     }
 }
 
-/* ── main ────────────────────────────────────────────── */
+/* ── main ────────────────────────────────────────────────── */
 
 int main(int argc, char* argv[]) {
-    std::cout << "=== TUN_NAT_HUB UDP v3 ===" << std::endl;
+    std::cout << "=== TUN_NAT_HUB v5 ===" << std::endl;
 
-    signal(SIGTERM, sigHandler);
-    signal(SIGINT, sigHandler);
-    signal(SIGPIPE, SIG_IGN);
+    signal(SIGTERM, sigHandler); signal(SIGINT, sigHandler); signal(SIGPIPE, SIG_IGN);
 
-    std::string tunName = "tun_hub";
+    std::string tunName = "tun_hub", ttyPath = "/dev/ttyGS0";
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
-        if (a == "--tun" && i + 1 < argc) tunName = argv[++i];
+        if (a == "--tun" && i+1 < argc) tunName = argv[++i];
+        else if (a == "--tty" && i+1 < argc) ttyPath = argv[++i];
     }
 
     try {
         TunIface tun(tunName);
         Stats stats;
-        std::atomic<struct sockaddr_in*> peerAddr{nullptr};
-        std::atomic<bool> havePeer{false};
 
-        int udpFd = udpBind();
-        if (udpFd < 0)
-            throw std::runtime_error("UDP socket bind failed");
+        // 打开初始 TTY
+        int fd = ttyOpen(ttyPath);
+        if (fd < 0) throw std::runtime_error("无法打开 " + ttyPath);
+        gTtyFd.store(fd);
 
-        std::thread t1(tunToUdp, std::ref(tun), udpFd, std::ref(stats),
-                       std::ref(peerAddr), std::ref(havePeer));
-        std::thread t2(udpToTun, std::ref(tun), udpFd, std::ref(stats),
-                       std::ref(peerAddr), std::ref(havePeer));
+        std::thread t1(tunToTty, std::ref(tun), std::ref(stats));
+        std::thread t2(ttyToTun, std::ref(tun), std::ref(stats));
 
-        std::cout << "[main] IO threads started" << std::endl;
-
+        // 主循环: 监控 TTY fd 并自动重连
         while (gRunning) {
             sleep(1);
             static int tick = 0; tick++;
+
+            // 检测断线并重连
+            if (gTtyFd.load() < 0) {
+                std::cout << "[主] TTY 断开，重连中..." << std::endl;
+                fd = ttyOpen(ttyPath);
+                if (fd >= 0) {
+                    gTtyFd.store(fd);
+                    std::cout << "[主] TTY 重连成功 fd=" << fd << std::endl;
+                }
+            }
+
             if (tick % 5 == 0) {
-                std::cout << "[stats] TX=" << stats.tx << "/" << stats.txB
+                std::cout << "[统计] TX=" << stats.tx << "/" << stats.txB
                           << "B RX=" << stats.rx << "/" << stats.rxB
-                          << "B HB=" << stats.hb << " err=" << stats.err << std::endl;
+                          << "B err=" << stats.err << std::endl;
             }
         }
 
-        std::cout << "[main] exiting..." << std::endl;
         tun.close();
-        close(udpFd);
+        if (fd >= 0) ::close(fd);
         t1.join(); t2.join();
     } catch (const std::exception& e) {
-        std::cerr << "[FATAL] " << e.what() << std::endl;
+        std::cerr << "[致命] " << e.what() << std::endl;
         return 1;
     }
     return 0;

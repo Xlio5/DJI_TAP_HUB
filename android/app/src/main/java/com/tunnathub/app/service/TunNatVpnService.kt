@@ -26,7 +26,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.tunnathub.app.MainActivity
 import com.tunnathub.app.R
-import com.tunnathub.app.usb.EcmBridge
+import com.tunnathub.app.usb.UsbBridge
 import kotlinx.coroutines.*
 
 class TunNatVpnService : VpnService() {
@@ -54,7 +54,7 @@ class TunNatVpnService : VpnService() {
     }
 
     private var tunFd: ParcelFileDescriptor? = null
-    private var ecmBridge: EcmBridge? = null
+    private var usbBridge: UsbBridge? = null
     private var isStarted = false
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -87,29 +87,29 @@ class TunNatVpnService : VpnService() {
             return START_NOT_STICKY
         }
 
-        // 启动 ECM Bridge（带自动重试）
-        ecmBridge = EcmBridge(tunFd!!, protect = { socket -> this@TunNatVpnService.protect(socket) })
+        // 启动 USB Bridge（带自动重试）
+        usbBridge = UsbBridge(this, tunFd!!)
 
         scope.launch {
             var lastError: Exception? = null
             for (attempt in 1..3) {
                 try {
-                    updateNotification("ECM 连接中...($attempt/3)")
-                    ecmBridge!!.start(this)
+                    updateNotification("USB 连接中...($attempt/3)")
+                    usbBridge!!.start(this)
                     lastError = null
-                    break  // 成功，跳出重试循环
+                    break
                 } catch (e: Exception) {
-                    Log.w(TAG, "ECM Bridge 启动失败 (尝试 $attempt/3)", e)
+                    Log.w(TAG, "USB Bridge 启动失败 (尝试 $attempt/3)", e)
                     lastError = e
                     if (attempt < 3) {
                         updateNotification("重试中...(${attempt}/3)")
-                        delay(1500)  // 等待 ECM 网卡就绪
+                        delay(1500)
                     }
                 }
             }
             if (lastError != null) {
-                Log.e(TAG, "ECM Bridge 3 次重试均失败")
-                updateNotification("ECM 连接失败: ${lastError.message}")
+                Log.e(TAG, "USB Bridge 3 次重试均失败")
+                updateNotification("USB 连接失败: ${lastError.message}")
                 stopVpn()
             }
         }
@@ -147,8 +147,8 @@ class TunNatVpnService : VpnService() {
     private fun stopVpn() {
         isStarted = false
         isRunning = false
-        ecmBridge?.disconnect()
-        ecmBridge = null
+        usbBridge?.disconnect()
+        usbBridge = null
 
         try {
             tunFd?.close()

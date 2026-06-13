@@ -6,8 +6,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- USB Host 权限 -->
-    <!-- ECM/RNDIS 模式不再强制要求 USB Host (但保留权限声明以防兼容需要) -->
-    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+    <uses-feature android:name="android.hardware.usb.host" android:required="true" />
 
     <!-- VPN 权限 -->
     <uses-permission android:name="android.permission.BIND_VPN_SERVICE" />
@@ -48,13 +47,17 @@
             </intent-filter>
         </service>
 
-        <!-- 开机自启 (ECM 模式，无需 USB 热插拔监听) -->
+        <!-- 开机自启 + USB 热插拔 -->
         <receiver
             android:name=".BootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/device_filter" />
         </receiver>
 
     </application>

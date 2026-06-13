@@ -1,5 +1,5 @@
 [Unit]
-Description=TUN NAT Hub USB Ethernet Bridge (ECM/RNDIS)
+Description=TUN NAT Hub USB Bridge (g_serial Pure Bulk)
 After=network.target systemd-udev-settle.service
 Wants=systemd-udev-settle.service
 Requires=network.target
@@ -9,28 +9,25 @@ Type=simple
 User=root
 Group=root
 
-# Step 1: 加载 ECM/RNDIS Gadget (创建 usb0)
+# Step 1: 加载 g_serial Gadget (创建 /dev/ttyGS0)
 ExecStartPre=-/usr/local/bin/setup_gadget.sh
 
-# Step 2: 配置 usb0 + TUN + NAT + DHCP
+# Step 2: 配置 TUN + NAT
 ExecStartPre=/usr/local/bin/setup_nat.sh
 
-# Step 3: 守护进程（内部有 60 秒 usb0 等待逻辑）
+# Step 3: 守护进程（内部有 30 秒 TTY 等待逻辑）
 ExecStart=/usr/local/bin/usb_tund
 
 # 崩溃自动重启
 Restart=always
 RestartSec=5
 
-# 防止无限重启循环
 StartLimitBurst=5
 StartLimitIntervalSec=60
 
-# 资源限制
 LimitNOFILE=65536
 LimitNPROC=256
 
-# 日志
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=tun_nat_hub
