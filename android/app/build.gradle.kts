@@ -14,6 +14,10 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -33,6 +37,12 @@ android {
         jvmTarget = "17"
     }
 
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("src/main/jniLibs")
+        }
+    }
+
     buildFeatures {
         compose = true
     }
@@ -46,7 +56,9 @@ dependencies {
     // AndroidX
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-service:2.8.2")
+    implementation("androidx.lifecycle:lifecycle-process:2.8.2")
     implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("androidx.annotation:annotation:1.8.2")
 
     // Jetpack Compose
     implementation(platform("androidx.compose:compose-bom:2024.05.00"))
