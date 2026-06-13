@@ -31,14 +31,10 @@ add_executable(usb_tund
     src/tun_iface.cpp
 )
 
-target_include_directories(usb_tund PRIVATE
-    ${CMAKE_SOURCE_DIR}/../protocol
-)
-
+# ECM/RNDIS 模式不再依赖 frame.h，移除 protocol include
 target_link_libraries(usb_tund PRIVATE
     Threads::Threads
 )
 
 # 安装
 install(TARGETS usb_tund DESTINATION /usr/local/bin)
-install(FILES ${CMAKE_SOURCE_DIR}/../protocol/frame.h DESTINATION /usr/local/include/tun_nat_hub)

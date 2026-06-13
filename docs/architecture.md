@@ -2,6 +2,65 @@
 
 > 三方案并行设计 + 综合评审 · 2026-06-13  
 > **最终方案：以 MVP 为主体骨架，分阶段吸收稳健/性能设计**
+>
+> **2026-06-14 更新：新增 ECM/RNDIS 模式** — 针对 DJI RC 等受限 Android 设备的 USB 以太网方案
+
+---
+
+## 〇、架构演进：g_serial → ECM/RNDIS
+
+### 背景
+
+DJI RC PLUS 2 的 Android 系统限制了 `UsbManager.openDevice()`，非白名单 USB 设备返回 null。原有的 `g_serial` (VID=0x2207) 方案在 DJI RC 上无法打开 USB 设备。
+
+### ECM/RNDIS 方案原理
+
+ECM/RNDIS (USB Ethernet Gadget) 的关键优势：**Android 内核的 CDC-ECM/RNDIS 驱动在内核层认领设备**。这会创建 `usb0`/`rndis0` 网络接口，**完全不经过 Java UsbManager**。DJI RC 要阻止这个，等于禁用 Android 自带的 USB 网络共享功能。
+
+### 新架构数据流
+
+```
+Android VpnService                         RK3588
+┌──────────────────────┐    USB ECM       ┌─────────────────────┐
+│ TUN: 10.0.0.2/24     │◄═══════════════►│ usb0: 10.0.0.1/24   │
+│ Route: 192.168.88.0  │  内核 cdc_ether  │ g_ether gadget      │
+│                      │  创建 usb0       │                     │
+│ EcmBridge.kt         │                 │ usb_tund (UDP模式)  │
+│ UDP socket :8899     │  标准 IP 通信    │ TUN ↔ UDP 双线程    │
+│ protect() 防回环     │  无帧协议！       │                     │
+└──────────────────────┘                 └─────────┬───────────┘
+                                                    │ MASQUERADE
+                                           ┌────────▼───────────┐
+                                           │ LAN 192.168.88.x   │
+                                           └────────────────────┘
+```
+
+### 新旧对比
+
+| 方面 | g_serial (旧) | ECM/RNDIS (新) |
+|------|-------------|---------------|
+| USB 驱动 | g_serial (use_acm=0) | g_ether / g_rndis |
+| Android API | UsbManager + bulkTransfer | DatagramSocket (标准) |
+| 帧协议 | Magic(0x544E)+Length(2B)+Payload | 无 (UDP 数据报 = IP 包) |
+| 心跳 | PING/PONG 帧 (4 bytes) | 1-byte UDP 数据报 |
+| Android 权限 | USB Host (required=true) | 无额外权限 (仅 VpnService + INTERNET) |
+| DJI RC 兼容 | ❌ 被封锁 | ✅ 内核驱动通过 |
+| 传输开销 | 4 bytes/包 (帧头) | 8 bytes/包 (UDP 头) |
+| 数据边界 | 自定义 Magic 扫描 | UDP 天然数据边界 |
+
+### 关键文件变化
+
+| g_serial (旧) | ECM/RNDIS (新) | 说明 |
+|---------------|---------------|------|
+| `UsbBridge.kt` | `EcmBridge.kt` | USB Host API → DatagramSocket |
+| `FrameCodec.kt` | *(已删除)* | 不再需要帧协议 |
+| `main.cpp` (TTY) | `main.cpp` (UDP) | TTY I/O → UDP Socket I/O |
+| `setup_gadget.sh` (g_serial) | `setup_gadget.sh` (g_ether) | USB Gadget 模块切换 |
+| *(不需要)* | `protect()` 调用 | 防止 UDP 包回环到 TUN |
+
+### 保留的 g_serial 分支
+
+原 `master` 分支的 g_serial 方案保留在 `feature/openipc-raw-usb` 分支，供不需要 ECM/RNDIS 的场景使用（如标准 Android 手机直连 RK3588）。
 
 ---
 

@@ -33,7 +33,7 @@ echo "--- 安装 systemd 服务 ---"
 scp "$PROJECT_ROOT/ubuntu/config/tun_nat_hub.service" "$TARGET:/etc/systemd/system/tun_nat_hub.service"
 ssh "$TARGET" "systemctl daemon-reload"
 
-echo "--- 执行一次性 Gadget 配置 ---"
+echo "--- 执行 ECM/RNDIS Gadget 配置 ---"
 ssh "$TARGET" "/usr/local/bin/setup_gadget.sh"
 
 echo "--- 启动服务 ---"
@@ -45,3 +45,5 @@ ssh "$TARGET" "systemctl status tun_nat_hub --no-pager" || true
 echo ""
 echo "=== 部署完成 ==="
 echo "查看日志: ssh $TARGET journalctl -u tun_nat_hub -f"
+echo "验证 ECM:  ssh $TARGET ip addr show usb0"
+echo "验证 daemon: ssh $TARGET systemctl status tun_nat_hub"

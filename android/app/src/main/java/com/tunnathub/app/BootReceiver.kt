@@ -1,8 +1,8 @@
 /**
- * BootReceiver.kt — 开机自启 + USB 插拔自动连接
+ * BootReceiver.kt — 开机自启 + ECM 网卡检测自动连接
  *
- * BOOT_COMPLETED: 设备启动完成后自动启动 VPN
- * USB_DEVICE_ATTACHED: USB Gadget 插入时自动连接
+ * BOOT_COMPLETED: 设备启动完成后轮询 ECM 网卡接口，就绪后自动启动 VPN。
+ * 不再依赖 USB Host API，改为检测 ECM 网卡接口 (usb0/rndis0)。
  */
 
 package com.tunnathub.app
@@ -10,11 +10,10 @@ package com.tunnathub.app
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.hardware.usb.UsbManager
 import android.os.Build
 import android.util.Log
 import com.tunnathub.app.service.TunNatVpnService
-import com.tunnathub.app.usb.UsbBridge
+import java.net.NetworkInterface
 
 class BootReceiver : BroadcastReceiver() {
 
@@ -25,57 +24,33 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED -> {
-                Log.i(TAG, "设备启动完成，准备启动 VPN")
-                startVpnIfUsbReady(context)
+                Log.i(TAG, "设备启动完成，等待 ECM 网卡就绪")
+                waitForEcmAndStart(context)
             }
-            UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                val device = intent.getParcelableExtra<android.hardware.usb.UsbDevice>(UsbManager.EXTRA_DEVICE)
-                if (device != null &&
-                    device.vendorId == UsbBridge.USB_VID &&
-                    device.productId == UsbBridge.USB_PID) {
-                    Log.i(TAG, "TUN_NAT_HUB USB 已插入，重启 VPN")
-                    // 先停止再启动，确保用新的 USB 连接
-                    Thread {
-                        Thread.sleep(1500)
-                        context.stopService(Intent(context, TunNatVpnService::class.java))
-                        Thread.sleep(1000)
-                        startVpnService(context)
-                    }.start()
-                }
-            }
-            UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                val device = intent.getParcelableExtra<android.hardware.usb.UsbDevice>(UsbManager.EXTRA_DEVICE)
-                if (device != null &&
-                    device.vendorId == UsbBridge.USB_VID &&
-                    device.productId == UsbBridge.USB_PID) {
-                    Log.i(TAG, "TUN_NAT_HUB USB 已拔出，停止 VPN")
-                    context.stopService(Intent(context, TunNatVpnService::class.java))
-                }
-            }
+            // ECM 模式下不再需要 USB_DEVICE_ATTACHED/DETACHED
+            // 网卡状态变化由系统内核管理
         }
     }
 
     /**
-     * 检查 USB 设备是否就绪，然后启动 VPN
-     * 开机后 USB 枚举可能需要几秒，这里做简单延迟
+     * 轮询检测 ECM 网卡接口 (usb0/rndis0) 是否就绪。
+     * 开机后 USB Gadget 枚举可能需要数秒。
      */
-    private fun startVpnIfUsbReady(context: Context) {
-        // 用独立线程避免阻塞 BroadcastReceiver
+    private fun waitForEcmAndStart(context: Context) {
         Thread {
-            // 等待 USB 子系统就绪（最多 30 秒）
             for (i in 0 until 30) {
-                val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-                for ((_, device) in usbManager.deviceList) {
-                    if (device.vendorId == UsbBridge.USB_VID &&
-                        device.productId == UsbBridge.USB_PID) {
-                        Log.i(TAG, "USB 设备已就绪 (尝试 ${i}s)，启动 VPN")
+                val ifaces = NetworkInterface.getNetworkInterfaces()
+                while (ifaces.hasMoreElements()) {
+                    val name = ifaces.nextElement().name
+                    if (name in listOf("usb0", "usb1", "rndis0")) {
+                        Log.i(TAG, "ECM 网卡 $name 已就绪 (尝试 ${i}s)，启动 VPN")
                         startVpnService(context)
                         return@Thread
                     }
                 }
                 Thread.sleep(1000)
             }
-            Log.w(TAG, "USB 设备 30 秒未就绪，放弃自启")
+            Log.w(TAG, "ECM 网卡 30 秒未就绪，放弃自启")
         }.start()
     }
 
