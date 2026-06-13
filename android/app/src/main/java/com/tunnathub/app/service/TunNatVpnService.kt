@@ -55,6 +55,7 @@ class TunNatVpnService : VpnService() {
 
     private var tunFd: ParcelFileDescriptor? = null
     private var usbBridge: UsbBridge? = null
+    private var isStarted = false
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onCreate() {
@@ -64,6 +65,13 @@ class TunNatVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "VpnService 启动")
+
+        // 防止重复启动（Android 可能多次调用 onStartCommand）
+        if (isStarted) {
+            Log.w(TAG, "VpnService 已在运行，忽略重复启动")
+            return START_STICKY
+        }
+        isStarted = true
         isRunning = true
 
         // 前台服务
@@ -131,6 +139,7 @@ class TunNatVpnService : VpnService() {
      * 停止 VPN
      */
     private fun stopVpn() {
+        isStarted = false
         isRunning = false
         usbBridge?.disconnect()
         usbBridge = null

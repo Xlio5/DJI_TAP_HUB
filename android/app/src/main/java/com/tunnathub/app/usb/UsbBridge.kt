@@ -54,14 +54,11 @@ class UsbBridge(
         val device = findDevice() ?: throw IllegalStateException("未找到 TUN_NAT_HUB USB 设备")
         val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
-        if (!usbManager.hasPermission(device)) {
-            throw IllegalStateException("USB 权限未授予")
-        }
-
+        // 直接打开设备（device_filter.xml 已声明，应自动获得权限）
         usbConnection = usbManager.openDevice(device)
-            ?: throw IllegalStateException("无法打开 USB 设备")
+            ?: throw IllegalStateException("无法打开 USB 设备，请重新插拔 USB 线并授权")
 
-        // CDC ACM 设备：遍历所有接口找 Bulk 端点
+        // 遍历所有接口找 Bulk 端点
         findEndpoints(device)
 
         if (epOut == null || epIn == null) {

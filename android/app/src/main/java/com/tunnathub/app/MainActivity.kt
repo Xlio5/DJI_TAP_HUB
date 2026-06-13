@@ -1,8 +1,5 @@
 /**
- * MainActivity.kt — TUN_NAT_HUB 主界面
- *
- * 打开 App 自动启动 VPN。
- * 连接流程: USB 权限 → VPN 授权 → 启动 Service
+ * MainActivity.kt — 打开自动启动 VPN（串行授权: USB→VPN→Service）
  */
 
 package com.tunnathub.app
@@ -35,26 +32,22 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
-        private const val USB_PERMISSION_ACTION = "com.tunnathub.app.USB_PERMISSION"
+        private const val USB_PERM_ACTION = "com.tunnathub.app.USB_PERM"
     }
 
     private var usbDevice: UsbDevice? = null
-    private var autoStarted = false
     private var isVpnRunning = mutableStateOf(false)
+    private var pendingVpnStart = false  // USB 授权后启动 VPN
 
-    private val usbPermissionReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (USB_PERMISSION_ACTION == intent.action) {
-                synchronized(this) {
-                    val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
-                    if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
-                        Log.i(TAG, "USB 权限已授予")
-                        requestVpnPermission()
-                    } else {
-                        Log.w(TAG, "USB 权限被拒绝")
-                        Toast.makeText(this@MainActivity, "USB 权限被拒绝", Toast.LENGTH_LONG).show()
-                    }
-                }
+    private val usbReceiver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context, intent: Intent) {
+            if (USB_PERM_ACTION != intent.action) return
+            if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+                Log.i(TAG, "USB 权限已授予 → 请求 VPN 授权")
+                requestVpn()
+            } else {
+                Log.w(TAG, "USB 权限被拒绝")
+                pendingVpnStart = false
             }
         }
     }
@@ -63,149 +56,122 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == RESULT_OK) {
-            Log.i(TAG, "VPN 授权通过")
-            startVpnService()
+            Log.i(TAG, "VPN 授权通过 → 启动 Service")
+            startTunService()
         } else {
-            Toast.makeText(this, "VPN 权限未授予", Toast.LENGTH_LONG).show()
+            pendingVpnStart = false
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        registerReceiver(usbPermissionReceiver,
-            IntentFilter(USB_PERMISSION_ACTION),
+        registerReceiver(usbReceiver, IntentFilter(USB_PERM_ACTION),
             Context.RECEIVER_NOT_EXPORTED)
 
         usbDevice = findUsbDevice()
 
         setContent {
-            TunNatHubScreen(
+            TunNatScreen(
                 usbFound = usbDevice != null,
                 vpnRunning = isVpnRunning.value,
-                onStartStop = {
+                onTap = {
                     if (isVpnRunning.value) {
-                        stopVpnService()
+                        stopTunService()
                     } else {
-                        autoStartVpn()
+                        startAuthFlow()
                     }
                 }
             )
         }
 
-        // 自动启动 VPN
-        if (!autoStarted && usbDevice != null) {
-            autoStarted = true
-            autoStartVpn()
+        // 自动启动（仅首次）
+        if (usbDevice != null) {
+            startAuthFlow()
         }
     }
 
     override fun onResume() {
         super.onResume()
-        // 返回界面时刷新 VPN 状态
-        checkVpnStatus()
+        isVpnRunning.value = TunNatVpnService.isRunning
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        try { unregisterReceiver(usbPermissionReceiver) } catch (_: Exception) {}
+        try { unregisterReceiver(usbReceiver) } catch (_: Exception) {}
     }
 
-    private fun autoStartVpn() {
-        val device = usbDevice
-        if (device == null) {
-            Toast.makeText(this, "未检测到 USB 设备", Toast.LENGTH_LONG).show()
+    // ── 授权流程：USB → VPN → Service ──────────
+    private fun startAuthFlow() {
+        if (pendingVpnStart) return
+        pendingVpnStart = true
+
+        val dev = usbDevice
+        if (dev == null) {
+            pendingVpnStart = false
             return
         }
 
-        val usbManager = getSystemService(USB_SERVICE) as UsbManager
-        if (usbManager.hasPermission(device)) {
-            requestVpnPermission()
+        val um = getSystemService(USB_SERVICE) as UsbManager
+        if (um.hasPermission(dev)) {
+            // USB 已有权限，直接请求 VPN
+            requestVpn()
         } else {
-            val permissionIntent = PendingIntent.getBroadcast(
-                this, 0,
-                Intent(USB_PERMISSION_ACTION).apply { setPackage(packageName) },
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            )
-            usbManager.requestPermission(device, permissionIntent)
+            val pi = PendingIntent.getBroadcast(this, 0,
+                Intent(USB_PERM_ACTION).setPackage(packageName),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            um.requestPermission(dev, pi)
         }
     }
 
-    private fun requestVpnPermission() {
+    private fun requestVpn() {
         val intent = VpnService.prepare(this)
-        if (intent != null) {
-            vpnLauncher.launch(intent)
-        } else {
-            startVpnService()
-        }
+        if (intent != null) vpnLauncher.launch(intent)
+        else startTunService()
     }
 
-    private fun startVpnService() {
-        val intent = Intent(this, TunNatVpnService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
-        }
+    private fun startTunService() {
+        val i = Intent(this, TunNatVpnService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            startForegroundService(i) else startService(i)
         isVpnRunning.value = true
-        Log.i(TAG, "VPN Service 已启动")
+        pendingVpnStart = false
     }
 
-    private fun stopVpnService() {
+    private fun stopTunService() {
         stopService(Intent(this, TunNatVpnService::class.java))
         isVpnRunning.value = false
-    }
-
-    private fun checkVpnStatus() {
-        isVpnRunning.value = TunNatVpnService.isRunning
+        pendingVpnStart = false
     }
 
     private fun findUsbDevice(): UsbDevice? {
-        val usbManager = getSystemService(USB_SERVICE) as UsbManager
-        for ((_, device) in usbManager.deviceList) {
-            if (device.vendorId == UsbBridge.USB_VID && device.productId == UsbBridge.USB_PID) {
-                Log.i(TAG, "找到 USB 设备: ${device.deviceName}")
-                return device
-            }
-        }
-        Log.w(TAG, "未找到 TUN_NAT_HUB USB 设备")
+        val um = getSystemService(USB_SERVICE) as UsbManager
+        for ((_, d) in um.deviceList)
+            if (d.vendorId == UsbBridge.USB_VID && d.productId == UsbBridge.USB_PID) return d
         return null
     }
 }
 
 @Composable
-fun TunNatHubScreen(usbFound: Boolean, vpnRunning: Boolean, onStartStop: () -> Unit) {
+fun TunNatScreen(usbFound: Boolean, vpnRunning: Boolean, onTap: () -> Unit) {
     MaterialTheme {
         Scaffold(
-            topBar = {
-                @OptIn(ExperimentalMaterial3Api::class)
-                TopAppBar(title = { Text("TUN NAT Hub") })
-            }
+            topBar = { @OptIn(ExperimentalMaterial3Api::class)
+                TopAppBar(title = { Text("TUN NAT Hub") }) }
         ) { padding ->
             Column(
-                modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
+                Modifier.fillMaxSize().padding(padding).padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                Text(
-                    text = if (usbFound) "USB 设备已检测到" else "未检测到 USB 设备",
-                    style = MaterialTheme.typography.bodyLarge,
+                Text(if (usbFound) "USB 设备已检测到" else "未检测到 USB 设备",
                     color = if (usbFound) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.error
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Text(
-                    text = if (vpnRunning) "● VPN 隧道已连接" else "○ VPN 未连接",
-                    style = MaterialTheme.typography.bodyLarge,
+                            else MaterialTheme.colorScheme.error)
+                Spacer(Modifier.height(12.dp))
+                Text(if (vpnRunning) "● VPN 已连接" else "○ VPN 未连接",
                     color = if (vpnRunning) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                Button(onClick = onStartStop, enabled = usbFound) {
+                            else MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(20.dp))
+                Button(onClick = onTap, enabled = usbFound) {
                     Text(if (vpnRunning) "停止 VPN" else "启动 VPN")
                 }
             }
