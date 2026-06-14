@@ -281,6 +281,62 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                         if (resolutionText.isNotEmpty())
                             Text(resolutionText, fontSize = 11.sp, color = Color(0xFF94A3B8))
 
+                        Spacer(Modifier.height(8.dp))
+                        HorizontalDivider(color = Color(0xFF1E293B))
+
+                        // ── 延迟测试 ──
+                        var latencyText by remember { mutableStateOf("") }
+                        var testing by remember { mutableStateOf(false) }
+                        Row(modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("隧道延迟", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            Button(onClick = {
+                                if (!testing && vpnRunning) {
+                                    testing = true; latencyText = "测试中..."
+                                    Thread {
+                                        try {
+                                            val s = java.net.DatagramSocket()
+                                            s.soTimeout = 2000
+                                            val addr = java.net.InetSocketAddress("10.0.0.1", 9999)
+                                            val buf = java.nio.ByteBuffer.allocate(20)
+                                            val rtts = mutableListOf<Double>()
+                                            var drops = 0
+                                            for (i in 0 until 30) {
+                                                buf.clear()
+                                                val t0 = System.nanoTime()
+                                                buf.putLong(t0)
+                                                val pkt = java.net.DatagramPacket(buf.array(), buf.position(), addr)
+                                                s.send(pkt)
+                                                try {
+                                                    val resp = java.net.DatagramPacket(ByteArray(256), 256)
+                                                    s.receive(resp)
+                                                    val t1 = System.nanoTime()
+                                                    val sent = java.nio.ByteBuffer.wrap(resp.data).getLong()
+                                                    rtts.add((t1 - sent) / 1_000_000.0)
+                                                } catch (_: java.net.SocketTimeoutException) { drops++ }
+                                            }
+                                            s.close()
+                                            if (rtts.isNotEmpty()) {
+                                                rtts.sort()
+                                                val avg = rtts.average()
+                                                val p50 = rtts[rtts.size / 2]
+                                                val p95 = rtts[(rtts.size * 0.95).toInt()]
+                                                latencyText = "%.1f / %.1f / %.1f ms (avg/p50/p95, 丢包=$drops)".format(avg, p50, p95)
+                                            } else { latencyText = "全部丢包 ($drops/30)" }
+                                        } catch (e: Exception) { latencyText = "失败: ${e.message}" }
+                                        testing = false
+                                    }.start()
+                                }
+                            }, enabled = vpnRunning && !testing, modifier = Modifier.height(30.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))
+                            ) { Text(if (testing) "⏳" else "⏱ 测延迟", fontSize = 11.sp) }
+                        }
+                        if (latencyText.isNotEmpty())
+                            Text(latencyText, fontSize = 10.sp, color = Color(0xFF38BDF8), modifier = Modifier.padding(top = 2.dp))
+
                         Spacer(modifier = Modifier.weight(1f))
 
                         HorizontalDivider(color = Color(0xFF1E293B), modifier = Modifier.padding(vertical = 8.dp))
