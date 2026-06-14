@@ -296,35 +296,26 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                                 if (!testing && vpnRunning) {
                                     testing = true; latencyText = "测试中..."
                                     Thread {
+                                        val rtts = mutableListOf<Double>()
+                                        var drops = 0
                                         try {
-                                            val s = java.net.DatagramSocket()
-                                            s.soTimeout = 2000
-                                            val addr = java.net.InetSocketAddress("10.0.0.1", 9999)
-                                            val buf = java.nio.ByteBuffer.allocate(20)
-                                            val rtts = mutableListOf<Double>()
-                                            var drops = 0
-                                            for (i in 0 until 30) {
-                                                buf.clear()
-                                                val t0 = System.nanoTime()
-                                                buf.putLong(t0)
-                                                val pkt = java.net.DatagramPacket(buf.array(), buf.position(), addr)
-                                                s.send(pkt)
+                                            for (i in 0 until 10) {
                                                 try {
-                                                    val resp = java.net.DatagramPacket(ByteArray(256), 256)
-                                                    s.receive(resp)
+                                                    val t0 = System.nanoTime()
+                                                    val s = java.net.Socket()
+                                                    s.connect(java.net.InetSocketAddress("10.0.0.1", 9999), 3000)
                                                     val t1 = System.nanoTime()
-                                                    val sent = java.nio.ByteBuffer.wrap(resp.data).getLong()
-                                                    rtts.add((t1 - sent) / 1_000_000.0)
-                                                } catch (_: java.net.SocketTimeoutException) { drops++ }
+                                                    s.close()
+                                                    rtts.add((t1 - t0) / 1_000_000.0)
+                                                } catch (_: Exception) { drops++ }
                                             }
-                                            s.close()
                                             if (rtts.isNotEmpty()) {
                                                 rtts.sort()
                                                 val avg = rtts.average()
                                                 val p50 = rtts[rtts.size / 2]
                                                 val p95 = rtts[(rtts.size * 0.95).toInt()]
-                                                latencyText = "%.1f / %.1f / %.1f ms (avg/p50/p95, 丢包=$drops)".format(avg, p50, p95)
-                                            } else { latencyText = "全部丢包 ($drops/30)" }
+                                                latencyText = "%.1f/%.1f/%.1f ms (avg/p50/p95, 丢包=$drops)".format(avg, p50, p95)
+                                            } else { latencyText = "全部丢包 ($drops/10)" }
                                         } catch (e: Exception) { latencyText = "失败: ${e.message}" }
                                         testing = false
                                     }.start()

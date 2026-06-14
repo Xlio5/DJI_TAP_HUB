@@ -40,6 +40,14 @@ class TunNatVpnService : VpnService() {
         @Volatile var isRunning = false
             private set
 
+        /** 当前 VpnService 实例（供 protectSocket 静态调用） */
+        @Volatile private var instance: TunNatVpnService? = null
+
+        /** 静态 protect UDP socket，供外部（如 MainActivity 延迟测试）使用 */
+        fun protectSocket(socket: java.net.DatagramSocket): Boolean {
+            return instance?.protect(socket) ?: false
+        }
+
         // TUN 配置
         private const val TUN_ADDRESS = "10.0.0.2"
         private const val TUN_PREFIX = 24
@@ -60,6 +68,7 @@ class TunNatVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         createNotificationChannel()
     }
 
