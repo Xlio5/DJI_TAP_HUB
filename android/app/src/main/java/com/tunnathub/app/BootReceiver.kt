@@ -7,6 +7,7 @@
 
 package com.tunnathub.app
 
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -56,19 +57,31 @@ class BootReceiver : BroadcastReceiver() {
     }
 
     /**
-     * 检查 USB 设备是否就绪，然后启动 VPN
+     * 检查 USB 设备是否就绪，请求权限后启动 VPN
      * 开机后 USB 枚举可能需要几秒，这里做简单延迟
      */
     private fun startVpnIfUsbReady(context: Context) {
-        // 用独立线程避免阻塞 BroadcastReceiver
         Thread {
-            // 等待 USB 子系统就绪（最多 30 秒）
             for (i in 0 until 30) {
                 val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
                 for ((_, device) in usbManager.deviceList) {
                     if (device.vendorId == UsbBridge.USB_VID &&
                         device.productId == UsbBridge.USB_PID) {
-                        Log.i(TAG, "USB 设备已就绪 (尝试 ${i}s)，启动 VPN")
+                        Log.i(TAG, "USB 设备已就绪 (尝试 ${i}s)")
+                        // 检查并请求 USB 权限（冷启后可能丢失）
+                        if (!usbManager.hasPermission(device)) {
+                            Log.w(TAG, "USB 权限未授予，请求中...")
+                            val pi = PendingIntent.getBroadcast(
+                                context, 0,
+                                Intent(UsbManager.ACTION_USB_DEVICE_ATTACHED).setPackage(context.packageName),
+                                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                            )
+                            usbManager.requestPermission(device, pi)
+                            // 权限是异步的，等 1 秒后重试
+                            Thread.sleep(1000)
+                            continue
+                        }
+                        Log.i(TAG, "USB 权限已授予，启动 VPN")
                         startVpnService(context)
                         return@Thread
                     }

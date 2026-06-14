@@ -10,7 +10,11 @@
 
 package com.tunnathub.app.usb
 
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.hardware.usb.*
 import android.os.ParcelFileDescriptor
 import android.util.Log
@@ -20,6 +24,8 @@ import kotlin.coroutines.coroutineContext
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class UsbBridge(
     private val context: Context,
@@ -56,12 +62,35 @@ class UsbBridge(
 
     /**
      * 启动双协程转发
+     * 冷启/重启后 USB 权限可能丢失，先检查并请求权限再打开设备
      */
     suspend fun start(scope: CoroutineScope) {
         val device = findDevice() ?: throw IllegalStateException("未找到 TUN_NAT_HUB USB 设备")
         val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
-        // 直接打开设备（device_filter.xml 已声明，应自动获得权限）
+        // 检查 USB 权限，没有则请求（冷启后权限可能丢失）
+        if (!usbManager.hasPermission(device)) {
+            Log.w(TAG, "USB 权限未授予，正在请求...")
+            val latch = CountDownLatch(1)
+            val permAction = "com.tunnathub.app.USB_PERM"
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(ctx: Context, intent: Intent) {
+                    if (permAction == intent.action) {
+                        Log.i(TAG, "USB 权限结果: ${intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)}")
+                        latch.countDown()
+                    }
+                }
+            }
+            context.registerReceiver(receiver, IntentFilter(permAction), Context.RECEIVER_NOT_EXPORTED)
+            val pi = PendingIntent.getBroadcast(context, 0,
+                Intent(permAction).setPackage(context.packageName),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            usbManager.requestPermission(device, pi)
+            // 等待权限授予（device_filter.xml 匹配时自动授予，无弹窗）
+            latch.await(2, TimeUnit.SECONDS)
+            try { context.unregisterReceiver(receiver) } catch (_: Exception) {}
+        }
+
         usbConnection = usbManager.openDevice(device)
             ?: throw IllegalStateException("无法打开 USB 设备，请重新插拔 USB 线并授权")
 

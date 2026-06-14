@@ -5,6 +5,7 @@
 package com.tunnathub.app
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Bundle
 import android.os.Handler
 import android.os.ResultReceiver
@@ -32,7 +33,10 @@ import org.easydarwin.video.EasyPlayerClient
 fun PlayerScreen(modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
 
-    var rtspUrl by remember { mutableStateOf("rtsp://192.168.88.100:554/stream1") }
+    // 持久化 RTSP 地址（SharedPreferences）
+    val prefs = ctx.getSharedPreferences("tun_nat_hub", Context.MODE_PRIVATE)
+    val savedUrl = prefs.getString("rtsp_url", "rtsp://192.168.88.100:554/stream1") ?: "rtsp://192.168.88.100:554/stream1"
+    var rtspUrl by remember { mutableStateOf(savedUrl) }
     var isPlaying by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("") }
     var surfaceViewRef by remember { mutableStateOf<SurfaceView?>(null) }
@@ -107,6 +111,8 @@ fun PlayerScreen(modifier: Modifier = Modifier) {
                     statusText = "已停止"
                 } else {
                     val sv = surfaceViewRef ?: return@FilledIconButton
+                    // 保存 RTSP 地址到本地
+                    prefs.edit().putString("rtsp_url", rtspUrl).apply()
                     playUrl(ctx, rtspUrl, sv.holder, receiver) { client ->
                         playerRef = client
                         isPlaying = true
