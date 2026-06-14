@@ -148,8 +148,8 @@ public class EasyPlayerClient implements Client.SourceCallBack {
     }
 
     private static class FrameInfoQueue extends PriorityQueue<Client.FrameInfo> {
-        public static final int CAPACITY = 500;
-        public static final int INITIAL_CAPACITY = 300;
+        public static final int CAPACITY = 20;       // TUN_NAT_HUB: USB 直连低延迟 (原 500)
+        public static final int INITIAL_CAPACITY = 10; // (原 300)
 
         public FrameInfoQueue() {
             super(INITIAL_CAPACITY, new Comparator<Client.FrameInfo>() {
@@ -1051,7 +1051,7 @@ public class EasyPlayerClient implements Client.SourceCallBack {
                                         if (sleepTime > 0) {
                                             sleepTime %= 100000;
                                             long cache = mNewestStample - frameInfo.stamp;
-                                            sleepTime = fixSleepTime(sleepTime, cache, 50000);
+                                            sleepTime = fixSleepTime(sleepTime, cache, 5000); // TUN_NAT_HUB: 5ms jitter buffer (原 50ms)
                                             if (sleepTime > 0) {
                                                 Thread.sleep(sleepTime / 1000);
                                             }
@@ -1065,7 +1065,7 @@ public class EasyPlayerClient implements Client.SourceCallBack {
                                     do {
                                         if (frameInfo != null) {
                                             byte[] pBuf = frameInfo.buffer;
-                                            index = mCodec.dequeueInputBuffer(10);
+                                            index = mCodec.dequeueInputBuffer(1); // TUN_NAT_HUB: 1ms (原 10ms)
                                             if (false) throw new IllegalStateException("fake state");
                                             if (index >= 0) {
                                                 ByteBuffer buffer = mCodec.getInputBuffers()[index];
@@ -1079,7 +1079,7 @@ public class EasyPlayerClient implements Client.SourceCallBack {
                                                 frameInfo = null;
                                             }
                                         }
-                                        index = mCodec.dequeueOutputBuffer(info, 10); //
+                                        index = mCodec.dequeueOutputBuffer(info, 1); // TUN_NAT_HUB: 1ms (原 10ms)
                                         switch (index) {
                                             case MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED:
                                                 Log.i(TAG, "INFO_OUTPUT_BUFFERS_CHANGED");
@@ -1128,7 +1128,7 @@ public class EasyPlayerClient implements Client.SourceCallBack {
 
                                                     {
                                                         long cache = mNewestStample - lastFrameStampUs;
-                                                        newSleepUs = fixSleepTime(sleepUs, cache, 100000);
+                                                        newSleepUs = fixSleepTime(sleepUs, cache, 10000); // TUN_NAT_HUB: 10ms (原 100ms)
                                                         // Log.d(TAG, String.format("sleepUs:%d,newSleepUs:%d,Cache:%d", sleepUs, newSleepUs, cache));
                                                     }
                                                 }
