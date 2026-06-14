@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- USB 插头主体 -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M38,38 L70,38 Q72,38 72,40 L72,48 Q72,50 70,50 L62,50 L62,58 Q62,60 60,60 L48,60 Q46,60 46,58 L46,50 L38,50 Q36,50 36,48 L36,40 Q36,38 38,38 Z" />
+
+    <!-- USB 插头金属片 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M42,42 L48,42 L48,47 L42,47 Z M52,42 L58,42 L58,47 L52,47 Z M62,42 L66,42 L66,47 L62,47 Z" />
+
+    <!-- 信号波纹1 -->
+    <path
+        android:fillColor="#22C55E"
+        android:pathData="M28,70 Q30,62 34,56"
+        android:strokeWidth="2.5"
+        android:strokeColor="#22C55E"
+        android:fillAlpha="0" />
+
+    <!-- 信号波纹2 -->
+    <path
+        android:fillColor="#22C55E"
+        android:pathData="M24,76 Q28,64 36,54"
+        android:strokeWidth="2.5"
+        android:strokeColor="#22C55E"
+        android:fillAlpha="0" />
+
+    <!-- 信号波纹3 -->
+    <path
+        android:fillColor="#22C55E"
+        android:pathData="M20,82 Q26,66 38,52"
+        android:strokeWidth="2.5"
+        android:strokeColor="#22C55E"
+        android:fillAlpha="0" />
+
+    <!-- TUN 文字标识 -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M44,72 L52,72 L52,85 L50,85 L50,78 L48,85 L46,85 L44,78 L44,85 L42,85 L42,72 L44,72 Z M54,72 L62,72 L62,74 L56,74 L56,77 L60,77 L60,79 L56,79 L56,83 L62,83 L62,85 L54,85 L54,72 Z M64,72 L72,72 L72,74 L66,74 L66,77 L70,77 L70,79 L66,79 L66,85 L64,85 L64,72 Z" />
+
+    <!-- 数据流箭头（向上） -->
+    <path
+        android:fillColor="#F59E0B"
+        android:pathData="M80,60 L86,60 L86,76 L90,76 L83,84 L76,76 L80,76 Z" />
+
+    <!-- 数据流箭头（向下） -->
+    <path
+        android:fillColor="#22C55E"
+        android:pathData="M80,52 L76,52 L76,60 L80,60 Z M83,56 L90,48 L76,48 Z" />
+
+    <!-- 网线接口 -->
+    <path
+        android:fillColor="#64748B"
+        android:pathData="M46,88 L62,88 Q64,88 64,90 L64,96 Q64,98 62,98 L46,98 Q44,98 44,96 L44,90 Q44,88 46,88 Z" />
+
+    <!-- 网线指示灯 -->
+    <path
+        android:fillColor="#22C55E"
+        android:pathData="M48,92 m-1.5,0 a1.5,1.5 0,1 1,3 0 a1.5,1.5 0,1 1,-3 0" />
+    <path
+        android:fillColor="#F59E0B"
+        android:pathData="M54,92 m-1.5,0 a1.5,1.5 0,1 1,3 0 a1.5,1.5 0,1 1,-3 0" />
+</vector>

@@ -66,10 +66,11 @@ class TunNatVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "VpnService 启动")
 
-        // 防重复 + 自动重启（USB 热插拔后需用新连接）
+        // 已在运行，忽略重复的启动请求
+        // USB 热插拔由 BootReceiver 先停止再启动，不走这里
         if (isStarted) {
-            Log.w(TAG, "VpnService 已在运行，停在旧连接并重启")
-            stopVpn()
+            Log.w(TAG, "VpnService 已在运行，忽略重复启动")
+            return START_STICKY
         }
         isStarted = true
         isRunning = true
@@ -87,8 +88,15 @@ class TunNatVpnService : VpnService() {
             return START_NOT_STICKY
         }
 
-        // 启动 USB Bridge（带自动重试）
+        // 启动 USB Bridge（带自动重试 + 回调更新通知）
         usbBridge = UsbBridge(this, tunFd!!)
+        usbBridge!!.onLinkStateChange = { state ->
+            when (state) {
+                com.tunnathub.app.usb.LinkState.Connected -> updateNotification("已连接 (USB Bulk)")
+                com.tunnathub.app.usb.LinkState.Disconnected -> updateNotification("USB 已断开")
+                else -> updateNotification("重连中...")
+            }
+        }
 
         scope.launch {
             var lastError: Exception? = null
