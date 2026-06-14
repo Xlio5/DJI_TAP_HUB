@@ -174,8 +174,8 @@ private fun playUrl(
         // 低延迟缓冲：USB 直连 0 抖动，50ms 足够
         client.start(
             url,
-            org.easydarwin.video.Client.TRANSTYPE_TCP,
-            50,  // bufferTime: 默认0=1000ms → 50ms 超低延迟
+            org.easydarwin.video.Client.TRANSTYPE_UDP,
+            1,  // bufferTime: 1ms（USB 直连零抖动）
             org.easydarwin.video.Client.EASY_SDK_VIDEO_FRAME_FLAG or
             org.easydarwin.video.Client.EASY_SDK_AUDIO_FRAME_FLAG,
             "", "", null
