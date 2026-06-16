@@ -1,7 +1,7 @@
 #!/bin/bash
 # setup_nat.sh - Auto-detect LAN interface and configure TUN + NAT
 # Waits for LAN interface to get IP via DHCP (cold boot)
-set -e
+# NOTE: no set -e, best-effort startup
 
 TUN_NAME="tun_hub"
 TUN_IP="10.0.0.1"

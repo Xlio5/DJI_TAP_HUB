@@ -3,10 +3,8 @@
 # Impersonates RTL8812AU VID/PID to bypass DJI RC USB whitelist
 set -e
 
-if [ -c /dev/ttyGS0 ]; then
-    echo "g_serial already ready (/dev/ttyGS0)"
-    exit 0
-fi
+# Always reload with correct VID/PID, even if ttyGS0 already exists
+# (cold boot may load g_serial with default VID before this script runs)
 
 echo "=== Loading g_serial Gadget (RTL8812AU VID/PID) ==="
 
