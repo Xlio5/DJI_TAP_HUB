@@ -2,11 +2,12 @@
 """TUN_NAT_HUB Web 配置面板 — 零依赖，纯标准库。"""
 import http.server, json, subprocess, urllib.parse, time, sys, re
 
+VERSION = "1.1.0"
 PORT = 8080
 CFG_FILE = "/home/xlong/tun_nat_hub_config.json"
 
 def load_cfg():
-    defaults = {"rtsp_url":"rtsp://192.168.88.100:554/stream1","lan_subnet":"192.168.88.0/24","tun_subnet":"10.0.0.0/24","forwards":[]}
+    defaults = {"rtsp_url":"rtsp://192.168.88.100:554/stream1","lan_subnet":"192.168.88.0/24","tun_subnet":"10.0.0.0/24","forwards":[],"cameras":[{"name":"Camera 1","url":"rtsp://192.168.88.101:554/stream1"}]}
     try:
         with open(CFG_FILE) as f:
             cfg = json.load(f)
@@ -154,7 +155,7 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 </head>
 <body>
 <header>
-  <span class="logo">TUN NAT HUB</span><span class="ver">v5 · ECM-RNDIS bypass</span>
+  <span class="logo">TUN NAT HUB</span><span class="ver">v''' + VERSION + ''' · g_serial RTL8812AU</span>
   <span style="flex:1"></span>
   <span id="header-status">⏳</span>
 </header>
@@ -271,12 +272,14 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
   <div class="tab-content" id="tab-config">
     <div class="grid2">
       <div class="card">
-        <h3>📹 RTSP 视频流配置</h3>
+        <h3>📹 多路摄像头管理</h3>
+        <div style="color:var(--dim);font-size:0.8em;margin-bottom:6px">添加多个摄像头。App 可通过 <code>/api/cameras</code> 获取列表切换源。<br>Web 面板修改后 App 自动同步。</div>
         <div class="form-row">
-          <input id="rtsp-url" type="text" placeholder="rtsp://192.168.88.100:554/stream1">
-          <button class="btn btn-blue" onclick="saveRtsp()">💾 保存</button>
+          <input id="cam-name" type="text" placeholder="名称" style="flex:0;width:100px">
+          <input id="cam-url" type="text" placeholder="rtsp://192.168.88.101:554/stream1">
+          <button class="btn btn-green" onclick="addCam()">＋ 添加</button>
         </div>
-        <div style="color:var(--dim);font-size:0.8em;margin-top:6px">摄像头地址。DJI RC App 上点播放时使用此 URL。<br>如果在 App 上改过，在这里改完需要重启 App。</div>
+        <ul class="rules" id="cam-list"><li style="color:var(--dim)">加载中...</li></ul>
       </div>
 
       <div class="card">
@@ -399,6 +402,17 @@ function switchTab(name) {
   document.getElementById("tab-"+name).classList.add("active");
 }
 
+async function fetchHb(){
+  try{const r=await fetch(API+"/heartbeat");const h=await r.json();
+  document.getElementById("hb-daemon").innerHTML=h.daemon?"✅ 运行":"❌ 停止";
+  document.getElementById("hb-daemon").style.color=h.daemon?"var(--green)":"var(--red)";
+  document.getElementById("hb-tty").innerHTML=h.tty_ready?"✅ 就绪":"❌ 未检测";
+  document.getElementById("hb-tty").style.color=h.tty_ready?"var(--green)":"var(--red)";
+  document.getElementById("hb-tun").innerHTML=h.tun_up?"✅ UP":"❌ DOWN";
+  document.getElementById("hb-tun").style.color=h.tun_up?"var(--green)":"var(--red)";
+  document.getElementById("hb-time").innerHTML=h.uptime_since||"--";
+  }catch(e){}
+}
 async function refresh() {
   const sys = await getJ(API+"/system");
   const st = await getJ(API+"/stats");
@@ -417,6 +431,12 @@ async function refresh() {
 
   // Config tab
   document.getElementById("rtsp-url").value = cfg.rtsp_url||"";
+  // Camera list
+  let cl = "";
+  if (cfg.cameras && cfg.cameras.length>0) {
+    cfg.cameras.forEach((c,i)=>{cl+=`<li><span>${c.name}: ${c.url}</span><button class="btn btn-red btn-sm" onclick="delCam(${i})">删除</button></li>`});
+  } else {cl="<li style='color:var(--dim)'>暂无摄像头，请添加</li>";}
+  document.getElementById("cam-list").innerHTML = cl;
   let fl = "";
   if (cfg.forwards && cfg.forwards.length>0) {
     cfg.forwards.forEach(f=>{fl+=`<li><span>${f.proto.toUpperCase()} :${f.port} → ${f.dest}</span><button class="btn btn-red btn-sm" onclick="delFwd(${f.port})">删除</button></li>`});
@@ -459,9 +479,39 @@ async function saveRtsp(){
   await fetch(API+"/config/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rtsp_url:url})});
   alert("已保存!");
 }
-refresh();setInterval(refresh,2000);
+async function addCam(){
+  const name=document.getElementById("cam-name").value||"Camera";
+  const url=document.getElementById("cam-url").value;
+  if(!url){alert("请输入 RTSP 地址");return}
+  const r=await fetch(API+"/camera/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,url})});
+  if(r.ok){document.getElementById("cam-name").value="";document.getElementById("cam-url").value="";refresh();}else alert("添加失败");}
+async function delCam(idx){
+  const r=await fetch(API+"/camera/del",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({index:idx})});
+  if(r.ok) refresh();else alert("删除失败");}
+fetchHb();refresh();setInterval(refresh,2000);setInterval(fetchHb,5000);
 </script>
 </body></html>"""
+
+# ── 心跳状态（供 App 轮询） ───────────────────────────────────
+def get_heartbeat():
+    daemon = "active" in subprocess.run(["systemctl","is-active","tun_nat_hub"],capture_output=True,text=True).stdout
+    tty = subprocess.run(["test","-c","/dev/ttyGS0"],capture_output=True).returncode == 0
+    tun = subprocess.run("ip addr show tun_hub 2>/dev/null|grep -q 'inet '",shell=True,capture_output=True).returncode == 0
+    usb_vid = 0
+    try:
+        with open("/sys/module/g_serial/parameters/idVendor") as f: usb_vid = int(f.read().strip())
+    except: pass
+    uptime = subprocess.run(["uptime","-s"],capture_output=True,text=True).stdout.strip()
+    return {
+        "version": VERSION,
+        "daemon": daemon,
+        "tty_ready": tty,
+        "tun_up": tun,
+        "usb_vid": usb_vid,
+        "usb_pid": int(open("/sys/module/g_serial/parameters/idProduct").read().strip()) if tty else 0,
+        "timestamp": int(time.time()),
+        "uptime_since": uptime,
+    }
 
 # ══════════════════════════════════════════════════════════
 # HTTP Handler
@@ -479,6 +529,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if p in ("/","/index.html"):
             self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.end_headers()
             self.wfile.write(HTML.encode())
+        elif p == "/api/version": self._json({"version":VERSION})
+        elif p == "/api/heartbeat": self._json(get_heartbeat())
         elif p == "/api/system": self._json(get_system())
         elif p == "/api/stats": self._json(get_stats())
         elif p == "/api/config": self._json(load_cfg())
@@ -501,7 +553,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif p == "/api/config/save":
             cfg = load_cfg()
             if "rtsp_url" in body: cfg["rtsp_url"] = body["rtsp_url"]
+            if "cameras" in body: cfg["cameras"] = body["cameras"]
             save_cfg(cfg); self._json({"ok":True})
+        elif p == "/api/camera/add":
+            cfg = load_cfg()
+            cfg["cameras"].append({"name":body.get("name","Camera"),"url":body.get("url","")})
+            save_cfg(cfg); self._json({"ok":True})
+        elif p == "/api/camera/del":
+            cfg = load_cfg()
+            idx = body.get("index",-1)
+            if 0 <= idx < len(cfg["cameras"]):
+                cfg["cameras"].pop(idx)
+                save_cfg(cfg); self._json({"ok":True})
+            else: self._json({"ok":False})
         else: self.send_response(404); self.end_headers()
     def do_OPTIONS(self):
         self.send_response(200); self.send_header("Access-Control-Allow-Origin","*"); self.send_header("Access-Control-Allow-Methods","GET, POST, OPTIONS"); self.send_header("Access-Control-Allow-Headers","Content-Type"); self.end_headers()

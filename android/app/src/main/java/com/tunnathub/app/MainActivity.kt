@@ -157,6 +157,62 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
     var playerRef by remember { mutableStateOf<EasyPlayerClient?>(null) }
     var sidebarExpanded by remember { mutableStateOf(true) }
 
+    // ── 心跳状态 ──
+    var hbDaemon by remember { mutableStateOf(false) }
+    var hbTty by remember { mutableStateOf(false) }
+    var hbTun by remember { mutableStateOf(false) }
+    var hbTime by remember { mutableStateOf("") }
+    var hbCount by remember { mutableStateOf(0) }
+
+    // ── 摄像头列表 ──
+    data class CamInfo(val name: String, val url: String)
+    var cameras by remember { mutableStateOf(listOf<CamInfo>()) }
+    var selectedCam by remember { mutableStateOf(0) }
+
+    // ── 心跳轮询 ──
+    LaunchedEffect(vpnRunning) {
+        if (!vpnRunning) return@LaunchedEffect
+        while (vpnRunning) {
+            try {
+                val url = java.net.URL("http://10.0.0.1:8080/api/heartbeat")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 2000
+                conn.readTimeout = 2000
+                val text = conn.inputStream.bufferedReader().readText()
+                hbDaemon = text.contains("\"daemon\": true")
+                hbTty = text.contains("\"tty_ready\": true")
+                hbTun = text.contains("\"tun_up\": true")
+                hbTime = (Regex("\"uptime_since\": \"([^\"]+)\"").find(text)?.groupValues?.get(1)) ?: ""
+                hbCount++
+            } catch (_: Exception) {
+                hbDaemon = false; hbTty = false; hbTun = false
+            }
+            kotlinx.coroutines.delay(5000)
+        }
+    }
+
+    // ── 加载摄像头列表 ──
+    LaunchedEffect(vpnRunning) {
+        if (!vpnRunning) return@LaunchedEffect
+        try {
+            val url = java.net.URL("http://10.0.0.1:8080/api/config")
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 2000
+            conn.readTimeout = 2000
+            val text = conn.inputStream.bufferedReader().readText()
+            // Parse cameras array from JSON manually
+            val camList = mutableListOf<CamInfo>()
+            val camPattern = Regex("\"name\": \"([^\"]+)\"[^}]*\"url\": \"([^\"]+)\"")
+            camPattern.findAll(text).forEach { m ->
+                camList.add(CamInfo(m.groupValues[1], m.groupValues[2]))
+            }
+            if (camList.isNotEmpty()) {
+                cameras = camList
+                if (rtspUrl.isEmpty()) rtspUrl = camList[0].url
+            }
+        } catch (_: Exception) {}
+    }
+
     val receiver = remember {
         object : ResultReceiver(Handler(ctx.mainLooper)) {
             override fun onReceiveResult(code: Int, data: Bundle?) {
@@ -329,7 +385,61 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                         if (latencyText.isNotEmpty())
                             Text(latencyText, fontSize = 10.sp, color = Color(0xFF38BDF8), modifier = Modifier.padding(top = 2.dp))
 
+                        // ── 心跳状态 ──
+                        if (vpnRunning && hbCount > 0) {
+                            Spacer(Modifier.height(6.dp))
+                            HorizontalDivider(color = Color(0xFF1E293B))
+                            Spacer(Modifier.height(4.dp))
+                            Text("❤️ 链路状态", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            Spacer(Modifier.height(2.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(modifier = Modifier.size(6.dp), shape = androidx.compose.foundation.shape.CircleShape,
+                                    color = if (hbDaemon) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
+                                Spacer(Modifier.width(4.dp))
+                                Text(if (hbDaemon) "Daemon" else "Daemon 离线", fontSize = 10.sp,
+                                    color = if (hbDaemon) Color(0xFF22C55E) else Color(0xFFEF4444))
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(modifier = Modifier.size(6.dp), shape = androidx.compose.foundation.shape.CircleShape,
+                                    color = if (hbTty) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
+                                Spacer(Modifier.width(4.dp))
+                                Text(if (hbTty) "ttyGS0" else "ttyGS0 未检测", fontSize = 10.sp,
+                                    color = if (hbTty) Color(0xFF22C55E) else Color(0xFFEF4444))
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(modifier = Modifier.size(6.dp), shape = androidx.compose.foundation.shape.CircleShape,
+                                    color = if (hbTun) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
+                                Spacer(Modifier.width(4.dp))
+                                Text(if (hbTun) "tun_hub" else "tun_hub DOWN", fontSize = 10.sp,
+                                    color = if (hbTun) Color(0xFF22C55E) else Color(0xFFEF4444))
+                            }
+                        }
+
                         Spacer(modifier = Modifier.weight(1f))
+
+                        // ── 摄像头切换 ──
+                        if (cameras.isNotEmpty()) {
+                            Text("📹 摄像头", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                            cameras.forEachIndexed { i, c ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Surface(modifier = Modifier.size(6.dp), shape = androidx.compose.foundation.shape.CircleShape,
+                                        color = if (i == selectedCam) Color(0xFF38BDF8) else Color(0xFF334155)) {}
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(c.name, fontSize = 10.sp,
+                                        color = if (i == selectedCam) Color(0xFF38BDF8) else Color(0xFF64748B),
+                                        modifier = Modifier.weight(1f))
+                                    if (i != selectedCam) {
+                                        TextButton(onClick = { selectedCam = i; rtspUrl = cameras[i].url },
+                                            modifier = Modifier.height(20.dp), contentPadding = PaddingValues(4.dp, 0.dp)
+                                        ) { Text("切", fontSize = 9.sp, color = Color(0xFF38BDF8)) }
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                        }
 
                         HorizontalDivider(color = Color(0xFF1E293B), modifier = Modifier.padding(vertical = 8.dp))
                         Text("RK3588: 192.168.88.66", fontSize = 10.sp, color = Color(0xFF475569))

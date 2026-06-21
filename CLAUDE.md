@@ -65,6 +65,11 @@ TUN_NAT_HUB/
 - C++ 使用 Google C++ Style Guide
 - Git commit: `feat(android|ubuntu|protocol): 描述`
 - 所有注释使用中文
+- **每完成一轮改动立即 git commit**，记录改动原因和效果
+- commit message 格式: `<type>(<scope>): <简短描述>` — 后跟详细说明
+- C++ 使用 Google C++ Style Guide
+- Git commit: `feat(android|ubuntu|protocol): 描述`
+- 所有注释使用中文
 
 ## 自动化原则（重要）
 
