@@ -182,7 +182,7 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 </head>
 <body>
 <header>
-  <span class="logo">TUN NAT HUB</span><span class="ver">v''' + VERSION + ''' · g_serial RTL8812AU</span>
+  <span class="logo">TUN NAT HUB</span><span class="ver">v1.1.0 · g_serial RTL8812AU</span>
   <span style="flex:1"></span>
   <span id="header-status">⏳</span>
 </header>
