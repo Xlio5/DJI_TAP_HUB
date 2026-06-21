@@ -102,14 +102,15 @@ def remove_forward(cfg, port):
 def apply_all_forwards(cfg):
     for rule in cfg.get("forwards",[]):
         p = rule["proto"]; pt = str(rule["port"]); d = rule["dest"]
+        # -C 检查规则是否存在，忽略错误输出（不存在返回非 0）
         subprocess.run(["sudo","-S","iptables","-t","nat","-C","PREROUTING","-i","end1","-p",p,"--dport",pt,"-j","DNAT","--to-destination",d],
-                       input=b"1234\n", capture_output=True, stderr=subprocess.DEVNULL)
+                       input=b"1234\n", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["sudo","-S","iptables","-t","nat","-A","PREROUTING","-i","end1","-p",p,"--dport",pt,"-j","DNAT","--to-destination",d],
-                       input=b"1234\n", capture_output=True)
+                       input=b"1234\n", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["sudo","-S","iptables","-C","FORWARD","-i","end1","-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"],
-                       input=b"1234\n", capture_output=True, stderr=subprocess.DEVNULL)
+                       input=b"1234\n", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["sudo","-S","iptables","-A","FORWARD","-i","end1","-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"],
-                       input=b"1234\n", capture_output=True)
+                       input=b"1234\n", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 # ══════════════════════════════════════════════════════════
 # HTML — 完整中文面板
