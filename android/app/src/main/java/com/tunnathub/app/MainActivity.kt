@@ -172,6 +172,28 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
     var cameras by remember { mutableStateOf(listOf<CamInfo>()) }
     var selectedCam by remember { mutableStateOf(0) }
 
+    // ── 端口转发 ──
+    data class FwdInfo(val proto: String, val port: Int, val dest: String)
+    var forwards by remember { mutableStateOf(listOf<FwdInfo>()) }
+    var fwdProto by remember { mutableStateOf("udp") }
+    var fwdPort by remember { mutableStateOf("") }
+    var fwdDest by remember { mutableStateOf("10.0.0.2") }
+
+    // ── HTTP POST helper ──
+    fun apiPost(path: String, body: String) {
+        Thread {
+            try {
+                val url = java.net.URL("http://10.0.0.1:8080$path")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 3000; conn.readTimeout = 3000
+                conn.doOutput = true; conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.outputStream.write(body.toByteArray())
+                conn.inputStream.close()
+            } catch (_: Exception) {}
+        }.start()
+    }
+
     // ── 心跳轮询 ──
     LaunchedEffect(vpnRunning) {
         if (!vpnRunning) return@LaunchedEffect
@@ -198,7 +220,7 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
         }
     }
 
-    // ── 加载摄像头列表 ──
+    // ── 加载摄像头列表 + 端口转发 ──
     LaunchedEffect(vpnRunning) {
         if (!vpnRunning) return@LaunchedEffect
         try {
@@ -207,7 +229,7 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
             conn.connectTimeout = 2000
             conn.readTimeout = 2000
             val text = conn.inputStream.bufferedReader().readText()
-            // Parse cameras array from JSON manually
+            // Parse cameras
             val camList = mutableListOf<CamInfo>()
             val camPattern = Regex("\"name\": \"([^\"]+)\"[^}]*\"url\": \"([^\"]+)\"")
             camPattern.findAll(text).forEach { m ->
@@ -217,6 +239,13 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                 cameras = camList
                 if (rtspUrl.isEmpty()) rtspUrl = camList[0].url
             }
+            // Parse port forwards
+            val fwdList = mutableListOf<FwdInfo>()
+            val fwdPattern = Regex("\"proto\": \"(\\w+)\"[^}]*\"port\": (\\d+)[^}]*\"dest\": \"([^\"]+)\"")
+            fwdPattern.findAll(text).forEach { m ->
+                fwdList.add(FwdInfo(m.groupValues[1], m.groupValues[2].toInt(), m.groupValues[3]))
+            }
+            forwards = fwdList
         } catch (_: Exception) {}
     }
 
@@ -425,6 +454,65 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                                 Spacer(Modifier.width(4.dp))
                                 Text(if (hbTun) "tun_hub" else "tun_hub DOWN", fontSize = 10.sp,
                                     color = if (hbTun) Color(0xFF22C55E) else Color(0xFFEF4444))
+                            }
+                        }
+
+                        // ── 端口转发 ──
+                        Spacer(Modifier.height(6.dp))
+                        HorizontalDivider(color = Color(0xFF1E293B))
+                        Spacer(Modifier.height(4.dp))
+                        Text("🔀 端口转发 (外网→DJI)", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                        Spacer(Modifier.height(4.dp))
+                        // 添加表单
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(onClick = {
+                                fwdProto = if (fwdProto == "udp") "tcp" else "udp"
+                            }, modifier = Modifier.height(26.dp), contentPadding = PaddingValues(4.dp, 0.dp)) {
+                                Text(fwdProto.uppercase(), fontSize = 10.sp, color = Color(0xFF38BDF8))
+                            }
+                            OutlinedTextField(value = fwdPort, onValueChange = { fwdPort = it },
+                                modifier = Modifier.width(50.dp).height(40.dp), singleLine = true,
+                                textStyle = LocalTextStyle.current.copy(fontSize = 10.sp, color = Color(0xFFE2E8F0)),
+                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color(0xFF38BDF8), unfocusedBorderColor = Color(0xFF334155)),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                placeholder = { Text("端口", fontSize = 9.sp, color = Color(0xFF475569)) })
+                            OutlinedTextField(value = fwdDest, onValueChange = { fwdDest = it },
+                                modifier = Modifier.width(80.dp).height(40.dp), singleLine = true,
+                                textStyle = LocalTextStyle.current.copy(fontSize = 10.sp, color = Color(0xFFE2E8F0)),
+                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color(0xFF38BDF8), unfocusedBorderColor = Color(0xFF334155)),
+                                placeholder = { Text("目标IP", fontSize = 9.sp, color = Color(0xFF475569)) })
+                            Button(onClick = {
+                                val port = fwdPort.toIntOrNull() ?: return@Button
+                                if (port < 1 || port > 65535) return@Button
+                                val body = """{"proto":"$fwdProto","port":$port,"dest":"$fwdDest"}"""
+                                apiPost("/api/forward/add", body)
+                                fwdPort = ""
+                                // Optimistic update
+                                forwards = forwards + FwdInfo(fwdProto, port, fwdDest)
+                            }, modifier = Modifier.height(28.dp), contentPadding = PaddingValues(4.dp, 0.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
+                            ) { Text("＋", fontSize = 11.sp) }
+                        }
+                        // 规则列表
+                        if (forwards.isEmpty()) {
+                            Text("暂无转发规则", fontSize = 9.sp, color = Color(0xFF475569),
+                                modifier = Modifier.padding(start = 2.dp, top = 2.dp))
+                        } else {
+                            forwards.forEach { f ->
+                                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("${f.proto.uppercase()} :${f.port} → ${f.dest}",
+                                        fontSize = 10.sp, color = Color(0xFF94A3B8),
+                                        modifier = Modifier.weight(1f))
+                                    TextButton(onClick = {
+                                        apiPost("/api/forward/del", """{"port":${f.port}}""")
+                                        forwards = forwards.filter { it.port != f.port }
+                                    }, modifier = Modifier.height(20.dp), contentPadding = PaddingValues(2.dp, 0.dp)
+                                    ) { Text("✕", fontSize = 9.sp, color = Color(0xFFEF4444)) }
+                                }
                             }
                         }
 
