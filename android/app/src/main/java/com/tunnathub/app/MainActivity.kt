@@ -163,6 +163,9 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
     var hbTun by remember { mutableStateOf(false) }
     var hbTime by remember { mutableStateOf("") }
     var hbCount by remember { mutableStateOf(0) }
+    var hbBw by remember { mutableStateOf("0.0") }  // Mbps
+    var hbTx by remember { mutableStateOf(0L) }     // total bytes
+    var hbRx by remember { mutableStateOf(0L) }
 
     // ── 摄像头列表 ──
     data class CamInfo(val name: String, val url: String)
@@ -183,6 +186,10 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                 hbTty = text.contains("\"tty_ready\": true")
                 hbTun = text.contains("\"tun_up\": true")
                 hbTime = (Regex("\"uptime_since\": \"([^\"]+)\"").find(text)?.groupValues?.get(1)) ?: ""
+                hbBw = (Regex("\"bandwidth_mbps\": \"([^\"]+)\"").find(text)?.groupValues?.get(1)) ?: "0.0"
+                val mTx = Regex("\"tx_bytes\": (\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                val mRx = Regex("\"rx_bytes\": (\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                hbTx = mTx; hbRx = mRx
                 hbCount++
             } catch (_: Exception) {
                 hbDaemon = false; hbTty = false; hbTun = false
@@ -390,8 +397,14 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                             Spacer(Modifier.height(6.dp))
                             HorizontalDivider(color = Color(0xFF1E293B))
                             Spacer(Modifier.height(4.dp))
-                            Text("❤️ 链路状态", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            Text("❤️ 链路状态 · ${hbBw} Mbps", fontSize = 11.sp, color = Color(0xFF94A3B8))
                             Spacer(Modifier.height(2.dp))
+                            // ── 流量条 ──
+                            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                                Text("Tx ${if (hbTx > 1024*1024) "%.1f MB".format(hbTx/1024f/1024f) else "%.0f KB".format(hbTx/1024f)}" +
+                                    " | Rx ${if (hbRx > 1024*1024) "%.1f MB".format(hbRx/1024f/1024f) else "%.0f KB".format(hbRx/1024f)}",
+                                    fontSize = 9.sp, color = Color(0xFF64748B))
+                            }
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Surface(modifier = Modifier.size(6.dp), shape = androidx.compose.foundation.shape.CircleShape,
                                     color = if (hbDaemon) Color(0xFF22C55E) else Color(0xFFEF4444)) {}

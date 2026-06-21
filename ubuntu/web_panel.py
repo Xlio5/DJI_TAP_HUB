@@ -493,6 +493,8 @@ fetchHb();refresh();setInterval(refresh,2000);setInterval(fetchHb,5000);
 </body></html>"""
 
 # ── 心跳状态（供 App 轮询） ───────────────────────────────────
+_hb_prev = {"time": 0, "tx": 0, "rx": 0}
+
 def get_heartbeat():
     daemon = "active" in subprocess.run(["systemctl","is-active","tun_nat_hub"],capture_output=True,text=True).stdout
     tty = subprocess.run(["test","-c","/dev/ttyGS0"],capture_output=True).returncode == 0
@@ -502,6 +504,30 @@ def get_heartbeat():
         with open("/sys/module/g_serial/parameters/idVendor") as f: usb_vid = int(f.read().strip())
     except: pass
     uptime = subprocess.run(["uptime","-s"],capture_output=True,text=True).stdout.strip()
+
+    # 从 daemon 日志解析实时带宽
+    tx_bytes = 0; rx_bytes = 0; bandwidth = "0.0"
+    try:
+        r = subprocess.run(["journalctl","-u","tun_nat_hub","--no-pager","-n","1","-o","cat"],
+                          capture_output=True, text=True, timeout=3)
+        for p in r.stdout.strip().split():
+            if "TX=" in p:
+                v = p.split("=")[1].split("/")
+                tx_bytes = int(v[1].replace("B",""))
+            elif "RX=" in p:
+                v = p.split("=")[1].split("/")
+                rx_bytes = int(v[1].replace("B",""))
+        global _hb_prev
+        now = time.time()
+        if _hb_prev["time"] > 0:
+            elapsed = now - _hb_prev["time"]
+            if elapsed > 0:
+                tx_diff = tx_bytes - _hb_prev["tx"]
+                mbps = (tx_diff * 8) / (elapsed * 1_000_000)
+                bandwidth = f"{mbps:.1f}"
+        _hb_prev = {"time": now, "tx": tx_bytes, "rx": rx_bytes}
+    except: pass
+
     return {
         "version": VERSION,
         "daemon": daemon,
@@ -511,6 +537,9 @@ def get_heartbeat():
         "usb_pid": int(open("/sys/module/g_serial/parameters/idProduct").read().strip()) if tty else 0,
         "timestamp": int(time.time()),
         "uptime_since": uptime,
+        "tx_bytes": tx_bytes,
+        "rx_bytes": rx_bytes,
+        "bandwidth_mbps": bandwidth,
     }
 
 # ══════════════════════════════════════════════════════════
