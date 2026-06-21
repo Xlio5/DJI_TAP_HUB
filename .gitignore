@@ -19,9 +19,42 @@ Thumbs.db
 *.swo
 *~
 
+# Binary artifacts
+*.apk
+
 # Deployment artifacts
 tun_nat_hub_pkg/
 tun_nat_hub_rk3588.tar.gz
+
+# Video streaming experiment (saved in branch)
+ubuntu/scripts/video_bridge.py
+ubuntu/scripts/video_streamer.py
+ubuntu/scripts/video_streamer_simple.py
+ubuntu/src/vid_bridge.h
+
+# One-off scripts
+scripts/dl_vlc*.py
+scripts/download_vlc.py
+scripts/get_vlc.py
+scripts/find_vlc_url.py
+scripts/test_gst_final.py
+scripts/test_gst_pipeline.py
+scripts/test_rtsp_pipe.py
+scripts/test_rtsp_raw.py
+scripts/test_loop.py
+scripts/deploy_v6.py
+scripts/deploy_and_test.py
+scripts/deploy_fixed_scripts.py
+scripts/start_streamer.py
+scripts/launch_streamer.py
+scripts/final_start.py
+scripts/fix_v6_only.py
+scripts/restart_pipe.sh
+scripts/launch_video_fix.sh
+scripts/diag_video_pipe.sh
+scripts/setup_gst_python.py
+scripts/debug_streamer.py
+scripts/check_vid.py
 
 # Reference projects (submodules)
 ref/
