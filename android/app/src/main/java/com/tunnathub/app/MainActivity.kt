@@ -44,6 +44,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.tunnathub.app.BuildConfig
 import com.tunnathub.app.service.TunNatVpnService
 import com.tunnathub.app.usb.UsbBridge
 import org.easydarwin.video.EasyPlayerClient
@@ -334,6 +335,8 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                         Text("RK3588: 192.168.88.66", fontSize = 10.sp, color = Color(0xFF475569))
                         Text("TUN: 10.0.0.0/24", fontSize = 10.sp, color = Color(0xFF475569))
                         Text("VID 0x0BDA PID 0x8812", fontSize = 10.sp, color = Color(0xFF475569))
+                        Spacer(Modifier.height(4.dp))
+                        Text("v${BuildConfig.VERSION_NAME}", fontSize = 10.sp, color = Color(0xFF38BDF8))
                     }
                 }
             }
