@@ -68,7 +68,9 @@ static void tunToTty(TunIface& tun, Stats& s) {
             int fl = frame_pack(buf, n);
             if (::write(fd, buf, fl) < 0 && errno != EAGAIN) {
                 std::cerr << "[TUN→TTY] write err, fd=" << fd << std::endl;
-                int oldFd = gTtyFd.exchange(-1); if (oldFd >= 0) ::close(oldFd);
+                // CAS: 只有 fd 还是当前值时才置-1并关闭，避免抢占主线程重连的新 fd
+                int expected = fd;
+                if (gTtyFd.compare_exchange_strong(expected, -1)) ::close(fd);
                 continue;
             }
             s.tx++; s.txB += fl;
@@ -78,7 +80,8 @@ static void tunToTty(TunIface& tun, Stats& s) {
             auto now = std::chrono::steady_clock::now();
             if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastHb).count() >= 1000) {
                 if (::write(fd, hb, FRAME_HEADER_LEN) < 0 && errno != EAGAIN) {
-                    int oldFd = gTtyFd.exchange(-1); if (oldFd >= 0) ::close(oldFd);
+                    int expected = fd;
+                    if (gTtyFd.compare_exchange_strong(expected, -1)) ::close(fd);
                     continue;
                 }
                 s.tx++; s.txB += FRAME_HEADER_LEN;
@@ -103,7 +106,9 @@ static void ttyToTun(TunIface& tun, Stats& s) {
         if (n < 0) {
             if (errno == EAGAIN) continue;
             std::cerr << "[TTY→TUN] read err, fd=" << fd << std::endl;
-            int oldFd = gTtyFd.exchange(-1); if (oldFd >= 0) ::close(oldFd); pos = 0;
+            int expected = fd;
+            if (gTtyFd.compare_exchange_strong(expected, -1)) ::close(fd);
+            pos = 0;
             continue;
         }
         if (n == 0) { usleep(1000); continue; }
@@ -117,7 +122,11 @@ static void ttyToTun(TunIface& tun, Stats& s) {
             if (frame_is_heartbeat(pl)) {
                 uint8_t pong[FRAME_HEADER_LEN];
                 frame_pack(pong, 0);
-                ::write(fd, pong, FRAME_HEADER_LEN);
+                if (::write(fd, pong, FRAME_HEADER_LEN) < 0 && errno != EAGAIN) {
+                    int expected = fd;
+                    if (gTtyFd.compare_exchange_strong(expected, -1)) ::close(fd);
+                    pos = 0;
+                }
                 off += FRAME_HEADER_LEN;
                 continue;
             }
@@ -159,9 +168,10 @@ int main(int argc, char* argv[]) {
         std::thread t2(ttyToTun, std::ref(tun), std::ref(stats));
 
         // 主循环: 监控 TTY fd 并自动重连
+        int tick = 0;
         while (gRunning) {
             sleep(1);
-            static int tick = 0; tick++;
+            tick++;
 
             // 检测断线并重连
             if (gTtyFd.load() < 0) {

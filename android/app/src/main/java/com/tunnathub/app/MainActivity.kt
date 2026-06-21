@@ -47,6 +47,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.tunnathub.app.BuildConfig
 import com.tunnathub.app.service.TunNatVpnService
 import com.tunnathub.app.usb.UsbBridge
+import kotlinx.coroutines.*
 import org.easydarwin.video.EasyPlayerClient
 
 class MainActivity : ComponentActivity() {
@@ -179,9 +180,9 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
     var fwdPort by remember { mutableStateOf("") }
     var fwdDest by remember { mutableStateOf("10.0.0.2") }
 
-    // ── HTTP POST helper ──
+    // ── HTTP POST helper (协程 IO 线程, 跟随 Composable 生命周期) ──
     fun apiPost(path: String, body: String) {
-        Thread {
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
             try {
                 val url = java.net.URL("http://10.0.0.1:8080$path")
                 val conn = url.openConnection() as java.net.HttpURLConnection
@@ -191,7 +192,7 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                 conn.outputStream.write(body.toByteArray())
                 conn.inputStream.close()
             } catch (_: Exception) {}
-        }.start()
+        }
     }
 
     // ── 心跳轮询 ──

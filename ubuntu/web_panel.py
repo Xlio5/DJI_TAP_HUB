@@ -63,10 +63,26 @@ def get_iptables():
 def get_network():
     return subprocess.run(["ip","-br","addr"],capture_output=True,text=True).stdout
 
+def _validate_fwd(proto, port, dest):
+    """校验端口转发参数，防止 shell 注入"""
+    import ipaddress
+    if proto not in ("udp","tcp"): return False
+    if not isinstance(port, int) or port < 1 or port > 65535: return False
+    # dest 可以是 IP 或 IP:port
+    ip_part = dest.split(":")[0]
+    try:
+        ipaddress.ip_address(ip_part)
+    except ValueError:
+        return False
+    return True
+
 def add_forward(cfg, proto, port, dest_ip):
+    if not _validate_fwd(proto, port, dest_ip): return False
     dest = f"{dest_ip}:{port}" if ":" not in dest_ip else dest_ip
-    subprocess.run(f"echo '1234'|sudo -S iptables -t nat -A PREROUTING -i end1 -p {proto} --dport {port} -j DNAT --to-destination {dest}",shell=True,capture_output=True)
-    subprocess.run(f"echo '1234'|sudo -S iptables -A FORWARD -i end1 -o tun_hub -p {proto} --dport {port} -j ACCEPT",shell=True,capture_output=True)
+    subprocess.run(["sudo","-S","iptables","-t","nat","-A","PREROUTING","-i","end1","-p",proto,"--dport",str(port),"-j","DNAT","--to-destination",dest],
+                   input=b"1234\n", capture_output=True)
+    subprocess.run(["sudo","-S","iptables","-A","FORWARD","-i","end1","-o","tun_hub","-p",proto,"--dport",str(port),"-j","ACCEPT"],
+                   input=b"1234\n", capture_output=True)
     cfg["forwards"].append({"proto":proto,"port":port,"dest":dest})
     save_cfg(cfg)
     return True
@@ -74,16 +90,26 @@ def add_forward(cfg, proto, port, dest_ip):
 def remove_forward(cfg, port):
     found = next((r for r in cfg["forwards"] if r["port"]==port), None)
     if not found: return False
-    subprocess.run(f"echo '1234'|sudo -S iptables -t nat -D PREROUTING -i end1 -p {found['proto']} --dport {port} -j DNAT --to-destination {found['dest']}",shell=True,capture_output=True)
-    subprocess.run(f"echo '1234'|sudo -S iptables -D FORWARD -i end1 -o tun_hub -p {found['proto']} --dport {port} -j ACCEPT",shell=True,capture_output=True)
+    p = found["proto"]; pt = str(port); d = found["dest"]
+    subprocess.run(["sudo","-S","iptables","-t","nat","-D","PREROUTING","-i","end1","-p",p,"--dport",pt,"-j","DNAT","--to-destination",d],
+                   input=b"1234\n", capture_output=True)
+    subprocess.run(["sudo","-S","iptables","-D","FORWARD","-i","end1","-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"],
+                   input=b"1234\n", capture_output=True)
     cfg["forwards"] = [r for r in cfg["forwards"] if r["port"]!=port]
     save_cfg(cfg)
     return True
 
 def apply_all_forwards(cfg):
     for rule in cfg.get("forwards",[]):
-        subprocess.run(f"echo '1234'|sudo -S iptables -t nat -C PREROUTING -i end1 -p {rule['proto']} --dport {rule['port']} -j DNAT --to-destination {rule['dest']} 2>/dev/null || echo '1234'|sudo -S iptables -t nat -A PREROUTING -i end1 -p {rule['proto']} --dport {rule['port']} -j DNAT --to-destination {rule['dest']}",shell=True,capture_output=True)
-        subprocess.run(f"echo '1234'|sudo -S iptables -C FORWARD -i end1 -o tun_hub -p {rule['proto']} --dport {rule['port']} -j ACCEPT 2>/dev/null || echo '1234'|sudo -S iptables -A FORWARD -i end1 -o tun_hub -p {rule['proto']} --dport {rule['port']} -j ACCEPT",shell=True,capture_output=True)
+        p = rule["proto"]; pt = str(rule["port"]); d = rule["dest"]
+        subprocess.run(["sudo","-S","iptables","-t","nat","-C","PREROUTING","-i","end1","-p",p,"--dport",pt,"-j","DNAT","--to-destination",d],
+                       input=b"1234\n", capture_output=True, stderr=subprocess.DEVNULL)
+        subprocess.run(["sudo","-S","iptables","-t","nat","-A","PREROUTING","-i","end1","-p",p,"--dport",pt,"-j","DNAT","--to-destination",d],
+                       input=b"1234\n", capture_output=True)
+        subprocess.run(["sudo","-S","iptables","-C","FORWARD","-i","end1","-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"],
+                       input=b"1234\n", capture_output=True, stderr=subprocess.DEVNULL)
+        subprocess.run(["sudo","-S","iptables","-A","FORWARD","-i","end1","-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"],
+                       input=b"1234\n", capture_output=True)
 
 # ══════════════════════════════════════════════════════════
 # HTML — 完整中文面板
