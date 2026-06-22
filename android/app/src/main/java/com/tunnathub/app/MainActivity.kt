@@ -195,16 +195,14 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
         }
     }
 
-    // ── 心跳轮询 (VPN未连时走WiFi 192.168.88.66, VPN连后走隧道10.0.0.1) ──
-    LaunchedEffect(Unit) {
-        while (true) {
+    // ── 心跳轮询 (仅通过USB隧道 10.0.0.1:8080) ──
+    LaunchedEffect(vpnRunning) {
+        if (!vpnRunning) { hbCount = 0; return@LaunchedEffect }
+        while (vpnRunning) {
             try {
-                // VPN 连了走隧道，没连走 WiFi 直连
-                val host = if (vpnRunning) "10.0.0.1" else "192.168.88.66"
-                val url = java.net.URL("http://$host:8080/api/heartbeat")
+                val url = java.net.URL("http://10.0.0.1:8080/api/heartbeat")
                 val conn = url.openConnection() as java.net.HttpURLConnection
-                conn.connectTimeout = 2000
-                conn.readTimeout = 2000
+                conn.connectTimeout = 2000; conn.readTimeout = 2000
                 val text = conn.inputStream.bufferedReader().readText()
                 hbDaemon = text.contains("\"daemon\": true")
                 hbTty = text.contains("\"tty_ready\": true")
@@ -213,11 +211,8 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                 hbBw = (Regex("\"bandwidth_mbps\": \"([^\"]+)\"").find(text)?.groupValues?.get(1)) ?: "0.0"
                 val mTx = Regex("\"tx_bytes\": (\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
                 val mRx = Regex("\"rx_bytes\": (\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-                hbTx = mTx; hbRx = mRx
-                hbCount++
-            } catch (_: Exception) {
-                if (vpnRunning) { hbDaemon = false; hbTty = false; hbTun = false }
-            }
+                hbTx = mTx; hbRx = mRx; hbCount++
+            } catch (_: Exception) { hbDaemon = false; hbTty = false; hbTun = false }
             kotlinx.coroutines.delay(5000)
         }
     }
@@ -423,40 +418,43 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                         if (latencyText.isNotEmpty())
                             Text(latencyText, fontSize = 10.sp, color = Color(0xFF38BDF8), modifier = Modifier.padding(top = 2.dp))
 
-                        // ── 心跳状态 (WiFi直连 192.168.88.66:8080 或 VPN隧道 10.0.0.1) ──
+                        // ── 心跳状态 (USB隧道 10.0.0.1:8080) ──
                         Spacer(Modifier.height(6.dp))
                         HorizontalDivider(color = Color(0xFF1E293B))
                         Spacer(Modifier.height(4.dp))
-                        Text("❤️ 链路状态" + if (hbCount > 0) " · ${hbBw} Mbps" else " · 轮询中...",
-                            fontSize = 11.sp, color = Color(0xFF94A3B8))
-                        Spacer(Modifier.height(2.dp))
-                        if (hbCount > 0) {
+                        if (vpnRunning && hbCount > 0) {
+                            Text("❤️ 链路状态 · ${hbBw} Mbps", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            Spacer(Modifier.height(2.dp))
                             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
                                 Text("Tx ${if (hbTx > 1024*1024) "%.1f MB".format(hbTx/1024f/1024f) else "%.0f KB".format(hbTx/1024f)}" +
                                     " | Rx ${if (hbRx > 1024*1024) "%.1f MB".format(hbRx/1024f/1024f) else "%.0f KB".format(hbRx/1024f)}",
                                     fontSize = 9.sp, color = Color(0xFF64748B))
                             }
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Surface(modifier = Modifier.size(6.dp), shape = androidx.compose.foundation.shape.CircleShape,
-                                color = if (hbDaemon) Color(0xFF22C55E) else if (hbCount == 0) Color(0xFF64748B) else Color(0xFFEF4444)) {}
-                            Spacer(Modifier.width(4.dp))
-                            Text(if (hbCount == 0) "Daemon ..." else if (hbDaemon) "Daemon" else "Daemon 离线", fontSize = 10.sp,
-                                color = if (hbDaemon) Color(0xFF22C55E) else if (hbCount == 0) Color(0xFF64748B) else Color(0xFFEF4444))
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Surface(modifier = Modifier.size(6.dp), shape = androidx.compose.foundation.shape.CircleShape,
-                                color = if (hbTty) Color(0xFF22C55E) else if (hbCount == 0) Color(0xFF64748B) else Color(0xFFEF4444)) {}
-                            Spacer(Modifier.width(4.dp))
-                            Text(if (hbCount == 0) "ttyGS0 ..." else if (hbTty) "ttyGS0" else "ttyGS0 未检测", fontSize = 10.sp,
-                                color = if (hbTty) Color(0xFF22C55E) else if (hbCount == 0) Color(0xFF64748B) else Color(0xFFEF4444))
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Surface(modifier = Modifier.size(6.dp), shape = androidx.compose.foundation.shape.CircleShape,
-                                color = if (hbTun) Color(0xFF22C55E) else if (hbCount == 0) Color(0xFF64748B) else Color(0xFFEF4444)) {}
-                            Spacer(Modifier.width(4.dp))
-                            Text(if (hbCount == 0) "tun_hub ..." else if (hbTun) "tun_hub" else "tun_hub DOWN", fontSize = 10.sp,
-                                color = if (hbTun) Color(0xFF22C55E) else if (hbCount == 0) Color(0xFF64748B) else Color(0xFFEF4444))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(modifier = Modifier.size(6.dp), shape = androidx.compose.foundation.shape.CircleShape,
+                                    color = if (hbDaemon) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
+                                Spacer(Modifier.width(4.dp))
+                                Text(if (hbDaemon) "Daemon" else "Daemon 离线", fontSize = 10.sp,
+                                    color = if (hbDaemon) Color(0xFF22C55E) else Color(0xFFEF4444))
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(modifier = Modifier.size(6.dp), shape = androidx.compose.foundation.shape.CircleShape,
+                                    color = if (hbTty) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
+                                Spacer(Modifier.width(4.dp))
+                                Text(if (hbTty) "ttyGS0" else "ttyGS0 未检测", fontSize = 10.sp,
+                                    color = if (hbTty) Color(0xFF22C55E) else Color(0xFFEF4444))
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(modifier = Modifier.size(6.dp), shape = androidx.compose.foundation.shape.CircleShape,
+                                    color = if (hbTun) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
+                                Spacer(Modifier.width(4.dp))
+                                Text(if (hbTun) "tun_hub" else "tun_hub DOWN", fontSize = 10.sp,
+                                    color = if (hbTun) Color(0xFF22C55E) else Color(0xFFEF4444))
+                            }
+                        } else if (vpnRunning) {
+                            Text("❤️ 链路状态 · 轮询中...", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            Spacer(Modifier.height(2.dp))
+                            Text("首次轮询将在几秒后完成", fontSize = 9.sp, color = Color(0xFF64748B))
                         }
 
                         // ── 端口转发 ──
