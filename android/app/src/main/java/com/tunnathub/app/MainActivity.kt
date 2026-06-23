@@ -25,9 +25,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -411,15 +413,28 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                             // 播放区域
                             Text("RTSP 地址", fontSize = 11.sp, color = Color(0xFF94A3B8),
                                 modifier = Modifier.padding(bottom = 4.dp))
-                            OutlinedTextField(value = rtspUrl, onValueChange = { rtspUrl = it },
-                                modifier = Modifier.fillMaxWidth(), singleLine = true,
-                                textStyle = LocalTextStyle.current.copy(fontSize = 12.sp, color = Color(0xFFE2E8F0)),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color(0xFF38BDF8),
-                                    unfocusedBorderColor = Color(0xFF334155),
-                                    cursorColor = Color(0xFF38BDF8)),
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri,
-                                    imeAction = ImeAction.Done))
+                            Box(modifier = Modifier
+                                .fillMaxWidth().height(44.dp)
+                                .background(Color(0xFF0F172A), RoundedCornerShape(8.dp))
+                                .border(1.dp, Color(0xFF334155), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 12.dp),
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                if (rtspUrl.isEmpty()) {
+                                    Text("rtsp://192.168.88.100:554/stream1", fontSize = 14.sp,
+                                        color = Color(0xFF475569))
+                                }
+                                BasicTextField(
+                                    value = rtspUrl, onValueChange = { rtspUrl = it },
+                                    singleLine = true,
+                                    textStyle = androidx.compose.ui.text.TextStyle(
+                                        fontSize = 14.sp, color = Color(0xFFE2E8F0)),
+                                    cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF38BDF8)),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri,
+                                        imeAction = ImeAction.Done),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
 
                             Spacer(Modifier.height(6.dp))
 
@@ -510,25 +525,30 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                                             color = Color(0xFF38BDF8))
                                     }
                                 }
-                                OutlinedTextField(
-                                    value = fwdPort, onValueChange = { fwdPort = it },
-                                    modifier = Modifier.weight(1f).height(44.dp),
-                                    singleLine = true,
-                                    textStyle = LocalTextStyle.current.copy(
-                                        fontSize = 16.sp, color = Color.White),
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedTextColor = Color.White,
-                                        unfocusedTextColor = Color.White,
-                                        focusedContainerColor = Color(0xFF1E293B),
-                                        unfocusedContainerColor = Color(0xFF1E293B),
-                                        focusedBorderColor = Color(0xFF38BDF8),
-                                        unfocusedBorderColor = Color(0xFF475569),
-                                        cursorColor = Color(0xFF38BDF8)),
-                                    keyboardOptions = KeyboardOptions(
-                                        keyboardType = KeyboardType.Number),
-                                    placeholder = { Text("外网端口 如5566", fontSize = 13.sp,
-                                        color = Color(0xFF64748B)) }
-                                )
+                                // BasicTextField = 不受系统主题干扰，完全自己画
+                                Box(modifier = Modifier
+                                    .weight(1f).height(44.dp)
+                                    .background(Color(0xFF0F172A), RoundedCornerShape(8.dp))
+                                    .border(1.dp, Color(0xFF475569), RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 12.dp),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    if (fwdPort.isEmpty()) {
+                                        Text("外网端口 如5566", fontSize = 16.sp,
+                                            color = Color(0xFF475569))
+                                    }
+                                    BasicTextField(
+                                        value = fwdPort,
+                                        onValueChange = { fwdPort = it },
+                                        singleLine = true,
+                                        textStyle = androidx.compose.ui.text.TextStyle(
+                                            fontSize = 16.sp, color = Color.White),
+                                        cursorBrush = androidx.compose.ui.graphics.SolidColor(Color.White),
+                                        keyboardOptions = KeyboardOptions(
+                                            keyboardType = KeyboardType.Number),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
                             }
                             Spacer(Modifier.height(6.dp))
                             // 行2: DJI IP + 添加
@@ -536,23 +556,27 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                OutlinedTextField(
-                                    value = fwdDest, onValueChange = { fwdDest = it },
-                                    modifier = Modifier.weight(1f).height(44.dp),
-                                    singleLine = true,
-                                    textStyle = LocalTextStyle.current.copy(
-                                        fontSize = 16.sp, color = Color.White),
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedTextColor = Color.White,
-                                        unfocusedTextColor = Color.White,
-                                        focusedContainerColor = Color(0xFF1E293B),
-                                        unfocusedContainerColor = Color(0xFF1E293B),
-                                        focusedBorderColor = Color(0xFF38BDF8),
-                                        unfocusedBorderColor = Color(0xFF475569),
-                                        cursorColor = Color(0xFF38BDF8)),
-                                    placeholder = { Text("DJI IP 如10.0.0.2", fontSize = 13.sp,
-                                        color = Color(0xFF64748B)) }
-                                )
+                                Box(modifier = Modifier
+                                    .weight(1f).height(44.dp)
+                                    .background(Color(0xFF0F172A), RoundedCornerShape(8.dp))
+                                    .border(1.dp, Color(0xFF475569), RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 12.dp),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    if (fwdDest.isEmpty()) {
+                                        Text("DJI IP 如10.0.0.2", fontSize = 16.sp,
+                                            color = Color(0xFF475569))
+                                    }
+                                    BasicTextField(
+                                        value = fwdDest,
+                                        onValueChange = { fwdDest = it },
+                                        singleLine = true,
+                                        textStyle = androidx.compose.ui.text.TextStyle(
+                                            fontSize = 16.sp, color = Color.White),
+                                        cursorBrush = androidx.compose.ui.graphics.SolidColor(Color.White),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
                                 Button(
                                     onClick = {
                                         val port = fwdPort.toIntOrNull() ?: return@Button
