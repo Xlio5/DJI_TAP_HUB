@@ -228,7 +228,7 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                     hbDaemon = false; hbTty = false; hbTun = false
                 }
             }
-            kotlinx.coroutines.delay(5000)
+            kotlinx.coroutines.delay(1000)
         }
     }
 
