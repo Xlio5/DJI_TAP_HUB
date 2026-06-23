@@ -56,7 +56,6 @@ class MainActivity : ComponentActivity() {
         private const val USB_PERM_ACTION = "com.tunnathub.app.USB_PERM"
     }
     private var usbDevice: UsbDevice? = null
-    private var isVpnRunning = mutableStateOf(false)
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
@@ -81,9 +80,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             TunNatHubApp(
                 usbFound = usbDevice != null,
-                vpnRunning = isVpnRunning.value,
+                vpnRunning = TunNatVpnService.isRunningState.value,
                 onVpnTap = {
-                    if (isVpnRunning.value) stopTunService()
+                    if (TunNatVpnService.isRunningState.value) stopTunService()
                     else startAuthFlow()
                 }
             )
@@ -94,7 +93,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        isVpnRunning.value = TunNatVpnService.isRunning
+        // VPN 状态由 TunNatVpnService.isRunningState 驱动, Compose 自动观察
     }
 
     override fun onDestroy() {
@@ -123,12 +122,10 @@ class MainActivity : ComponentActivity() {
     private fun startTunService() {
         val i = Intent(this, TunNatVpnService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
-        isVpnRunning.value = true
     }
 
     private fun stopTunService() {
         stopService(Intent(this, TunNatVpnService::class.java))
-        isVpnRunning.value = false
     }
 
     private fun findUsbDevice(): UsbDevice? {
@@ -191,28 +188,37 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                 conn.setRequestProperty("Content-Type", "application/json")
                 conn.outputStream.write(body.toByteArray())
                 conn.inputStream.close()
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                android.util.Log.e("TunNatHub", "API POST $path 失败: ${e.javaClass.simpleName} ${e.message}")
+            }
         }
     }
 
     // ── 心跳轮询 (仅通过USB隧道 10.0.0.1:8080) ──
     LaunchedEffect(vpnRunning) {
-        if (!vpnRunning) { hbCount = 0; return@LaunchedEffect }
+        if (!vpnRunning) { android.util.Log.d("TunNatHub","心跳: VPN 关闭, 停止轮询"); hbCount = 0; return@LaunchedEffect }
+        android.util.Log.d("TunNatHub", "心跳: 开始轮询 10.0.0.1:8080/api/heartbeat")
         while (vpnRunning) {
-            try {
-                val url = java.net.URL("http://10.0.0.1:8080/api/heartbeat")
-                val conn = url.openConnection() as java.net.HttpURLConnection
-                conn.connectTimeout = 2000; conn.readTimeout = 2000
-                val text = conn.inputStream.bufferedReader().readText()
-                hbDaemon = text.contains("\"daemon\": true")
-                hbTty = text.contains("\"tty_ready\": true")
-                hbTun = text.contains("\"tun_up\": true")
-                hbTime = (Regex("\"uptime_since\": \"([^\"]+)\"").find(text)?.groupValues?.get(1)) ?: ""
-                hbBw = (Regex("\"bandwidth_mbps\": \"([^\"]+)\"").find(text)?.groupValues?.get(1)) ?: "0.0"
-                val mTx = Regex("\"tx_bytes\": (\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-                val mRx = Regex("\"rx_bytes\": (\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-                hbTx = mTx; hbRx = mRx; hbCount++
-            } catch (_: Exception) { hbDaemon = false; hbTty = false; hbTun = false }
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    val url = java.net.URL("http://10.0.0.1:8080/api/heartbeat")
+                    val conn = url.openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 2000; conn.readTimeout = 2000
+                    val text = conn.inputStream.bufferedReader().readText()
+                    hbDaemon = text.contains("\"daemon\": true")
+                    hbTty = text.contains("\"tty_ready\": true")
+                    hbTun = text.contains("\"tun_up\": true")
+                    hbTime = (Regex("\"uptime_since\": \"([^\"]+)\"").find(text)?.groupValues?.get(1)) ?: ""
+                    hbBw = (Regex("\"bandwidth_mbps\": \"([^\"]+)\"").find(text)?.groupValues?.get(1)) ?: "0.0"
+                    val mTx = Regex("\"tx_bytes\": (\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                    val mRx = Regex("\"rx_bytes\": (\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                    hbTx = mTx; hbRx = mRx; hbCount++
+                    android.util.Log.d("TunNatHub", "心跳 OK #$hbCount bw=$hbBw tx=$hbTx rx=$hbRx")
+                } catch (e: Exception) {
+                    android.util.Log.e("TunNatHub", "心跳失败: ${e.javaClass.simpleName} ${e.message}")
+                    hbDaemon = false; hbTty = false; hbTun = false
+                }
+            }
             kotlinx.coroutines.delay(5000)
         }
     }
@@ -220,30 +226,34 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
     // ── 加载摄像头列表 + 端口转发 ──
     LaunchedEffect(vpnRunning) {
         if (!vpnRunning) return@LaunchedEffect
-        try {
-            val url = java.net.URL("http://10.0.0.1:8080/api/config")
-            val conn = url.openConnection() as java.net.HttpURLConnection
-            conn.connectTimeout = 2000
-            conn.readTimeout = 2000
-            val text = conn.inputStream.bufferedReader().readText()
-            // Parse cameras
-            val camList = mutableListOf<CamInfo>()
-            val camPattern = Regex("\"name\": \"([^\"]+)\"[^}]*\"url\": \"([^\"]+)\"")
-            camPattern.findAll(text).forEach { m ->
-                camList.add(CamInfo(m.groupValues[1], m.groupValues[2]))
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val url = java.net.URL("http://10.0.0.1:8080/api/config")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 2000
+                conn.readTimeout = 2000
+                val text = conn.inputStream.bufferedReader().readText()
+                // Parse cameras
+                val camList = mutableListOf<CamInfo>()
+                val camPattern = Regex("\"name\": \"([^\"]+)\"[^}]*\"url\": \"([^\"]+)\"")
+                camPattern.findAll(text).forEach { m ->
+                    camList.add(CamInfo(m.groupValues[1], m.groupValues[2]))
+                }
+                if (camList.isNotEmpty()) {
+                    cameras = camList
+                    if (rtspUrl.isEmpty()) rtspUrl = camList[0].url
+                }
+                // Parse port forwards
+                val fwdList = mutableListOf<FwdInfo>()
+                val fwdPattern = Regex("\"proto\": \"(\\w+)\"[^}]*\"port\": (\\d+)[^}]*\"dest\": \"([^\"]+)\"")
+                fwdPattern.findAll(text).forEach { m ->
+                    fwdList.add(FwdInfo(m.groupValues[1], m.groupValues[2].toInt(), m.groupValues[3]))
+                }
+                forwards = fwdList
+            } catch (e: Exception) {
+                android.util.Log.e("TunNatHub", "配置加载失败: ${e.javaClass.simpleName} ${e.message}")
             }
-            if (camList.isNotEmpty()) {
-                cameras = camList
-                if (rtspUrl.isEmpty()) rtspUrl = camList[0].url
-            }
-            // Parse port forwards
-            val fwdList = mutableListOf<FwdInfo>()
-            val fwdPattern = Regex("\"proto\": \"(\\w+)\"[^}]*\"port\": (\\d+)[^}]*\"dest\": \"([^\"]+)\"")
-            fwdPattern.findAll(text).forEach { m ->
-                fwdList.add(FwdInfo(m.groupValues[1], m.groupValues[2].toInt(), m.groupValues[3]))
-            }
-            forwards = fwdList
-        } catch (_: Exception) {}
+        }
     }
 
     val receiver = remember {

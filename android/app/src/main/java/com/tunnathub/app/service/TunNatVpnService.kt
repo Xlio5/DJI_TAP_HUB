@@ -24,6 +24,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import androidx.compose.runtime.mutableStateOf
 import com.tunnathub.app.MainActivity
 import com.tunnathub.app.R
 import com.tunnathub.app.usb.UsbBridge
@@ -36,9 +37,11 @@ class TunNatVpnService : VpnService() {
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "tun_nat_hub_vpn"
 
-        /** 供 MainActivity 查询 VPN 运行状态 */
-        @Volatile var isRunning = false
-            private set
+        /** 供 MainActivity Compose 观察 VPN 运行状态 */
+        val isRunningState = mutableStateOf(false)
+        var isRunning: Boolean
+            get() = isRunningState.value
+            private set(value) { isRunningState.value = value }
 
         /** 当前 VpnService 实例（供 protectSocket 静态调用） */
         @Volatile private var instance: TunNatVpnService? = null
@@ -53,9 +56,11 @@ class TunNatVpnService : VpnService() {
         private const val TUN_PREFIX = 24
         private const val TUN_MTU = 1400
 
-        // 路由: 仅捕获局域网流量
+        // 路由: 局域网流量 + VPN 本网段（心跳/API 走 USB 隧道而非 WiFi）
         private const val LAN_ROUTE = "192.168.88.0"
         private const val LAN_PREFIX = 24
+        private const val TUN_ROUTE = "10.0.0.0"
+        private const val TUN_PREFIX_ROUTE = 24
 
         // DNS（局域网网关，可选）
         private const val LAN_DNS = "192.168.88.1"
@@ -150,6 +155,7 @@ class TunNatVpnService : VpnService() {
             .setMtu(TUN_MTU)
             .addAddress(TUN_ADDRESS, TUN_PREFIX)
             .addRoute(LAN_ROUTE, LAN_PREFIX)
+            .addRoute(TUN_ROUTE, TUN_PREFIX_ROUTE)
             .addDnsServer(LAN_DNS)
             .setBlocking(true)   // 阻塞模式，配合 Dispatchers.IO
             .allowBypass()       // 允许 protect() 的 socket 绕过 VPN
