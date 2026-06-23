@@ -532,25 +532,20 @@ def get_heartbeat():
     except: pass
     uptime = subprocess.run(["uptime","-s"],capture_output=True,text=True).stdout.strip()
 
-    # 从 daemon 日志解析实时带宽
+    # 从内核 TUN 统计读取实时带宽（而非 daemon 日志，日志 5s 才更新一次）
     tx_bytes = 0; rx_bytes = 0; bandwidth = "0.0"
     try:
-        r = subprocess.run(["journalctl","-u","tun_nat_hub","--no-pager","-n","1","-o","cat"],
-                          capture_output=True, text=True, timeout=3)
-        for p in r.stdout.strip().split():
-            if "TX=" in p:
-                v = p.split("=")[1].split("/")
-                tx_bytes = int(v[1].replace("B",""))
-            elif "RX=" in p:
-                v = p.split("=")[1].split("/")
-                rx_bytes = int(v[1].replace("B",""))
+        with open("/sys/class/net/tun_hub/statistics/tx_bytes") as f: tx_bytes = int(f.read().strip())
+        with open("/sys/class/net/tun_hub/statistics/rx_bytes") as f: rx_bytes = int(f.read().strip())
         global _hb_prev
         now = time.time()
         if _hb_prev["time"] > 0:
             elapsed = now - _hb_prev["time"]
             if elapsed > 0:
                 tx_diff = tx_bytes - _hb_prev["tx"]
-                mbps = (tx_diff * 8) / (elapsed * 1_000_000)
+                rx_diff = rx_bytes - _hb_prev["rx"]
+                # 使用 TX+RX 总和计算双向带宽
+                mbps = ((tx_diff + rx_diff) * 8) / (elapsed * 1_000_000)
                 bandwidth = f"{mbps:.1f}"
         _hb_prev = {"time": now, "tx": tx_bytes, "rx": rx_bytes}
     except: pass
