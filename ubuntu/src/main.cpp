@@ -16,6 +16,9 @@
 #include <fcntl.h>
 #include <termios.h>
 #include <errno.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 extern "C" {
 #include "frame.h"
@@ -30,6 +33,31 @@ static void sigHandler(int s) { gRunning = false; }
 struct Stats {
     std::atomic<uint64_t> tx{0}, rx{0}, txB{0}, rxB{0}, err{0};
 };
+
+/* ── TCP 延迟测试端口 (Android 端测隧道 RTT) ───────────── */
+static void tcpPingServer() {
+    int srv = socket(AF_INET, SOCK_STREAM, 0);
+    if (srv < 0) { std::cerr << "[PING] socket failed" << std::endl; return; }
+    int one = 1;
+    setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+
+    struct sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(9999);
+    inet_pton(AF_INET, "10.0.0.1", &addr.sin_addr);
+    if (bind(srv, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        std::cerr << "[PING] bind 10.0.0.1:9999 failed: " << strerror(errno) << std::endl;
+        close(srv); return;
+    }
+    if (listen(srv, 8) < 0) { perror("listen"); close(srv); return; }
+    std::cout << "[PING] TCP 延迟测试端口 10.0.0.1:9999" << std::endl;
+
+    while (gRunning) {
+        int cli = accept(srv, nullptr, nullptr);
+        if (cli >= 0) close(cli);  // 只测 TCP 握手 RTT，不接受数据
+    }
+    close(srv);
+}
 
 static int ttyOpen(const std::string& path) {
     for (int i = 0; i < 30 && gRunning; i++) {
@@ -166,6 +194,7 @@ int main(int argc, char* argv[]) {
 
         std::thread t1(tunToTty, std::ref(tun), std::ref(stats));
         std::thread t2(ttyToTun, std::ref(tun), std::ref(stats));
+        std::thread t3(tcpPingServer);
 
         // 主循环: 监控 TTY fd 并自动重连
         int tick = 0;
@@ -192,7 +221,7 @@ int main(int argc, char* argv[]) {
 
         tun.close();
         if (fd >= 0) ::close(fd);
-        t1.join(); t2.join();
+        t1.join(); t2.join(); t3.join();
     } catch (const std::exception& e) {
         std::cerr << "[致命] " << e.what() << std::endl;
         return 1;
