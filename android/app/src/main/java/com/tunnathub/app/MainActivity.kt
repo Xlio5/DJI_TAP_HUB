@@ -490,47 +490,84 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
 
                             // ── 端口转发 ──
                             Text("🔀 端口转发", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                            Text("PC → 192.168.88.66:端口 → DJI (10.0.0.2)", fontSize = 9.sp,
+                            Text("PC → 192.168.88.66:端口 → DJI RC", fontSize = 9.sp,
                                 color = Color(0xFF475569), modifier = Modifier.padding(top = 2.dp))
-                            Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.height(6.dp))
+                            // 行1: 协议 + 外网端口
                             Row(modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                TextButton(onClick = {
-                                    fwdProto = if (fwdProto == "udp") "tcp" else "udp"
-                                }, modifier = Modifier.height(24.dp),
-                                    contentPadding = PaddingValues(3.dp, 0.dp)
-                                ) { Text(fwdProto.uppercase(), fontSize = 9.sp, color = Color(0xFF38BDF8)) }
-                                OutlinedTextField(value = fwdPort, onValueChange = { fwdPort = it },
-                                    modifier = Modifier.width(52.dp).height(36.dp), singleLine = true,
-                                    textStyle = LocalTextStyle.current.copy(fontSize = 10.sp,
-                                        color = Color(0xFFE2E8F0)),
+                                Surface(
+                                    modifier = Modifier.height(44.dp).widthIn(min = 52.dp),
+                                    color = Color(0xFF1E293B), shape = RoundedCornerShape(8.dp),
+                                    onClick = { fwdProto = if (fwdProto == "udp") "tcp" else "udp" }
+                                ) {
+                                    Box(contentAlignment = Alignment.Center,
+                                        modifier = Modifier.fillMaxSize()) {
+                                        Text(fwdProto.uppercase(), fontSize = 14.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = Color(0xFF38BDF8))
+                                    }
+                                }
+                                OutlinedTextField(
+                                    value = fwdPort, onValueChange = { fwdPort = it },
+                                    modifier = Modifier.weight(1f).height(44.dp),
+                                    singleLine = true,
+                                    textStyle = LocalTextStyle.current.copy(
+                                        fontSize = 16.sp, color = Color.White),
                                     colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = Color.White,
+                                        unfocusedTextColor = Color.White,
+                                        focusedContainerColor = Color(0xFF1E293B),
+                                        unfocusedContainerColor = Color(0xFF1E293B),
                                         focusedBorderColor = Color(0xFF38BDF8),
-                                        unfocusedBorderColor = Color(0xFF334155)),
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    placeholder = { Text("外网端口", fontSize = 9.sp, color = Color(0xFF475569)) })
-                                OutlinedTextField(value = fwdDest, onValueChange = { fwdDest = it },
-                                    modifier = Modifier.width(72.dp).height(36.dp), singleLine = true,
-                                    textStyle = LocalTextStyle.current.copy(fontSize = 10.sp,
-                                        color = Color(0xFFE2E8F0)),
+                                        unfocusedBorderColor = Color(0xFF475569),
+                                        cursorColor = Color(0xFF38BDF8)),
+                                    keyboardOptions = KeyboardOptions(
+                                        keyboardType = KeyboardType.Number),
+                                    placeholder = { Text("外网端口 如5566", fontSize = 13.sp,
+                                        color = Color(0xFF64748B)) }
+                                )
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            // 行2: DJI IP + 添加
+                            Row(modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = fwdDest, onValueChange = { fwdDest = it },
+                                    modifier = Modifier.weight(1f).height(44.dp),
+                                    singleLine = true,
+                                    textStyle = LocalTextStyle.current.copy(
+                                        fontSize = 16.sp, color = Color.White),
                                     colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = Color.White,
+                                        unfocusedTextColor = Color.White,
+                                        focusedContainerColor = Color(0xFF1E293B),
+                                        unfocusedContainerColor = Color(0xFF1E293B),
                                         focusedBorderColor = Color(0xFF38BDF8),
-                                        unfocusedBorderColor = Color(0xFF334155)),
-                                    placeholder = { Text("DJI IP", fontSize = 9.sp, color = Color(0xFF475569)) })
-                                Button(onClick = {
-                                    val port = fwdPort.toIntOrNull() ?: return@Button
-                                    if (port < 1 || port > 65535) return@Button
-                                    apiPost("/api/forward/add",
-                                        """{"proto":"$fwdProto","port":$port,"dest":"$fwdDest"}""")
-                                    fwdPort = ""
-                                    forwards = forwards + FwdInfo(fwdProto, port, fwdDest)
-                                }, modifier = Modifier.height(26.dp),
-                                    contentPadding = PaddingValues(3.dp, 0.dp),
+                                        unfocusedBorderColor = Color(0xFF475569),
+                                        cursorColor = Color(0xFF38BDF8)),
+                                    placeholder = { Text("DJI IP 如10.0.0.2", fontSize = 13.sp,
+                                        color = Color(0xFF64748B)) }
+                                )
+                                Button(
+                                    onClick = {
+                                        val port = fwdPort.toIntOrNull() ?: return@Button
+                                        if (port < 1 || port > 65535) return@Button
+                                        apiPost("/api/forward/add",
+                                            """{"proto":"$fwdProto","port":$port,"dest":"$fwdDest"}""")
+                                        fwdPort = ""
+                                        forwards = forwards + FwdInfo(
+                                            fwdProto, port, fwdDest)
+                                    },
+                                    modifier = Modifier.height(44.dp).width(44.dp),
+                                    contentPadding = PaddingValues(0.dp),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = Color(0xFF2563EB))
-                                ) { Text("＋", fontSize = 10.sp) }
+                                ) { Text("＋", fontSize = 20.sp) }
                             }
                             if (forwards.isEmpty()) {
                                 Text("示例: UDP 5566 → 10.0.0.2", fontSize = 9.sp, color = Color(0xFF475569),
