@@ -26,7 +26,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PowerSettingsNew
@@ -144,6 +147,12 @@ class MainActivity : ComponentActivity() {
 fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
     val ctx = LocalContext.current
     val prefs = ctx.getSharedPreferences("tun_nat_hub", Context.MODE_PRIVATE)
+
+    fun fmtSize(bytes: Long): String = when {
+        bytes > 1024 * 1024 -> " %.1fM".format(bytes / 1024f / 1024f)
+        bytes > 1024 -> " %.0fK".format(bytes / 1024f)
+        else -> " ${bytes}B"
+    }
 
     val savedUrl = prefs.getString("rtsp_url", "rtsp://192.168.88.100:554/stream1")
         ?: "rtsp://192.168.88.100:554/stream1"
@@ -293,271 +302,293 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
         }
     }
 
+    // 延迟测试状态 (提升到顶层，避免滚动时丢失)
+    var latencyText by remember { mutableStateOf("") }
+    var testing by remember { mutableStateOf(false) }
+
     MaterialTheme(colorScheme = darkColorScheme(
         background = Color(0xFF0F172A), surface = Color(0xFF1E293B), primary = Color(0xFF38BDF8),
         onBackground = Color(0xFFE2E8F0), onSurface = Color(0xFFE2E8F0), surfaceVariant = Color(0xFF1E293B)
     )) {
         Row(modifier = Modifier.fillMaxSize().background(Color(0xFF0F172A))) {
 
-            // ═══ 侧边栏：展开时 340dp，收起时隐藏 ═══
+            // ═══ 侧边栏：320dp，上下固定 + 中间可滚动 ═══
             if (sidebarExpanded) {
-                Surface(modifier = Modifier.width(340.dp).fillMaxHeight(),
+                Surface(modifier = Modifier.width(320.dp).fillMaxHeight(),
                     color = Color(0xFF111827), shadowElevation = 8.dp
                 ) {
-                    Column(modifier = Modifier.fillMaxHeight().padding(16.dp), verticalArrangement = Arrangement.Top) {
-                        // 标题行 + 折叠按钮
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                    Column(modifier = Modifier.fillMaxHeight()) {
+                        // ── 顶部固定区：标题 + 关键状态（始终可见） ──
+                        Surface(modifier = Modifier.fillMaxWidth(), color = Color(0xFF0F172A),
+                            shadowElevation = 4.dp
                         ) {
-                            Column {
-                                Text("TUN NAT HUB", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
-                                Text("USB 隧道 · 视频传输", fontSize = 11.sp, color = Color(0xFF64748B))
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                // 标题行
+                                Row(modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("TUN NAT HUB", fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF38BDF8))
+                                    TextButton(onClick = { sidebarExpanded = false },
+                                        modifier = Modifier.size(28.dp), contentPadding = PaddingValues(0.dp)
+                                    ) { Text("◀", fontSize = 12.sp, color = Color(0xFF94A3B8)) }
+                                }
+
+                                Spacer(Modifier.height(8.dp))
+
+                                // USB + VPN 状态 (紧凑一行)
+                                Row(modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Surface(modifier = Modifier.size(7.dp),
+                                            shape = androidx.compose.foundation.shape.CircleShape,
+                                            color = if (usbFound) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
+                                        Spacer(Modifier.width(5.dp))
+                                        Text(if (usbFound) "USB" else "无USB", fontSize = 11.sp,
+                                            color = if (usbFound) Color(0xFF22C55E) else Color(0xFF94A3B8))
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Surface(modifier = Modifier.size(7.dp),
+                                            shape = androidx.compose.foundation.shape.CircleShape,
+                                            color = if (vpnRunning) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
+                                        Spacer(Modifier.width(5.dp))
+                                        Text(if (vpnRunning) "VPN" else "无VPN", fontSize = 11.sp,
+                                            color = if (vpnRunning) Color(0xFF22C55E) else Color(0xFF94A3B8))
+                                    }
+                                    Button(onClick = onVpnTap, enabled = usbFound,
+                                        modifier = Modifier.height(28.dp),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (vpnRunning) Color(0xFFDC2626) else Color(0xFF2563EB))
+                                    ) { Text(if (vpnRunning) "断开" else "连接", fontSize = 11.sp) }
+                                }
+
+                                Spacer(Modifier.height(6.dp))
+
+                                // ── 心跳状态 (紧凑单行) ──
+                                if (vpnRunning && hbCount > 0) {
+                                    Row(modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Surface(modifier = Modifier.size(5.dp),
+                                                shape = androidx.compose.foundation.shape.CircleShape,
+                                                color = if (hbDaemon) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
+                                            Spacer(Modifier.width(2.dp))
+                                            Surface(modifier = Modifier.size(5.dp),
+                                                shape = androidx.compose.foundation.shape.CircleShape,
+                                                color = if (hbTty) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
+                                            Spacer(Modifier.width(2.dp))
+                                            Surface(modifier = Modifier.size(5.dp),
+                                                shape = androidx.compose.foundation.shape.CircleShape,
+                                                color = if (hbTun) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
+                                            Spacer(Modifier.width(6.dp))
+                                            Text("${hbBw} Mbps", fontSize = 11.sp, fontWeight = FontWeight.Medium,
+                                                color = Color(0xFF38BDF8))
+                                        }
+                                        Text("Tx${fmtSize(hbTx)} Rx${fmtSize(hbRx)}",
+                                            fontSize = 9.sp, color = Color(0xFF64748B))
+                                    }
+                                } else if (vpnRunning) {
+                                    Text("⏳ 链路轮询中...", fontSize = 11.sp, color = Color(0xFF64748B))
+                                } else {
+                                    Text("等待 VPN 连接...", fontSize = 11.sp, color = Color(0xFF475569))
+                                }
                             }
-                            TextButton(onClick = { sidebarExpanded = false }, modifier = Modifier.size(32.dp),
-                                contentPadding = PaddingValues(0.dp)
-                            ) { Text("◀", fontSize = 14.sp, color = Color(0xFF94A3B8)) }
                         }
 
-                        Spacer(Modifier.height(12.dp))
+                        HorizontalDivider(color = Color(0xFF1E293B))
 
-                        // USB 状态
-                        Row(modifier = Modifier.padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Surface(modifier = Modifier.size(8.dp), shape = androidx.compose.foundation.shape.CircleShape,
-                                color = if (usbFound) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
-                            Spacer(Modifier.width(8.dp))
-                            Text(if (usbFound) "USB 已检测" else "USB 未连接", fontSize = 13.sp,
-                                color = if (usbFound) Color(0xFF22C55E) else Color(0xFF94A3B8))
-                        }
-
-                        // VPN 状态 + 按钮
-                        Row(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween
+                        // ── 中间可滚动区 ──
+                        val scrollState = rememberScrollState()
+                        Column(modifier = Modifier.weight(1f).verticalScroll(scrollState).padding(14.dp),
+                            verticalArrangement = Arrangement.Top
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Surface(modifier = Modifier.size(8.dp), shape = androidx.compose.foundation.shape.CircleShape,
-                                    color = if (vpnRunning) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
-                                Spacer(Modifier.width(8.dp))
-                                Text(if (vpnRunning) "VPN 已连接" else "VPN 未连接", fontSize = 13.sp,
-                                    color = if (vpnRunning) Color(0xFF22C55E) else Color(0xFF94A3B8))
-                            }
-                            Button(onClick = onVpnTap, enabled = usbFound, modifier = Modifier.height(34.dp),
-                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 2.dp),
+                            // 播放区域
+                            Text("RTSP 地址", fontSize = 11.sp, color = Color(0xFF94A3B8),
+                                modifier = Modifier.padding(bottom = 4.dp))
+                            OutlinedTextField(value = rtspUrl, onValueChange = { rtspUrl = it },
+                                modifier = Modifier.fillMaxWidth(), singleLine = true,
+                                textStyle = LocalTextStyle.current.copy(fontSize = 12.sp, color = Color(0xFFE2E8F0)),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF38BDF8),
+                                    unfocusedBorderColor = Color(0xFF334155),
+                                    cursorColor = Color(0xFF38BDF8)),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri,
+                                    imeAction = ImeAction.Done))
+
+                            Spacer(Modifier.height(6.dp))
+
+                            // 播放按钮 + 状态
+                            Button(onClick = { togglePlay() },
+                                modifier = Modifier.fillMaxWidth().height(36.dp),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (vpnRunning) Color(0xFFDC2626) else Color(0xFF2563EB))
-                            ) { Text(if (vpnRunning) "断开" else "连接", fontSize = 13.sp) }
-                        }
+                                    containerColor = if (isPlaying) Color(0xFFDC2626) else Color(0xFF16A34A))
+                            ) { Text(if (isPlaying) "■ 停止" else "▶ 播放", fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium) }
 
-                        HorizontalDivider(color = Color(0xFF1E293B))
-
-                        // RTSP 地址
-                        Text("RTSP 摄像头地址", fontSize = 12.sp, color = Color(0xFF94A3B8),
-                            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
-                        OutlinedTextField(value = rtspUrl, onValueChange = { rtspUrl = it },
-                            modifier = Modifier.fillMaxWidth(), singleLine = true,
-                            textStyle = LocalTextStyle.current.copy(fontSize = 13.sp, color = Color(0xFFE2E8F0)),
-                            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color(0xFF38BDF8),
-                                unfocusedBorderColor = Color(0xFF334155), cursorColor = Color(0xFF38BDF8)),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done))
-
-                        Spacer(Modifier.height(8.dp))
-
-                        // 播放/停止按钮
-                        Button(onClick = { togglePlay() }, modifier = Modifier.fillMaxWidth().height(40.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isPlaying) Color(0xFFDC2626) else Color(0xFF16A34A))
-                        ) { Text(if (isPlaying) "■ 停止播放" else "▶ 开始播放", fontSize = 14.sp, fontWeight = FontWeight.Medium) }
-
-                        Spacer(Modifier.height(10.dp))
-
-                        // 状态
-                        if (statusText.isNotEmpty()) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (isPlaying) { Surface(modifier = Modifier.size(6.dp),
-                                    shape = androidx.compose.foundation.shape.CircleShape, color = Color(0xFF22C55E)) {}
-                                    Spacer(Modifier.width(6.dp)) }
-                                Text(statusText, fontSize = 12.sp, color = if (isPlaying) Color(0xFF22C55E) else Color(0xFF94A3B8))
+                            if (statusText.isNotEmpty()) {
+                                Spacer(Modifier.height(4.dp))
+                                Text(statusText, fontSize = 11.sp,
+                                    color = if (isPlaying) Color(0xFF22C55E) else Color(0xFF94A3B8))
                             }
-                        }
-                        if (resolutionText.isNotEmpty())
-                            Text(resolutionText, fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            if (resolutionText.isNotEmpty())
+                                Text(resolutionText, fontSize = 10.sp, color = Color(0xFF64748B))
 
-                        Spacer(Modifier.height(8.dp))
-                        HorizontalDivider(color = Color(0xFF1E293B))
+                            Spacer(Modifier.height(8.dp))
 
-                        // ── 延迟测试 ──
-                        var latencyText by remember { mutableStateOf("") }
-                        var testing by remember { mutableStateOf(false) }
-                        Row(modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("隧道延迟", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                            Button(onClick = {
-                                if (!testing && vpnRunning) {
-                                    testing = true; latencyText = "测试中..."
-                                    Thread {
-                                        val rtts = mutableListOf<Double>()
-                                        var drops = 0
-                                        try {
-                                            for (i in 0 until 10) {
-                                                try {
-                                                    val t0 = System.nanoTime()
-                                                    val s = java.net.Socket()
-                                                    s.connect(java.net.InetSocketAddress("10.0.0.1", 9999), 3000)
-                                                    val t1 = System.nanoTime()
-                                                    s.close()
-                                                    rtts.add((t1 - t0) / 1_000_000.0)
-                                                } catch (_: Exception) { drops++ }
-                                            }
-                                            if (rtts.isNotEmpty()) {
-                                                rtts.sort()
-                                                val avg = rtts.average()
-                                                val p50 = rtts[rtts.size / 2]
-                                                val p95 = rtts[(rtts.size * 0.95).toInt()]
-                                                latencyText = "%.1f/%.1f/%.1f ms (avg/p50/p95, 丢包=$drops)".format(avg, p50, p95)
-                                            } else { latencyText = "全部丢包 ($drops/10)" }
-                                        } catch (e: Exception) { latencyText = "失败: ${e.message}" }
-                                        testing = false
-                                    }.start()
-                                }
-                            }, enabled = vpnRunning && !testing, modifier = Modifier.height(30.dp),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))
-                            ) { Text(if (testing) "⏳" else "⏱ 测延迟", fontSize = 11.sp) }
-                        }
-                        if (latencyText.isNotEmpty())
-                            Text(latencyText, fontSize = 10.sp, color = Color(0xFF38BDF8), modifier = Modifier.padding(top = 2.dp))
+                            // ── 延迟测试 ──
+                            Row(modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("隧道延迟", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                Button(onClick = {
+                                    if (!testing && vpnRunning) {
+                                        testing = true; latencyText = "测试中..."
+                                        Thread {
+                                            val rtts = mutableListOf<Double>()
+                                            var drops = 0
+                                            try {
+                                                for (i in 0 until 10) {
+                                                    try {
+                                                        val t0 = System.nanoTime()
+                                                        val s = java.net.Socket()
+                                                        s.connect(java.net.InetSocketAddress("10.0.0.1", 9999), 3000)
+                                                        val t1 = System.nanoTime()
+                                                        s.close()
+                                                        rtts.add((t1 - t0) / 1_000_000.0)
+                                                    } catch (_: Exception) { drops++ }
+                                                }
+                                                if (rtts.isNotEmpty()) {
+                                                    rtts.sort()
+                                                    val avg = rtts.average()
+                                                    val p50 = rtts[rtts.size / 2]
+                                                    val p95 = rtts[(rtts.size * 0.95).toInt()]
+                                                    latencyText = "%.1f/%.1f/%.1f ms (丢$drops)".format(avg, p50, p95)
+                                                } else { latencyText = "全部丢包 ($drops/10)" }
+                                            } catch (e: Exception) { latencyText = "失败" }
+                                            testing = false
+                                        }.start()
+                                    }
+                                }, enabled = vpnRunning && !testing, modifier = Modifier.height(28.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))
+                                ) { Text(if (testing) "⏳" else "⏱", fontSize = 11.sp) }
+                            }
+                            if (latencyText.isNotEmpty())
+                                Text(latencyText, fontSize = 9.sp, color = Color(0xFF38BDF8),
+                                    modifier = Modifier.padding(top = 2.dp))
 
-                        // ── 心跳状态 (USB隧道 10.0.0.1:8080) ──
-                        Spacer(Modifier.height(6.dp))
-                        HorizontalDivider(color = Color(0xFF1E293B))
-                        Spacer(Modifier.height(4.dp))
-                        if (vpnRunning && hbCount > 0) {
-                            Text("❤️ 链路状态 · ${hbBw} Mbps", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                            Spacer(Modifier.height(2.dp))
-                            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-                                Text("Tx ${if (hbTx > 1024*1024) "%.1f MB".format(hbTx/1024f/1024f) else "%.0f KB".format(hbTx/1024f)}" +
-                                    " | Rx ${if (hbRx > 1024*1024) "%.1f MB".format(hbRx/1024f/1024f) else "%.0f KB".format(hbRx/1024f)}",
-                                    fontSize = 9.sp, color = Color(0xFF64748B))
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Surface(modifier = Modifier.size(6.dp), shape = androidx.compose.foundation.shape.CircleShape,
-                                    color = if (hbDaemon) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
-                                Spacer(Modifier.width(4.dp))
-                                Text(if (hbDaemon) "Daemon" else "Daemon 离线", fontSize = 10.sp,
-                                    color = if (hbDaemon) Color(0xFF22C55E) else Color(0xFFEF4444))
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Surface(modifier = Modifier.size(6.dp), shape = androidx.compose.foundation.shape.CircleShape,
-                                    color = if (hbTty) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
-                                Spacer(Modifier.width(4.dp))
-                                Text(if (hbTty) "ttyGS0" else "ttyGS0 未检测", fontSize = 10.sp,
-                                    color = if (hbTty) Color(0xFF22C55E) else Color(0xFFEF4444))
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Surface(modifier = Modifier.size(6.dp), shape = androidx.compose.foundation.shape.CircleShape,
-                                    color = if (hbTun) Color(0xFF22C55E) else Color(0xFFEF4444)) {}
-                                Spacer(Modifier.width(4.dp))
-                                Text(if (hbTun) "tun_hub" else "tun_hub DOWN", fontSize = 10.sp,
-                                    color = if (hbTun) Color(0xFF22C55E) else Color(0xFFEF4444))
-                            }
-                        } else if (vpnRunning) {
-                            Text("❤️ 链路状态 · 轮询中...", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                            Spacer(Modifier.height(2.dp))
-                            Text("首次轮询将在几秒后完成", fontSize = 9.sp, color = Color(0xFF64748B))
-                        }
+                            Spacer(Modifier.height(8.dp))
+                            HorizontalDivider(color = Color(0xFF1E293B))
+                            Spacer(Modifier.height(6.dp))
 
-                        // ── 端口转发 ──
-                        Spacer(Modifier.height(6.dp))
-                        HorizontalDivider(color = Color(0xFF1E293B))
-                        Spacer(Modifier.height(4.dp))
-                        Text("🔀 端口转发 (外网→DJI)", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                        Spacer(Modifier.height(4.dp))
-                        // 添加表单
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            TextButton(onClick = {
-                                fwdProto = if (fwdProto == "udp") "tcp" else "udp"
-                            }, modifier = Modifier.height(26.dp), contentPadding = PaddingValues(4.dp, 0.dp)) {
-                                Text(fwdProto.uppercase(), fontSize = 10.sp, color = Color(0xFF38BDF8))
+                            // ── 端口转发 ──
+                            Text("🔀 端口转发", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            Spacer(Modifier.height(4.dp))
+                            Row(modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(onClick = {
+                                    fwdProto = if (fwdProto == "udp") "tcp" else "udp"
+                                }, modifier = Modifier.height(24.dp),
+                                    contentPadding = PaddingValues(3.dp, 0.dp)
+                                ) { Text(fwdProto.uppercase(), fontSize = 9.sp, color = Color(0xFF38BDF8)) }
+                                OutlinedTextField(value = fwdPort, onValueChange = { fwdPort = it },
+                                    modifier = Modifier.width(48.dp).height(36.dp), singleLine = true,
+                                    textStyle = LocalTextStyle.current.copy(fontSize = 10.sp,
+                                        color = Color(0xFFE2E8F0)),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = Color(0xFF38BDF8),
+                                        unfocusedBorderColor = Color(0xFF334155)),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    placeholder = { Text("端口", fontSize = 9.sp, color = Color(0xFF475569)) })
+                                OutlinedTextField(value = fwdDest, onValueChange = { fwdDest = it },
+                                    modifier = Modifier.width(76.dp).height(36.dp), singleLine = true,
+                                    textStyle = LocalTextStyle.current.copy(fontSize = 10.sp,
+                                        color = Color(0xFFE2E8F0)),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = Color(0xFF38BDF8),
+                                        unfocusedBorderColor = Color(0xFF334155)),
+                                    placeholder = { Text("目标IP", fontSize = 9.sp, color = Color(0xFF475569)) })
+                                Button(onClick = {
+                                    val port = fwdPort.toIntOrNull() ?: return@Button
+                                    if (port < 1 || port > 65535) return@Button
+                                    apiPost("/api/forward/add",
+                                        """{"proto":"$fwdProto","port":$port,"dest":"$fwdDest"}""")
+                                    fwdPort = ""
+                                    forwards = forwards + FwdInfo(fwdProto, port, fwdDest)
+                                }, modifier = Modifier.height(26.dp),
+                                    contentPadding = PaddingValues(3.dp, 0.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFF2563EB))
+                                ) { Text("＋", fontSize = 10.sp) }
                             }
-                            OutlinedTextField(value = fwdPort, onValueChange = { fwdPort = it },
-                                modifier = Modifier.width(50.dp).height(40.dp), singleLine = true,
-                                textStyle = LocalTextStyle.current.copy(fontSize = 10.sp, color = Color(0xFFE2E8F0)),
-                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color(0xFF38BDF8), unfocusedBorderColor = Color(0xFF334155)),
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                placeholder = { Text("端口", fontSize = 9.sp, color = Color(0xFF475569)) })
-                            OutlinedTextField(value = fwdDest, onValueChange = { fwdDest = it },
-                                modifier = Modifier.width(80.dp).height(40.dp), singleLine = true,
-                                textStyle = LocalTextStyle.current.copy(fontSize = 10.sp, color = Color(0xFFE2E8F0)),
-                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color(0xFF38BDF8), unfocusedBorderColor = Color(0xFF334155)),
-                                placeholder = { Text("目标IP", fontSize = 9.sp, color = Color(0xFF475569)) })
-                            Button(onClick = {
-                                val port = fwdPort.toIntOrNull() ?: return@Button
-                                if (port < 1 || port > 65535) return@Button
-                                val body = """{"proto":"$fwdProto","port":$port,"dest":"$fwdDest"}"""
-                                apiPost("/api/forward/add", body)
-                                fwdPort = ""
-                                // Optimistic update
-                                forwards = forwards + FwdInfo(fwdProto, port, fwdDest)
-                            }, modifier = Modifier.height(28.dp), contentPadding = PaddingValues(4.dp, 0.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
-                            ) { Text("＋", fontSize = 11.sp) }
-                        }
-                        // 规则列表
-                        if (forwards.isEmpty()) {
-                            Text("暂无转发规则", fontSize = 9.sp, color = Color(0xFF475569),
-                                modifier = Modifier.padding(start = 2.dp, top = 2.dp))
-                        } else {
-                            forwards.forEach { f ->
-                                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text("${f.proto.uppercase()} :${f.port} → ${f.dest}",
-                                        fontSize = 10.sp, color = Color(0xFF94A3B8),
-                                        modifier = Modifier.weight(1f))
-                                    TextButton(onClick = {
-                                        apiPost("/api/forward/del", """{"port":${f.port}}""")
-                                        forwards = forwards.filter { it.port != f.port }
-                                    }, modifier = Modifier.height(20.dp), contentPadding = PaddingValues(2.dp, 0.dp)
-                                    ) { Text("✕", fontSize = 9.sp, color = Color(0xFFEF4444)) }
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.weight(1f))
-
-                        // ── 摄像头切换 ──
-                        if (cameras.isNotEmpty()) {
-                            Text("📹 摄像头", fontSize = 10.sp, color = Color(0xFF94A3B8))
-                            cameras.forEachIndexed { i, c ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Surface(modifier = Modifier.size(6.dp), shape = androidx.compose.foundation.shape.CircleShape,
-                                        color = if (i == selectedCam) Color(0xFF38BDF8) else Color(0xFF334155)) {}
-                                    Spacer(Modifier.width(4.dp))
-                                    Text(c.name, fontSize = 10.sp,
-                                        color = if (i == selectedCam) Color(0xFF38BDF8) else Color(0xFF64748B),
-                                        modifier = Modifier.weight(1f))
-                                    if (i != selectedCam) {
-                                        TextButton(onClick = { selectedCam = i; rtspUrl = cameras[i].url },
-                                            modifier = Modifier.height(20.dp), contentPadding = PaddingValues(4.dp, 0.dp)
-                                        ) { Text("切", fontSize = 9.sp, color = Color(0xFF38BDF8)) }
+                            if (forwards.isEmpty()) {
+                                Text("暂无规则", fontSize = 9.sp, color = Color(0xFF475569),
+                                    modifier = Modifier.padding(start = 2.dp, top = 2.dp))
+                            } else {
+                                forwards.forEach { f ->
+                                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("${f.proto.uppercase()} :${f.port}→${f.dest}",
+                                            fontSize = 9.sp, color = Color(0xFF94A3B8),
+                                            modifier = Modifier.weight(1f))
+                                        TextButton(onClick = {
+                                            apiPost("/api/forward/del", """{"port":${f.port}}""")
+                                            forwards = forwards.filter { it.port != f.port }
+                                        }, modifier = Modifier.height(18.dp),
+                                            contentPadding = PaddingValues(2.dp, 0.dp)
+                                        ) { Text("✕", fontSize = 8.sp, color = Color(0xFFEF4444)) }
                                     }
                                 }
                             }
-                            Spacer(Modifier.height(4.dp))
+
+                            // ── 摄像头列表 ──
+                            if (cameras.isNotEmpty()) {
+                                Spacer(Modifier.height(8.dp))
+                                HorizontalDivider(color = Color(0xFF1E293B))
+                                Spacer(Modifier.height(4.dp))
+                                Text("📹 摄像头", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                cameras.forEachIndexed { i, c ->
+                                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Surface(modifier = Modifier.size(5.dp),
+                                            shape = androidx.compose.foundation.shape.CircleShape,
+                                            color = if (i == selectedCam) Color(0xFF38BDF8) else Color(0xFF334155)) {}
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(c.name, fontSize = 9.sp,
+                                            color = if (i == selectedCam) Color(0xFF38BDF8) else Color(0xFF64748B),
+                                            modifier = Modifier.weight(1f))
+                                        if (i != selectedCam) {
+                                            TextButton(onClick = {
+                                                selectedCam = i; rtspUrl = cameras[i].url
+                                            }, modifier = Modifier.height(18.dp),
+                                                contentPadding = PaddingValues(3.dp, 0.dp)
+                                            ) { Text("切", fontSize = 8.sp, color = Color(0xFF38BDF8)) }
+                                        }
+                                    }
+                                }
+                            }
                         }
 
-                        HorizontalDivider(color = Color(0xFF1E293B), modifier = Modifier.padding(vertical = 8.dp))
-                        Text("RK3588: 192.168.88.66", fontSize = 10.sp, color = Color(0xFF475569))
-                        Text("TUN: 10.0.0.0/24", fontSize = 10.sp, color = Color(0xFF475569))
-                        Text("VID 0x0BDA PID 0x8812", fontSize = 10.sp, color = Color(0xFF475569))
-                        Spacer(Modifier.height(4.dp))
-                        Text("v${BuildConfig.VERSION_NAME}", fontSize = 10.sp, color = Color(0xFF38BDF8))
+                        // ── 底部固定区：版本/设备信息 ──
+                        HorizontalDivider(color = Color(0xFF1E293B))
+                        Surface(modifier = Modifier.fillMaxWidth(), color = Color(0xFF0F172A)) {
+                            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                                Text("RK3588 192.168.88.66", fontSize = 9.sp, color = Color(0xFF475569))
+                                Text("TUN 10.0.0.0/24 · VID 0x0BDA", fontSize = 9.sp, color = Color(0xFF475569))
+                                Text("v${BuildConfig.VERSION_NAME}", fontSize = 10.sp, color = Color(0xFF38BDF8))
+                            }
+                        }
                     }
                 }
             }
@@ -572,12 +603,15 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                             factory = { SurfaceView(it).apply { surfaceViewRef = this } },
                             modifier = Modifier.fillMaxWidth(0.94f).aspectRatio(16f / 9f),
                             update = { sv -> sv.layoutParams = FrameLayout.LayoutParams(
-                                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+                                FrameLayout.LayoutParams.MATCH_PARENT,
+                                FrameLayout.LayoutParams.MATCH_PARENT
                             ).apply { gravity = android.view.Gravity.CENTER } })
                         if (!isPlaying) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(if (!usbFound) "等待 USB 连接..." else if (!vpnRunning) "启动 VPN 隧道"
-                                    else "输入 RTSP 地址并点击播放", fontSize = 14.sp, color = Color(0xFF475569))
+                                Text(if (!usbFound) "等待 USB 连接..."
+                                    else if (!vpnRunning) "启动 VPN 隧道"
+                                    else "输入 RTSP 地址并点击播放",
+                                    fontSize = 14.sp, color = Color(0xFF475569))
                             }
                         }
                     }
