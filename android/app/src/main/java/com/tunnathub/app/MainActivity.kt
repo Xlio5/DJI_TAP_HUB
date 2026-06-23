@@ -490,6 +490,8 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
 
                             // ── 端口转发 ──
                             Text("🔀 端口转发", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            Text("PC → 192.168.88.66:端口 → DJI (10.0.0.2)", fontSize = 9.sp,
+                                color = Color(0xFF475569), modifier = Modifier.padding(top = 2.dp))
                             Spacer(Modifier.height(4.dp))
                             Row(modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -501,22 +503,22 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                                     contentPadding = PaddingValues(3.dp, 0.dp)
                                 ) { Text(fwdProto.uppercase(), fontSize = 9.sp, color = Color(0xFF38BDF8)) }
                                 OutlinedTextField(value = fwdPort, onValueChange = { fwdPort = it },
-                                    modifier = Modifier.width(48.dp).height(36.dp), singleLine = true,
+                                    modifier = Modifier.width(52.dp).height(36.dp), singleLine = true,
                                     textStyle = LocalTextStyle.current.copy(fontSize = 10.sp,
                                         color = Color(0xFFE2E8F0)),
                                     colors = OutlinedTextFieldDefaults.colors(
                                         focusedBorderColor = Color(0xFF38BDF8),
                                         unfocusedBorderColor = Color(0xFF334155)),
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    placeholder = { Text("端口", fontSize = 9.sp, color = Color(0xFF475569)) })
+                                    placeholder = { Text("外网端口", fontSize = 9.sp, color = Color(0xFF475569)) })
                                 OutlinedTextField(value = fwdDest, onValueChange = { fwdDest = it },
-                                    modifier = Modifier.width(76.dp).height(36.dp), singleLine = true,
+                                    modifier = Modifier.width(72.dp).height(36.dp), singleLine = true,
                                     textStyle = LocalTextStyle.current.copy(fontSize = 10.sp,
                                         color = Color(0xFFE2E8F0)),
                                     colors = OutlinedTextFieldDefaults.colors(
                                         focusedBorderColor = Color(0xFF38BDF8),
                                         unfocusedBorderColor = Color(0xFF334155)),
-                                    placeholder = { Text("目标IP", fontSize = 9.sp, color = Color(0xFF475569)) })
+                                    placeholder = { Text("DJI IP", fontSize = 9.sp, color = Color(0xFF475569)) })
                                 Button(onClick = {
                                     val port = fwdPort.toIntOrNull() ?: return@Button
                                     if (port < 1 || port > 65535) return@Button
@@ -531,15 +533,15 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                                 ) { Text("＋", fontSize = 10.sp) }
                             }
                             if (forwards.isEmpty()) {
-                                Text("暂无规则", fontSize = 9.sp, color = Color(0xFF475569),
+                                Text("示例: UDP 5566 → 10.0.0.2", fontSize = 9.sp, color = Color(0xFF475569),
                                     modifier = Modifier.padding(start = 2.dp, top = 2.dp))
                             } else {
                                 forwards.forEach { f ->
                                     Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text("${f.proto.uppercase()} :${f.port}→${f.dest}",
-                                            fontSize = 9.sp, color = Color(0xFF94A3B8),
+                                        Text("${f.proto.uppercase()} :${f.port} → ${f.dest}",
+                                            fontSize = 9.sp, color = Color(0xFF22C55E),
                                             modifier = Modifier.weight(1f))
                                         TextButton(onClick = {
                                             apiPost("/api/forward/del", """{"port":${f.port}}""")
