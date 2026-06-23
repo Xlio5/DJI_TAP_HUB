@@ -56,5 +56,8 @@ scripts/setup_gst_python.py
 scripts/debug_streamer.py
 scripts/check_vid.py
 
+# Python cache
+__pycache__/
+
 # Reference projects (submodules)
 ref/
