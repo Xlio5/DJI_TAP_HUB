@@ -185,8 +185,9 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
     data class FwdInfo(val proto: String, val port: Int, val dest: String)
     var forwards by remember { mutableStateOf(listOf<FwdInfo>()) }
     var fwdProto by remember { mutableStateOf("udp") }
-    var fwdPort by remember { mutableStateOf("") }
-    var fwdDest by remember { mutableStateOf("10.0.0.2") }
+    var fwdExtPort by remember { mutableStateOf("") }   // RK3588 外网端口 (PC发包到这里)
+    var fwdDestPort by remember { mutableStateOf("") }  // DJI RC 目标端口
+    var fwdDestIp by remember { mutableStateOf("10.0.0.2") }
 
     // ── HTTP POST helper (协程 IO 线程, 跟随 Composable 生命周期) ──
     fun apiPost(path: String, body: String) {
@@ -505,14 +506,16 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
 
                             // ── 端口转发 ──
                             Text("🔀 端口转发", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                            Text("PC → 192.168.88.66:端口 → DJI RC", fontSize = 9.sp,
+                            Text("PC → 192.168.88.66:外网端口 ─DNAT─→ DJI:目标端口", fontSize = 9.sp,
                                 color = Color(0xFF475569), modifier = Modifier.padding(top = 2.dp))
-                            Spacer(Modifier.height(6.dp))
+                            Spacer(Modifier.height(8.dp))
+
                             // 行1: 协议 + 外网端口
                             Row(modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
+                                // 协议按钮
                                 Surface(
                                     modifier = Modifier.height(44.dp).widthIn(min = 52.dp),
                                     color = Color(0xFF1E293B), shape = RoundedCornerShape(8.dp),
@@ -525,94 +528,150 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                                             color = Color(0xFF38BDF8))
                                     }
                                 }
-                                // BasicTextField = 不受系统主题干扰，完全自己画
-                                Box(modifier = Modifier
-                                    .weight(1f).height(44.dp)
-                                    .background(Color(0xFF0F172A), RoundedCornerShape(8.dp))
-                                    .border(1.dp, Color(0xFF475569), RoundedCornerShape(8.dp))
-                                    .padding(horizontal = 12.dp),
-                                    contentAlignment = Alignment.CenterStart
-                                ) {
-                                    if (fwdPort.isEmpty()) {
-                                        Text("外网端口 如5566", fontSize = 16.sp,
-                                            color = Color(0xFF475569))
+                                // 外网端口 (RK3588 end1 上暴露的端口)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("外网端口", fontSize = 10.sp, color = Color(0xFF64748B),
+                                        modifier = Modifier.padding(bottom = 2.dp))
+                                    Box(modifier = Modifier
+                                        .fillMaxWidth().height(44.dp)
+                                        .background(Color(0xFF0F172A), RoundedCornerShape(8.dp))
+                                        .border(1.dp, Color(0xFF475569), RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 12.dp),
+                                        contentAlignment = Alignment.CenterStart
+                                    ) {
+                                        if (fwdExtPort.isEmpty()) {
+                                            Text("PC发包端口 如5566", fontSize = 15.sp,
+                                                color = Color(0xFF475569))
+                                        }
+                                        BasicTextField(
+                                            value = fwdExtPort,
+                                            onValueChange = { fwdExtPort = it },
+                                            singleLine = true,
+                                            textStyle = androidx.compose.ui.text.TextStyle(
+                                                fontSize = 15.sp, color = Color.White),
+                                            cursorBrush = androidx.compose.ui.graphics.SolidColor(Color.White),
+                                            keyboardOptions = KeyboardOptions(
+                                                keyboardType = KeyboardType.Number),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
                                     }
-                                    BasicTextField(
-                                        value = fwdPort,
-                                        onValueChange = { fwdPort = it },
-                                        singleLine = true,
-                                        textStyle = androidx.compose.ui.text.TextStyle(
-                                            fontSize = 16.sp, color = Color.White),
-                                        cursorBrush = androidx.compose.ui.graphics.SolidColor(Color.White),
-                                        keyboardOptions = KeyboardOptions(
-                                            keyboardType = KeyboardType.Number),
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
                                 }
                             }
-                            Spacer(Modifier.height(6.dp))
-                            // 行2: DJI IP + 添加
+
+                            Spacer(Modifier.height(8.dp))
+
+                            // 行2: 目标IP + 目标端口
                             Row(modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Box(modifier = Modifier
-                                    .weight(1f).height(44.dp)
-                                    .background(Color(0xFF0F172A), RoundedCornerShape(8.dp))
-                                    .border(1.dp, Color(0xFF475569), RoundedCornerShape(8.dp))
-                                    .padding(horizontal = 12.dp),
-                                    contentAlignment = Alignment.CenterStart
-                                ) {
-                                    if (fwdDest.isEmpty()) {
-                                        Text("DJI IP 如10.0.0.2", fontSize = 16.sp,
-                                            color = Color(0xFF475569))
+                                // 目标IP
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("DJI IP", fontSize = 10.sp, color = Color(0xFF64748B),
+                                        modifier = Modifier.padding(bottom = 2.dp))
+                                    Box(modifier = Modifier
+                                        .fillMaxWidth().height(44.dp)
+                                        .background(Color(0xFF0F172A), RoundedCornerShape(8.dp))
+                                        .border(1.dp, Color(0xFF475569), RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 12.dp),
+                                        contentAlignment = Alignment.CenterStart
+                                    ) {
+                                        if (fwdDestIp.isEmpty()) {
+                                            Text("10.0.0.2", fontSize = 15.sp,
+                                                color = Color(0xFF475569))
+                                        }
+                                        BasicTextField(
+                                            value = fwdDestIp,
+                                            onValueChange = { fwdDestIp = it },
+                                            singleLine = true,
+                                            textStyle = androidx.compose.ui.text.TextStyle(
+                                                fontSize = 15.sp, color = Color.White),
+                                            cursorBrush = androidx.compose.ui.graphics.SolidColor(Color.White),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
                                     }
-                                    BasicTextField(
-                                        value = fwdDest,
-                                        onValueChange = { fwdDest = it },
-                                        singleLine = true,
-                                        textStyle = androidx.compose.ui.text.TextStyle(
-                                            fontSize = 16.sp, color = Color.White),
-                                        cursorBrush = androidx.compose.ui.graphics.SolidColor(Color.White),
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
                                 }
-                                Button(
-                                    onClick = {
-                                        val port = fwdPort.toIntOrNull() ?: return@Button
-                                        if (port < 1 || port > 65535) return@Button
-                                        apiPost("/api/forward/add",
-                                            """{"proto":"$fwdProto","port":$port,"dest":"$fwdDest"}""")
-                                        fwdPort = ""
-                                        forwards = forwards + FwdInfo(
-                                            fwdProto, port, fwdDest)
-                                    },
-                                    modifier = Modifier.height(44.dp).width(44.dp),
-                                    contentPadding = PaddingValues(0.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = Color(0xFF2563EB))
-                                ) { Text("＋", fontSize = 20.sp) }
+                                // 目标端口
+                                Column(modifier = Modifier.width(80.dp)) {
+                                    Text("目标端口", fontSize = 10.sp, color = Color(0xFF64748B),
+                                        modifier = Modifier.padding(bottom = 2.dp))
+                                    Box(modifier = Modifier
+                                        .fillMaxWidth().height(44.dp)
+                                        .background(Color(0xFF0F172A), RoundedCornerShape(8.dp))
+                                        .border(1.dp, Color(0xFF475569), RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 12.dp),
+                                        contentAlignment = Alignment.CenterStart
+                                    ) {
+                                        if (fwdDestPort.isEmpty()) {
+                                            Text("如5566", fontSize = 15.sp,
+                                                color = Color(0xFF475569))
+                                        }
+                                        BasicTextField(
+                                            value = fwdDestPort,
+                                            onValueChange = { fwdDestPort = it },
+                                            singleLine = true,
+                                            textStyle = androidx.compose.ui.text.TextStyle(
+                                                fontSize = 15.sp, color = Color.White),
+                                            cursorBrush = androidx.compose.ui.graphics.SolidColor(Color.White),
+                                            keyboardOptions = KeyboardOptions(
+                                                keyboardType = KeyboardType.Number),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
+                                }
                             }
+
+                            Spacer(Modifier.height(8.dp))
+
+                            // 添加按钮
+                            Button(
+                                onClick = {
+                                    val extPort = fwdExtPort.toIntOrNull() ?: return@Button
+                                    val dstPort = fwdDestPort.toIntOrNull()
+                                    if (extPort < 1 || extPort > 65535) return@Button
+                                    if (dstPort != null && (dstPort < 1 || dstPort > 65535)) return@Button
+                                    val ip = fwdDestIp.ifEmpty { "10.0.0.2" }
+                                    val dest = if (dstPort != null) "$ip:$dstPort" else ip
+                                    // dest 不含端口时 web_panel.py 自动追加 :extPort
+                                    // dest 含端口时直接使用 (支持外网端口≠目标端口)
+                                    apiPost("/api/forward/add",
+                                        """{"proto":"$fwdProto","port":$extPort,"dest":"$dest"}""")
+                                    fwdExtPort = ""
+                                    fwdDestPort = ""
+                                    forwards = forwards + FwdInfo(
+                                        fwdProto, extPort, dest)
+                                },
+                                modifier = Modifier.fillMaxWidth().height(40.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF2563EB))
+                            ) { Text("＋ 添加转发规则", fontSize = 13.sp) }
+
                             if (forwards.isEmpty()) {
-                                Text("示例: UDP 5566 → 10.0.0.2", fontSize = 9.sp, color = Color(0xFF475569),
-                                    modifier = Modifier.padding(start = 2.dp, top = 2.dp))
+                                Text("示例: UDP 外网端口5566 → 10.0.0.2:5566", fontSize = 9.sp,
+                                    color = Color(0xFF475569),
+                                    modifier = Modifier.padding(start = 2.dp, top = 6.dp))
                             } else {
+                                Spacer(Modifier.height(6.dp))
                                 forwards.forEach { f ->
-                                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
+                                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text("${f.proto.uppercase()} :${f.port} → ${f.dest}",
-                                            fontSize = 9.sp, color = Color(0xFF22C55E),
+                                            fontSize = 10.sp, color = Color(0xFF22C55E),
                                             modifier = Modifier.weight(1f))
                                         TextButton(onClick = {
                                             apiPost("/api/forward/del", """{"port":${f.port}}""")
                                             forwards = forwards.filter { it.port != f.port }
-                                        }, modifier = Modifier.height(18.dp),
-                                            contentPadding = PaddingValues(2.dp, 0.dp)
-                                        ) { Text("✕", fontSize = 8.sp, color = Color(0xFFEF4444)) }
+                                        }, modifier = Modifier.height(22.dp),
+                                            contentPadding = PaddingValues(3.dp, 0.dp)
+                                        ) { Text("✕", fontSize = 10.sp, color = Color(0xFFEF4444)) }
                                     }
                                 }
                             }
+                            // 提示外网端口与目标端口可不同
+                            Text("💡 外网→目标端口可不同,如: 10000→10.0.0.2:80",
+                                fontSize = 8.sp, color = Color(0xFF475569),
+                                modifier = Modifier.padding(top = 4.dp))
 
                             // ── 摄像头列表 ──
                             if (cameras.isNotEmpty()) {
