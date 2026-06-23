@@ -188,6 +188,7 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
     var fwdExtPort by remember { mutableStateOf("") }   // RK3588 外网端口 (PC发包到这里)
     var fwdDestPort by remember { mutableStateOf("") }  // DJI RC 目标端口
     var fwdDestIp by remember { mutableStateOf("10.0.0.2") }
+    var fwdMsg by remember { mutableStateOf("") }       // 校验/错误提示
 
     // ── HTTP POST helper (协程 IO 线程, 跟随 Composable 生命周期) ──
     fun apiPost(path: String, body: String) {
@@ -623,23 +624,45 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
 
                             Spacer(Modifier.height(8.dp))
 
+                            // 错误提示
+                            if (fwdMsg.isNotEmpty()) {
+                                Text(fwdMsg, fontSize = 10.sp, color = Color(0xFFF87171),
+                                    modifier = Modifier.padding(bottom = 4.dp))
+                            }
+
                             // 添加按钮
                             Button(
                                 onClick = {
-                                    val extPort = fwdExtPort.toIntOrNull() ?: return@Button
-                                    val dstPort = fwdDestPort.toIntOrNull()
-                                    if (extPort < 1 || extPort > 65535) return@Button
-                                    if (dstPort != null && (dstPort < 1 || dstPort > 65535)) return@Button
-                                    val ip = fwdDestIp.ifEmpty { "10.0.0.2" }
-                                    val dest = if (dstPort != null) "$ip:$dstPort" else ip
-                                    // dest 不含端口时 web_panel.py 自动追加 :extPort
-                                    // dest 含端口时直接使用 (支持外网端口≠目标端口)
-                                    apiPost("/api/forward/add",
-                                        """{"proto":"$fwdProto","port":$extPort,"dest":"$dest"}""")
+                                    fwdMsg = ""
+                                    val extPortStr = fwdExtPort
+                                    val dstPortStr = fwdDestPort
+                                    val dstIp = fwdDestIp.ifEmpty { "10.0.0.2" }
+                                    val proto = fwdProto
+
+                                    val extPort = extPortStr.toIntOrNull()
+                                    val dstPort = dstPortStr.toIntOrNull()
+                                    val ok = when {
+                                        extPort == null || extPort < 1 || extPort > 65535 -> {
+                                            fwdMsg = "请输入有效外网端口 (1-65535)"
+                                            Log.w("TunNatHub", "转发失败: 外网端口='$extPortStr'")
+                                            false
+                                        }
+                                        dstPort != null && (dstPort < 1 || dstPort > 65535) -> {
+                                            fwdMsg = "目标端口无效 (1-65535)"
+                                            false
+                                        }
+                                        else -> true
+                                    }
+                                    if (!ok) return@Button
+
+                                    val ePort = extPort!!  // 已通过 when 校验
+                                    val dest = if (dstPort != null) "$dstIp:$dstPort" else dstIp
+                                    Log.d("TunNatHub", "添加转发: $proto ext=$ePort dest=$dest")
                                     fwdExtPort = ""
                                     fwdDestPort = ""
-                                    forwards = forwards + FwdInfo(
-                                        fwdProto, extPort, dest)
+                                    forwards = forwards + FwdInfo(proto, ePort, dest)
+                                    apiPost("/api/forward/add",
+                                        """{"proto":"$proto","port":$ePort,"dest":"$dest"}""")
                                 },
                                 modifier = Modifier.fillMaxWidth().height(40.dp),
                                 colors = ButtonDefaults.buttonColors(
