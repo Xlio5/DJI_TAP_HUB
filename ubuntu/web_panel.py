@@ -51,8 +51,8 @@ def get_system():
     mem = subprocess.run(["free","-m"],capture_output=True,text=True).stdout.split("\n")
     disk = subprocess.run(["df","-h","/"],capture_output=True,text=True).stdout.split("\n")
     uptime = subprocess.run(["uptime","-p"],capture_output=True,text=True).stdout.strip()
-    daemon_active = "active" in subprocess.run(["systemctl","is-active","tun_nat_hub"],capture_output=True,text=True).stdout
-    web_active = "active" in subprocess.run(["systemctl","is-active","tun_web"],capture_output=True,text=True).stdout
+    daemon_active = subprocess.run("ps | grep -q [u]sb_tund",shell=True,capture_output=True).returncode == 0
+    web_active = subprocess.run("ps | grep -q [w]eb_panel",shell=True,capture_output=True).returncode == 0
     return {"uptime":uptime,"daemon_active":daemon_active,"web_active":web_active,"mem":mem[1] if len(mem)>1 else "","disk":disk[1] if len(disk)>1 else ""}
 
 def get_iptables():
@@ -401,8 +401,8 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 
         <dt>服务怎么管理？</dt>
         <dd>
-          <code>systemctl status tun_nat_hub</code> — USB 隧道守护进程<br>
-          <code>systemctl status tun_web</code> — 本 Web 面板<br>
+          <code>ps | grep usb_tund</code> — USB 隧道守护进程<br>
+          <code>ps | grep web_panel</code> — 本 Web 面板<br>
           <code>journalctl -u tun_nat_hub -f</code> — 实时日志
         </dd>
 
@@ -523,14 +523,14 @@ fetchHb();refresh();setInterval(refresh,2000);setInterval(fetchHb,5000);
 _hb_prev = {"time": 0, "tx": 0, "rx": 0}
 
 def get_heartbeat():
-    daemon = "active" in subprocess.run(["systemctl","is-active","tun_nat_hub"],capture_output=True,text=True).stdout
+    daemon = subprocess.run("ps | grep -q [u]sb_tund",shell=True,capture_output=True).returncode == 0
     tty = subprocess.run(["test","-c","/dev/ttyGS0"],capture_output=True).returncode == 0
     tun = subprocess.run("ip addr show tun_hub 2>/dev/null|grep -q 'inet '",shell=True,capture_output=True).returncode == 0
     usb_vid = 0
     try:
         with open("/sys/module/g_serial/parameters/idVendor") as f: usb_vid = int(f.read().strip())
     except: pass
-    uptime = subprocess.run(["uptime","-s"],capture_output=True,text=True).stdout.strip()
+    uptime = subprocess.run("cat /proc/uptime | awk '{print $1}'",shell=True,capture_output=True,text=True).stdout.strip() + "s"
 
     # 从内核 TUN 统计读取实时带宽（而非 daemon 日志，日志 5s 才更新一次）
     tx_bytes = 0; rx_bytes = 0; bandwidth = "0.0"

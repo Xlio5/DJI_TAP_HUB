@@ -1,0 +1,33 @@
+#!/bin/sh
+# S99tun_nat_hub — TUN_NAT_HUB V3s BusyBox init 自启脚本
+# 安装: cp S99tun_nat_hub /etc/init.d/ && chmod +x /etc/init.d/S99tun_nat_hub
+
+case "$1" in
+  start)
+    echo "Starting TUN_NAT_HUB..."
+    # g_serial 已内建在内核中，无需 modprobe
+    chmod 666 /dev/ttyGS0 2>/dev/null || true
+    # 以太网上线
+    ip link set eth0 up 2>/dev/null || true
+    # TUN + NAT
+    /usr/local/bin/setup_v3s.sh
+    # 守护进程
+    /usr/local/bin/usb_tund > /var/log/usb_tund.log 2>&1 &
+    # Web 面板
+    python3 /usr/local/bin/web_panel.py > /var/log/web_panel.log 2>&1 &
+    echo "TUN_NAT_HUB started"
+    ;;
+  stop)
+    echo "Stopping TUN_NAT_HUB..."
+    killall usb_tund 2>/dev/null || true
+    killall python3 2>/dev/null || true
+    ;;
+  restart)
+    $0 stop
+    sleep 1
+    $0 start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    ;;
+esac
