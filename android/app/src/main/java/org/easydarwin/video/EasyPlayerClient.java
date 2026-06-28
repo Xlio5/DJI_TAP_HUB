@@ -833,8 +833,12 @@ public class EasyPlayerClient implements Client.SourceCallBack {
         return array.get(0);
     }
 
+    // TUN_NAT_HUB: 优先选低延迟硬件解码器
     private static MediaCodecInfo selectCodec(String mimeType) {
         int numCodecs = MediaCodecList.getCodecCount();
+        MediaCodecInfo fallbackHw = null;
+        MediaCodecInfo fallbackAny = null;
+
         for (int i = 0; i < numCodecs; i++) {
             MediaCodecInfo codecInfo = MediaCodecList.getCodecInfoAt(i);
 
@@ -845,11 +849,44 @@ public class EasyPlayerClient implements Client.SourceCallBack {
             String[] types = codecInfo.getSupportedTypes();
             for (int j = 0; j < types.length; j++) {
                 if (types[j].equalsIgnoreCase(mimeType)) {
-                    return codecInfo;
+                    boolean isHw = false;
+                    try {
+                        MediaCodecInfo.CodecCapabilities caps = codecInfo.getCapabilitiesForType(mimeType);
+                        // hw-accelerated decoder
+                        if (caps != null && codecInfo.getName().contains(".qti.")) {
+                            isHw = true;
+                        }
+                    } catch (Exception ignored) {}
+
+                    String name = codecInfo.getName();
+
+                    // 优先: 低延迟硬件解码器 (e.g. c2.qti.avc.decoder.low_latency)
+                    if (name.contains("low_latency")) {
+                        Log.i(TAG, "selectCodec: prefer low-latency hw " + name);
+                        return codecInfo;
+                    }
+
+                    // 次选: Qualcomm 硬件解码器
+                    if (isHw && fallbackHw == null) {
+                        fallbackHw = codecInfo;
+                    }
+
+                    // 最后: 任意解码器
+                    if (fallbackAny == null) {
+                        fallbackAny = codecInfo;
+                    }
                 }
             }
         }
-        return null;
+
+        if (fallbackHw != null) {
+            Log.i(TAG, "selectCodec: using hw " + fallbackHw.getName());
+            return fallbackHw;
+        }
+        if (fallbackAny != null) {
+            Log.i(TAG, "selectCodec: fallback to " + fallbackAny.getName());
+        }
+        return fallbackAny;
     }
 
     private void startCodec() {
@@ -870,6 +907,7 @@ public class EasyPlayerClient implements Client.SourceCallBack {
                     // previous
                     long previousStampUs = 0l;
                     long lastFrameStampUs = 0l;
+                    long firstStampUs = 0l; // TUN_NAT_HUB: rebase timestamp to 0 消除相机RTP绝对时间戳延迟
                     long differ = 0;
                     int realWidth = mWidth;
                     int realHeight = mHeight;
@@ -905,6 +943,20 @@ public class EasyPlayerClient implements Client.SourceCallBack {
                                 format.setInteger(MediaFormat.KEY_PUSH_BLANK_BUFFERS_ON_STOP, pushBlankBuffersOnStop ? 1 : 0);
                                 // 鎸囧畾瑙ｇ爜鍚庣殑甯ф牸寮?
                                 format.setInteger(MediaFormat.KEY_COLOR_FORMAT, COLOR_FormatYUV420Flexible);
+
+                                // TUN_NAT_HUB: 低延迟模式 (Qualcomm C2 硬件解码器)
+                                if (Build.VERSION.SDK_INT >= 30) {
+                                    try { format.setInteger("vendor.qti-ext-dec-low-latency.enable", 1); } catch (Exception ignored) {}
+                                    try { format.setInteger("low-latency", 1); } catch (Exception ignored) {}
+                                    try { format.setInteger("vendor.qti-ext-dec-low-latency.delay-tolerance", 33000); } catch (Exception ignored) {}
+                                    try { format.setInteger(MediaFormat.KEY_OPERATING_RATE, Integer.MAX_VALUE); } catch (Exception ignored) {}
+                                    try { format.setInteger(MediaFormat.KEY_PRIORITY, 0); } catch (Exception ignored) {}
+                                    try { format.setInteger(MediaFormat.KEY_LATENCY, 0); } catch (Exception ignored) {}
+                                    // 限制输出缓冲帧数 (默认 C2 low_latency 为 7，减到 2)
+                                    try { format.setInteger("vendor.qti-ext-dec-out-buf-count", 2); } catch (Exception ignored) {}
+                                    // 解码后立即输出，不累积帧
+                                    try { format.setInteger(MediaFormat.KEY_OUTPUT_REORDER_DEPTH, 0); } catch (Exception ignored) {}
+                                }
 
                                 if (mCSD0 != null) {
                                     format.setByteBuffer("csd-0", mCSD0);
@@ -1065,16 +1117,21 @@ public class EasyPlayerClient implements Client.SourceCallBack {
                                     do {
                                         if (frameInfo != null) {
                                             byte[] pBuf = frameInfo.buffer;
+                                            // TUN_NAT_HUB: rebase RTP absolute timestamps → relative from first frame
+                                            // (camera clock generates timestamps offset by weeks, causing
+                                            //  SurfaceFlinger "implausible timestamp" delay of ~300ms)
+                                            if (firstStampUs == 0) firstStampUs = frameInfo.stamp;
+                                            long relStamp = frameInfo.stamp - firstStampUs;
                                             index = mCodec.dequeueInputBuffer(1); // TUN_NAT_HUB: 1ms (原 10ms)
                                             if (false) throw new IllegalStateException("fake state");
                                             if (index >= 0) {
                                                 ByteBuffer buffer = mCodec.getInputBuffers()[index];
                                                 buffer.clear();
                                                 if (pBuf.length > buffer.remaining()) {
-                                                    mCodec.queueInputBuffer(index, 0, 0, frameInfo.stamp, 0);
+                                                    mCodec.queueInputBuffer(index, 0, 0, relStamp, 0);
                                                 } else {
                                                     buffer.put(pBuf, frameInfo.offset, frameInfo.length);
-                                                    mCodec.queueInputBuffer(index, 0, buffer.position(), frameInfo.stamp + differ, 0);
+                                                    mCodec.queueInputBuffer(index, 0, buffer.position(), relStamp + differ, 0);
                                                 }
                                                 frameInfo = null;
                                             }
