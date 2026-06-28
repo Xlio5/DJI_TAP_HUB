@@ -62,8 +62,8 @@ We'll know we're right when **所有 10 项功能验收测试通过 + 性能指�
 
 | # | Milestone | Outcome | Status | Plan |
 |---|---|---|---|---|
-| 1 | Phase 0: 环境搭建 | Buildroot 交叉编译环境就绪 + V3s 开发板启动 | in-progress | [v3s-porting.plan.md](../plans/v3s-porting.plan.md) |
-| 2 | Phase 1: 核心移植 | usb_tund ARMv7 二进制 + 所有配置脚本适配 | pending | — |
+| 1 | Phase 0: 环境搭建 | Buildroot 交叉编译环境就绪 + V3s 开发板启动 | **complete** | [v3s-porting.plan.md](../plans/v3s-porting.plan.md) |
+| 2 | Phase 1: 核心移植 | usb_tund ARMv7 二进制 + 所有配置脚本适配 | **complete** | — |
 | 3 | Phase 2: 集成验证 | DJI RC ↔ V3s USB 联通 + 10 项功能验收通过 | pending | — |
 | 4 | Phase 3: 稳定性 + 性能 | 24h 压力测试 + 10 轮冷启动 + 性能对比数据 | pending | — |
 | 5 | Phase 4: 文档交付 | V3s 部署手册 + Buildroot defconfig + 交叉编译指南 | pending | — |
