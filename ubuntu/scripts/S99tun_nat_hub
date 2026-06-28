@@ -7,8 +7,10 @@ case "$1" in
     echo "Starting TUN_NAT_HUB..."
     # g_serial 已内建在内核中，无需 modprobe
     chmod 666 /dev/ttyGS0 2>/dev/null || true
-    # 以太网上线
-    ip link set eth0 up 2>/dev/null || true
+    # 以太网上线（尝试所有可能名称）
+    for iface in eth0 end0 end1 enp1s0; do
+        ip link set "$iface" up 2>/dev/null || true
+    done
     # TUN + NAT
     /usr/local/bin/setup_v3s.sh
     # 守护进程
@@ -19,8 +21,11 @@ case "$1" in
     ;;
   stop)
     echo "Stopping TUN_NAT_HUB..."
+    # 只杀 usb_tund，不杀所有 python3
     killall usb_tund 2>/dev/null || true
-    killall python3 2>/dev/null || true
+    # 通过 pidof 精准杀 web_panel
+    WEB_PID=$(pidof python3 2>/dev/null)
+    [ -n "$WEB_PID" ] && kill $WEB_PID 2>/dev/null || true
     ;;
   restart)
     $0 stop

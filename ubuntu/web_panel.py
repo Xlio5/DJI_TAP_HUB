@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """TUN_NAT_HUB Web 配置面板 — 零依赖，纯标准库。"""
-import http.server, json, subprocess, urllib.parse, time, sys, re
+import http.server, json, subprocess, urllib.parse, time, os
 
 VERSION = "1.1.0"
 PORT = 8080
-CFG_FILE = "/home/xlong/tun_nat_hub_config.json"
+CFG_FILE = os.path.expanduser("~/tun_nat_hub_config.json")
+
+# 威胁模型: USB 物理连接为安全边界。以下密码仅用于本地 sudo。
+# 若 V3s 以 root 运行则跳过 sudo；若以普通用户运行则需 sudoers 或此密码。
+_SUDO = [] if os.geteuid() == 0 else ["sudo", "-S"]
 
 def load_cfg():
     defaults = {"rtsp_url":"rtsp://192.168.88.100:554/stream1","lan_subnet":"192.168.88.0/24","tun_subnet":"10.0.0.0/24","forwards":[],"cameras":[{"name":"Camera 1","url":"rtsp://192.168.88.101:554/stream1"}]}
@@ -14,14 +18,15 @@ def load_cfg():
         for k, v in defaults.items():
             if k not in cfg: cfg[k] = v
         return cfg
-    except: return defaults
+    except Exception: return defaults
 
 def save_cfg(cfg):
     with open(CFG_FILE, "w") as f: json.dump(cfg, f, indent=2)
 
 def get_stats():
     try:
-        r = subprocess.run(["journalctl","-u","tun_nat_hub","--no-pager","-n","1","-o","cat"], capture_output=True, text=True, timeout=5)
+        # 从 daemon 日志读取统计（兼容 systemd 和 BusyBox init）
+        r = subprocess.run(["tail","-1","/var/log/usb_tund.log"], capture_output=True, text=True, timeout=5)
         line = r.stdout.strip()
         res = {"tx_pkts":0,"tx_bytes":0,"rx_pkts":0,"rx_bytes":0,"bandwidth_mbps":"0.0","hb":0,"err":0}
         for p in line.split():
@@ -36,7 +41,6 @@ def get_stats():
             elif "HB=" in p: res["hb"] = int(p.split("=")[1])
             elif "err=" in p: res["err"] = int(p.split("=")[1])
         # Calculate real-time bandwidth using 2-sample diff
-        global _prev_stats
         if hasattr(get_stats, "_prev"):
             elapsed = time.time() - get_stats._prev["time"]
             if elapsed > 0:
@@ -45,19 +49,24 @@ def get_stats():
                 res["bandwidth_mbps"] = f"{mbps:.1f}"
         get_stats._prev = {"time": time.time(), "tx_bytes": res["tx_bytes"]}
         return res
-    except: return {"tx_pkts":0,"tx_bytes":0,"rx_pkts":0,"rx_bytes":0,"bandwidth_mbps":"0.0","hb":0,"err":0}
+    except Exception: return {"tx_pkts":0,"tx_bytes":0,"rx_pkts":0,"rx_bytes":0,"bandwidth_mbps":"0.0","hb":0,"err":0}
 
 def get_system():
     mem = subprocess.run(["free","-m"],capture_output=True,text=True).stdout.split("\n")
     disk = subprocess.run(["df","-h","/"],capture_output=True,text=True).stdout.split("\n")
-    uptime = subprocess.run(["uptime","-p"],capture_output=True,text=True).stdout.strip()
-    daemon_active = subprocess.run("ps | grep -q [u]sb_tund",shell=True,capture_output=True).returncode == 0
-    web_active = subprocess.run("ps | grep -q [w]eb_panel",shell=True,capture_output=True).returncode == 0
+    uptime = subprocess.run(["cat","/proc/uptime"],capture_output=True,text=True).stdout.strip().split()[0] + "s"
+    daemon_active = subprocess.run(["pidof","usb_tund"],capture_output=True).returncode == 0
+    web_active = subprocess.run(["pidof","python3"],capture_output=True).returncode == 0
     return {"uptime":uptime,"daemon_active":daemon_active,"web_active":web_active,"mem":mem[1] if len(mem)>1 else "","disk":disk[1] if len(disk)>1 else ""}
 
+def _run_iptables(args, check=True, input_data=None):
+    """安全运行 iptables 命令。V3s 上 root 运行跳过 sudo。"""
+    cmd = _SUDO + args
+    return subprocess.run(cmd, capture_output=True, input=input_data)
+
 def get_iptables():
-    nat = subprocess.run("echo '1234'|sudo -S iptables -t nat -L PREROUTING -n 2>/dev/null",shell=True,capture_output=True,text=True).stdout
-    fwd = subprocess.run("echo '1234'|sudo -S iptables -L FORWARD -n 2>/dev/null",shell=True,capture_output=True,text=True).stdout
+    nat = _run_iptables(["iptables","-t","nat","-L","PREROUTING","-n"]).stdout.decode()
+    fwd = _run_iptables(["iptables","-L","FORWARD","-n"]).stdout.decode()
     return {"nat":nat,"forward":fwd}
 
 def get_network():
@@ -79,10 +88,8 @@ def _validate_fwd(proto, port, dest):
 def add_forward(cfg, proto, port, dest_ip):
     if not _validate_fwd(proto, port, dest_ip): return False
     dest = f"{dest_ip}:{port}" if ":" not in dest_ip else dest_ip
-    subprocess.run(["sudo","-S","iptables","-t","nat","-A","PREROUTING","-i","end1","-p",proto,"--dport",str(port),"-j","DNAT","--to-destination",dest],
-                   input=b"1234\n", capture_output=True)
-    subprocess.run(["sudo","-S","iptables","-A","FORWARD","-i","end1","-o","tun_hub","-p",proto,"--dport",str(port),"-j","ACCEPT"],
-                   input=b"1234\n", capture_output=True)
+    _run_iptables(["iptables","-t","nat","-A","PREROUTING","-i","end1","-p",proto,"--dport",str(port),"-j","DNAT","--to-destination",dest])
+    _run_iptables(["iptables","-A","FORWARD","-i","end1","-o","tun_hub","-p",proto,"--dport",str(port),"-j","ACCEPT"])
     cfg["forwards"].append({"proto":proto,"port":port,"dest":dest})
     save_cfg(cfg)
     return True
@@ -91,10 +98,8 @@ def remove_forward(cfg, port):
     found = next((r for r in cfg["forwards"] if r["port"]==port), None)
     if not found: return False
     p = found["proto"]; pt = str(port); d = found["dest"]
-    subprocess.run(["sudo","-S","iptables","-t","nat","-D","PREROUTING","-i","end1","-p",p,"--dport",pt,"-j","DNAT","--to-destination",d],
-                   input=b"1234\n", capture_output=True)
-    subprocess.run(["sudo","-S","iptables","-D","FORWARD","-i","end1","-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"],
-                   input=b"1234\n", capture_output=True)
+    _run_iptables(["iptables","-t","nat","-D","PREROUTING","-i","end1","-p",p,"--dport",pt,"-j","DNAT","--to-destination",d])
+    _run_iptables(["iptables","-D","FORWARD","-i","end1","-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"])
     cfg["forwards"] = [r for r in cfg["forwards"] if r["port"]!=port]
     save_cfg(cfg)
     return True
@@ -102,15 +107,13 @@ def remove_forward(cfg, port):
 def apply_all_forwards(cfg):
     for rule in cfg.get("forwards",[]):
         p = rule["proto"]; pt = str(rule["port"]); d = rule["dest"]
-        # -C 检查规则是否存在，忽略错误输出（不存在返回非 0）
-        subprocess.run(["sudo","-S","iptables","-t","nat","-C","PREROUTING","-i","end1","-p",p,"--dport",pt,"-j","DNAT","--to-destination",d],
-                       input=b"1234\n", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["sudo","-S","iptables","-t","nat","-A","PREROUTING","-i","end1","-p",p,"--dport",pt,"-j","DNAT","--to-destination",d],
-                       input=b"1234\n", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["sudo","-S","iptables","-C","FORWARD","-i","end1","-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"],
-                       input=b"1234\n", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["sudo","-S","iptables","-A","FORWARD","-i","end1","-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"],
-                       input=b"1234\n", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # -C 检查规则是否存在，不存在才 -A（防止重复）
+        check = _run_iptables(["iptables","-t","nat","-C","PREROUTING","-i","end1","-p",p,"--dport",pt,"-j","DNAT","--to-destination",d])
+        if check.returncode != 0:
+            _run_iptables(["iptables","-t","nat","-A","PREROUTING","-i","end1","-p",p,"--dport",pt,"-j","DNAT","--to-destination",d])
+        check = _run_iptables(["iptables","-C","FORWARD","-i","end1","-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"])
+        if check.returncode != 0:
+            _run_iptables(["iptables","-A","FORWARD","-i","end1","-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"])
 
 # ══════════════════════════════════════════════════════════
 # HTML — 完整中文面板
@@ -522,21 +525,31 @@ fetchHb();refresh();setInterval(refresh,2000);setInterval(fetchHb,5000);
 # ── 心跳状态（供 App 轮询） ───────────────────────────────────
 _hb_prev = {"time": 0, "tx": 0, "rx": 0}
 
+def _read_sysfs_int(path):
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except Exception:
+        return 0
+
 def get_heartbeat():
-    daemon = subprocess.run("ps | grep -q [u]sb_tund",shell=True,capture_output=True).returncode == 0
+    daemon = subprocess.run(["pidof","usb_tund"],capture_output=True).returncode == 0
     tty = subprocess.run(["test","-c","/dev/ttyGS0"],capture_output=True).returncode == 0
     tun = subprocess.run("ip addr show tun_hub 2>/dev/null|grep -q 'inet '",shell=True,capture_output=True).returncode == 0
-    usb_vid = 0
+    usb_vid = _read_sysfs_int("/sys/module/g_serial/parameters/idVendor") if tty else 0
+
+    # 从 /proc/uptime 读取运行时间（无需 awk 依赖）
     try:
-        with open("/sys/module/g_serial/parameters/idVendor") as f: usb_vid = int(f.read().strip())
-    except: pass
-    uptime = subprocess.run("cat /proc/uptime | awk '{print $1}'",shell=True,capture_output=True,text=True).stdout.strip() + "s"
+        with open("/proc/uptime") as f:
+            uptime = f.read().split()[0] + "s"
+    except Exception:
+        uptime = "0s"
 
     # 从内核 TUN 统计读取实时带宽（而非 daemon 日志，日志 5s 才更新一次）
     tx_bytes = 0; rx_bytes = 0; bandwidth = "0.0"
     try:
-        with open("/sys/class/net/tun_hub/statistics/tx_bytes") as f: tx_bytes = int(f.read().strip())
-        with open("/sys/class/net/tun_hub/statistics/rx_bytes") as f: rx_bytes = int(f.read().strip())
+        tx_bytes = _read_sysfs_int("/sys/class/net/tun_hub/statistics/tx_bytes")
+        rx_bytes = _read_sysfs_int("/sys/class/net/tun_hub/statistics/rx_bytes")
         global _hb_prev
         now = time.time()
         if _hb_prev["time"] > 0:
@@ -548,7 +561,8 @@ def get_heartbeat():
                 mbps = ((tx_diff + rx_diff) * 8) / (elapsed * 1_000_000)
                 bandwidth = f"{mbps:.1f}"
         _hb_prev = {"time": now, "tx": tx_bytes, "rx": rx_bytes}
-    except: pass
+    except Exception:
+        pass
 
     return {
         "version": VERSION,
@@ -556,7 +570,7 @@ def get_heartbeat():
         "tty_ready": tty,
         "tun_up": tun,
         "usb_vid": usb_vid,
-        "usb_pid": int(open("/sys/module/g_serial/parameters/idProduct").read().strip()) if tty else 0,
+        "usb_pid": _read_sysfs_int("/sys/module/g_serial/parameters/idProduct") if tty else 0,
         "timestamp": int(time.time()),
         "uptime_since": uptime,
         "tx_bytes": tx_bytes,
@@ -593,7 +607,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         p = urllib.parse.urlparse(self.path).path
         length = int(self.headers.get("Content-Length",0))
-        body = json.loads(self.rfile.read(length)) if length > 0 else {}
+        try:
+            body = json.loads(self.rfile.read(length)) if length > 0 else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self.send_response(400); self.end_headers(); return
         if p == "/api/forward/add":
             cfg = load_cfg()
             ok = add_forward(cfg, body.get("proto","udp"), body.get("port"), body.get("dest","10.0.0.2"))

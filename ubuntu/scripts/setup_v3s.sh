@@ -1,5 +1,5 @@
 #!/bin/sh
-# setup_v3s.sh — V3s 一键配置 (g_serial + TUN + NAT + daemon)
+# setup_v3s.sh — V3s 一键配置 (g_serial + TUN + NAT)
 # V3s 上所有驱动已编译进内核，无需 modprobe
 set -e
 
@@ -11,24 +11,21 @@ TUN_PREFIX="24"
 TUN_MTU="1400"
 TUN_SUBNET="${TUN_IP%.*}.0/24"
 
-# 1. USB Gadget: g_serial 已内置，只需触发绑定
-#    (modprobe 报 /lib/modules 缺失可忽略 — 驱动已在内核中)
+# 1. USB Gadget: g_serial 已内建在内核，通过 modprobe 触发绑定
+#    (/lib/modules 缺失的 warning 可忽略 — 驱动已静态编入内核)
 if [ -c /dev/ttyGS0 ]; then
     echo "g_serial: /dev/ttyGS0 已就绪"
 else
-    # 尝试通过 sysfs 触发（如果模块未自动加载）
     echo "触发 g_serial..."
     modprobe g_serial use_acm=0 idVendor=0x0BDA idProduct=0x8812 2>/dev/null || true
-    if [ ! -c /dev/ttyGS0 ]; then
-        # 如果模块内建，可能需要 echo 到 sysfs
-        echo "g_serial" > /sys/kernel/config/usb_gadget/ 2>/dev/null || true
-    fi
 fi
 chmod 666 /dev/ttyGS0 2>/dev/null || true
 ls -l /dev/ttyGS0
 
-# 2. 以太网（如果网线已插）
-ip link set eth0 up 2>/dev/null || true
+# 2. 以太网（尝试所有可能接口名）
+for iface in eth0 end0 end1 enp1s0; do
+    ip link set "$iface" up 2>/dev/null || true
+done
 
 # 3. TUN 接口
 if ! ip link show "$TUN_NAME" &>/dev/null; then
