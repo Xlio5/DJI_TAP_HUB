@@ -1,12 +1,14 @@
 # TUN_NAT_HUB 部署与使用手册
 
 > 适用版本：v5 (g_serial Pure Bulk + RTL8812AU VID/PID 伪装)  
-> 更新日期：2026-06-14
+> 支持平台：RK3588 (Ubuntu) / 全志 V3s (Buildroot)  
+> 更新日期：2026-06-28
 
 ---
 
 ## 目录
 
+0. [V3s (全志) SD 卡烧录部署](#0-v3s-全志-sd-卡烧录部署)
 1. [硬件连接](#1-硬件连接)
 2. [RK3588 端部署](#2-rk3588-端部署)
 3. [DJI RC 端安装](#3-dji-rc-端安装)
@@ -15,6 +17,144 @@
 6. [延迟测试与诊断](#6-延迟测试与诊断)
 7. [故障排查](#7-故障排查)
 8. [开发环境](#8-开发环境)
+
+---
+
+## 0. V3s (全志) SD 卡烧录部署
+
+> 目标：全新的 V3s 板（LicheePi Zero）+ SD 卡，从零烧录到开机即用。
+
+### 前提条件
+
+- 备份包：`backup/tun_nat_hub_v3s_backup.tar.gz`（仓库内已包含）
+- V3s 开发板：LicheePi Zero + Dock 底板（或兼容板）
+- SD 卡：≥1GB，已有 2 个分区：
+  - `mmcblk0p1` — FAT16/VFAT, 32MB（boot 分区，存放 zImage + dtb）
+  - `mmcblk0p2` — ext4, ≥200MB（rootfs 分区，存放 Buildroot 系统）
+- UART 串口线 (115200 8N1) 或 SSH（如果板子已有系统）
+
+### 0.1 烧录步骤
+
+#### Step 1：解压备份包
+
+```bash
+tar xzf backup/tun_nat_hub_v3s_backup.tar.gz -C /tmp/v3s_deploy
+cd /tmp/v3s_deploy
+ls
+# 应看到:
+#   zImage          — 内核 (5.7M, ARMv7)
+#   sun8i-v3s-licheepi-zero-dock.dtb  — Device Tree
+#   app-debug.apk   — Android APK
+#   usb_tund        — ARMv7 守护进程二进制
+#   S99tun_nat_hub   — BusyBox init 自启脚本
+#   setup_v3s.sh    — TUN+NAT 配置脚本
+#   v3s_start.sh    — 手动启动脚本
+#   web_panel.py    — Web 配置面板
+#   uboot_env.txt   — U-Boot 环境变量参考
+#   VERSION.txt     — 版本信息
+```
+
+#### Step 2：烧写 boot 分区（内核 + 设备树）
+
+```bash
+# 将 SD 卡插入电脑（Windows/Linux），挂载 boot 分区
+# 复制内核和设备树到 FAT boot 分区
+cp zImage /mnt/sdcard_boot/          # 或 Windows 资源管理器拖入
+cp sun8i-v3s-licheepi-zero-dock.dtb /mnt/sdcard_boot/
+
+ls /mnt/sdcard_boot/
+# 期望: zImage, sun8i-v3s-licheepi-zero-dock.dtb, (uboot.env)
+```
+
+#### Step 3：烧写 rootfs 分区（应用程序 + 脚本）
+
+```bash
+# 挂载 ext4 rootfs 分区
+mount /dev/sdX2 /mnt/sdcard_root    # Linux; Windows 用 WSL 或读卡器工具
+
+# 复制可执行文件
+cp usb_tund /mnt/sdcard_root/usr/local/bin/
+cp web_panel.py /mnt/sdcard_root/usr/local/bin/
+cp setup_v3s.sh /mnt/sdcard_root/usr/local/bin/
+cp v3s_start.sh /mnt/sdcard_root/usr/local/bin/
+
+# 复制 init 自启脚本
+cp S99tun_nat_hub /mnt/sdcard_root/etc/init.d/
+
+# 设置权限
+chmod +x /mnt/sdcard_root/usr/local/bin/usb_tund
+chmod +x /mnt/sdcard_root/usr/local/bin/web_panel.py
+chmod +x /mnt/sdcard_root/usr/local/bin/setup_v3s.sh
+chmod +x /mnt/sdcard_root/usr/local/bin/v3s_start.sh
+chmod +x /mnt/sdcard_root/etc/init.d/S99tun_nat_hub
+
+umount /mnt/sdcard_root
+```
+
+#### Step 4：首次启动 — 设置 U-Boot
+
+插上 SD 卡，V3s 上电，通过 UART (115200 8N1) 连接，在 U-Boot 倒计时时按任意键进入 U-Boot 命令行。
+
+```
+U-Boot 2026.07 (Jun 25 2026)
+Hit any key to stop autoboot: 0
+=>
+```
+
+参考 `uboot_env.txt`，在 U-Boot 中设置并保存：
+
+```
+=> setenv bootargs 'console=ttyS0,115200 root=/dev/mmcblk0p2 rootwait g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0'
+=> setenv bootcmd 'fatload mmc 0:1 0x41000000 zImage; fatload mmc 0:1 0x42000000 sun8i-v3s-licheepi-zero-dock.dtb; bootz 0x41000000 - 0x42000000'
+=> saveenv
+Saving Environment to FAT... OK
+```
+
+然后重新上电（或输入 `reset`），系统会自动启动。
+
+### 0.2 首次启动验证
+
+系统启动后通过 UART 登录（`root`/`root`），确认所有服务就绪：
+
+```bash
+# 一键诊断
+cat /sys/class/udc/musb-hdrc.2.auto/state    # 应显示 configured (DJI RC 插入后)
+ls -l /dev/ttyGS0                              # 应存在 crw-rw-rw-
+ip addr show tun_hub                           # 应显示 10.0.0.1/24
+iptables -t nat -L POSTROUTING -n              # 应显示 MASQUERADE 规则
+pidof usb_tund                                 # 应有 PID (守护进程运行中)
+pidof python3                                  # 应有 PID (Web 面板运行中)
+cat /proc/sys/net/ipv4/ip_forward              # 应为 1
+```
+
+也可以用部署包中的 `v3s_check.sh` 脚本自动检查（需先 SCP 到 V3s）。
+
+### 0.3 安装 APK 到 DJI RC
+
+```bash
+adb connect <DJI_RC_IP>:<PORT>       # DJI RC 网络 ADB 地址
+adb install -r app-debug.apk
+```
+
+APK 包含最新优化：Qualcomm 低延迟硬件解码器 (`c2.qti.avc.decoder.low_latency`) + RTP 时间戳修复。
+
+### 0.4 冷启动自动连接流程
+
+上电后全自动启动，无需人工干预：
+
+```
+上电 → U-Boot auto-boot (bootcmd)
+    → Kernel 启动 (g_serial VID/PID 内建)
+    → BusyBox init 运行 /etc/init.d/S99tun_nat_hub
+        ├─ usb_tund daemon 先起 (等 /dev/ttyGS0)
+        ├─ TUN 10.0.0.1/24 创建 + NAT MASQUERADE
+        ├─ web_panel.py 启动 (:8080)
+        └─ USB peripheral 模式 + 延时重枚举
+    → DJI RC 插线 → App 发现设备 → 自动连接
+```
+
+> **注意**：因为 V3s USB 和供电是同一根线，DJI RC 插线的瞬间 V3s 才上电。
+> 启动到 daemon 就绪约需 10 秒，之后自动重枚举，App 自动连接。
 
 ---
 
