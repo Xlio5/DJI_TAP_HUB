@@ -1,36 +1,47 @@
 #!/bin/sh
 # S99tun_nat_hub — TUN_NAT_HUB V3s BusyBox init 自启脚本
-# 安装: cp S99tun_nat_hub /etc/init.d/ && chmod +x /etc/init.d/S99tun_nat_hub
+# daemon 先启动并等 /dev/ttyGS0 → host→peripheral 切换触发重枚举
+# 注意: 不要用 soft_connect (MUSB 驱动有 bug，connect 会内核崩溃)
+set -e
+
+MODE_SYSFS="/sys/devices/platform/soc/1c19000.usb/musb-hdrc.2.auto/mode"
 
 case "$1" in
   start)
     echo "Starting TUN_NAT_HUB..."
-    # g_serial 已内建在内核中，无需 modprobe
-    chmod 666 /dev/ttyGS0 2>/dev/null || true
-    # 以太网上线（尝试所有可能名称）
-    for iface in eth0 end0 end1 enp1s0; do
-        ip link set "$iface" up 2>/dev/null || true
-    done
-    # TUN + NAT
-    /usr/local/bin/setup_v3s.sh
-    # 守护进程
+
+    # 1. daemon 先启动 (循环等 /dev/ttyGS0 出现)
     /usr/local/bin/usb_tund > /var/log/usb_tund.log 2>&1 &
-    # Web 面板
+    echo "daemon: started"
+
+    # 2. TUN + NAT
+    /usr/local/bin/setup_v3s.sh
+
+    # 3. Web 面板
     python3 /usr/local/bin/web_panel.py > /var/log/web_panel.log 2>&1 &
+
+    # 4. 切 peripheral — g_serial 绑定 UDC，DJI RC 看到设备
+    echo peripheral > "$MODE_SYSFS" 2>/dev/null || true
+    sleep 1
+
+    # 5. 延时重枚举: host(断开)→等 5s→peripheral(重连)
+    #    给 DJI RC Android 足够时间看到 USB 消失→出现 的完整事件
+    echo host > "$MODE_SYSFS" 2>/dev/null || true
+    sleep 5
+    echo peripheral > "$MODE_SYSFS" 2>/dev/null || true
+    sleep 1
+
+    [ -c /dev/ttyGS0 ] && chmod 666 /dev/ttyGS0
     echo "TUN_NAT_HUB started"
     ;;
   stop)
     echo "Stopping TUN_NAT_HUB..."
-    # 只杀 usb_tund，不杀所有 python3
     killall usb_tund 2>/dev/null || true
-    # 通过 pidof 精准杀 web_panel
     WEB_PID=$(pidof python3 2>/dev/null)
     [ -n "$WEB_PID" ] && kill $WEB_PID 2>/dev/null || true
     ;;
   restart)
-    $0 stop
-    sleep 1
-    $0 start
+    $0 stop; sleep 1; $0 start
     ;;
   *)
     echo "Usage: $0 {start|stop|restart}"
