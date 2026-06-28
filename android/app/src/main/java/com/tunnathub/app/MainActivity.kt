@@ -837,6 +837,9 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                                         }
                                         prefs.edit().putString("lan_subnet", lanSubnet).putInt("lan_prefix", prefix).apply()
                                         advSaved = true
+                                        // 同步到 V3s Web Panel (更新 config.json 中的 lan_subnet 显示)
+                                        apiPost("/api/config/save",
+                                            """{"lan_subnet":"${lanSubnet}/${prefix}"}""")
                                     }, modifier = Modifier.height(30.dp),
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
