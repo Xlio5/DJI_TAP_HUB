@@ -51,19 +51,19 @@ class TunNatVpnService : VpnService() {
             return instance?.protect(socket) ?: false
         }
 
-        // TUN 配置
+        // TUN 配置 (默认值, 高级设置可覆盖)
         private const val TUN_ADDRESS = "10.0.0.2"
         private const val TUN_PREFIX = 24
         private const val TUN_MTU = 1400
-
-        // 路由: 局域网流量 + VPN 本网段（心跳/API 走 USB 隧道而非 WiFi）
-        private const val LAN_ROUTE = "192.168.88.0"
-        private const val LAN_PREFIX = 24
         private const val TUN_ROUTE = "10.0.0.0"
         private const val TUN_PREFIX_ROUTE = 24
 
-        // DNS（局域网网关，可选）
-        private const val LAN_DNS = "192.168.88.1"
+        // LAN 网段可从 SharedPreferences 覆盖 (高级设置)
+        private const val PREFS_NAME = "tun_nat_hub"
+        private const val KEY_LAN_SUBNET = "lan_subnet"
+        private const val KEY_LAN_PREFIX = "lan_prefix"
+        private const val DEFAULT_LAN_SUBNET = "192.168.88.0"
+        private const val DEFAULT_LAN_PREFIX = 24
     }
 
     private var tunFd: ParcelFileDescriptor? = null
@@ -150,15 +150,19 @@ class TunNatVpnService : VpnService() {
      * 使用 VpnService.Builder 建立 TUN 接口
      */
     private fun establishVpn(): ParcelFileDescriptor {
+        // 从 SharedPreferences 读取用户自定义 LAN 网段 (高级设置)
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val lanSubnet = prefs.getString(KEY_LAN_SUBNET, DEFAULT_LAN_SUBNET) ?: DEFAULT_LAN_SUBNET
+        val lanPrefix = prefs.getInt(KEY_LAN_PREFIX, DEFAULT_LAN_PREFIX)
+
         val builder = Builder()
             .setSession(getString(R.string.vpn_service_name))
             .setMtu(TUN_MTU)
             .addAddress(TUN_ADDRESS, TUN_PREFIX)
-            .addRoute(LAN_ROUTE, LAN_PREFIX)
+            .addRoute(lanSubnet, lanPrefix)
             .addRoute(TUN_ROUTE, TUN_PREFIX_ROUTE)
-            .addDnsServer(LAN_DNS)
-            .setBlocking(true)   // 阻塞模式，配合 Dispatchers.IO
-            .allowBypass()       // 允许 protect() 的 socket 绕过 VPN
+            .setBlocking(true)
+            .allowBypass()
 
         return builder.establish()
             ?: throw IllegalStateException("VpnService.Builder.establish() 返回 null")

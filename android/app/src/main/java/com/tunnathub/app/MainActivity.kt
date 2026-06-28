@@ -24,6 +24,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -760,6 +761,100 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                                             ) { Text("切", fontSize = 8.sp, color = Color(0xFF38BDF8)) }
                                         }
                                     }
+                                }
+                            }
+
+                            // ── 高级设置 (可折叠) ──
+                            Spacer(Modifier.height(8.dp))
+                            HorizontalDivider(color = Color(0xFF1E293B))
+                            var advancedExpanded by remember { mutableStateOf(false) }
+                            val savedLanSubnet = prefs.getString("lan_subnet", "192.168.88.0") ?: "192.168.88.0"
+                            val savedLanPrefix = prefs.getInt("lan_prefix", 24)
+                            var lanSubnet by remember { mutableStateOf(savedLanSubnet) }
+                            var lanPrefixStr by remember { mutableStateOf(savedLanPrefix.toString()) }
+                            var advSaved by remember { mutableStateOf(false) }
+
+                            Row(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                                .clickable { advancedExpanded = !advancedExpanded },
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("⚙ 高级", fontSize = 10.sp, color = Color(0xFF64748B))
+                                    if (!advancedExpanded) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("$savedLanSubnet/${savedLanPrefix}", fontSize = 9.sp, color = Color(0xFF475569))
+                                    }
+                                }
+                                Text(if (advancedExpanded) "▲" else "▼", fontSize = 9.sp, color = Color(0xFF475569))
+                            }
+
+                            if (advancedExpanded) {
+                                Spacer(Modifier.height(6.dp))
+                                Text("LAN 网段 (路由到 USB 隧道)", fontSize = 9.sp, color = Color(0xFF64748B))
+                                Text("修改后需断开并重连 VPN 生效", fontSize = 8.sp, color = Color(0xFF475569))
+                                Spacer(Modifier.height(4.dp))
+                                Row(modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(modifier = Modifier.weight(1f).height(36.dp)
+                                        .background(Color(0xFF0F172A), RoundedCornerShape(6.dp))
+                                        .border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp))
+                                        .padding(horizontal = 10.dp),
+                                        contentAlignment = Alignment.CenterStart
+                                    ) {
+                                        BasicTextField(value = lanSubnet, onValueChange = { lanSubnet = it; advSaved = false },
+                                            singleLine = true,
+                                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = Color(0xFFE2E8F0)),
+                                            cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF38BDF8)),
+                                            modifier = Modifier.fillMaxWidth())
+                                    }
+                                    Text("/", fontSize = 14.sp, color = Color(0xFF64748B))
+                                    Box(modifier = Modifier.width(40.dp).height(36.dp)
+                                        .background(Color(0xFF0F172A), RoundedCornerShape(6.dp))
+                                        .border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp))
+                                        .padding(horizontal = 10.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        BasicTextField(value = lanPrefixStr, onValueChange = { lanPrefixStr = it; advSaved = false },
+                                            singleLine = true,
+                                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = Color(0xFFE2E8F0)),
+                                            cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF38BDF8)),
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                            modifier = Modifier.fillMaxWidth())
+                                    }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Row(modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Button(onClick = {
+                                        val prefix = lanPrefixStr.toIntOrNull()
+                                        if (prefix == null || prefix < 8 || prefix > 30) {
+                                            lanPrefixStr = savedLanPrefix.toString()
+                                            return@Button
+                                        }
+                                        prefs.edit().putString("lan_subnet", lanSubnet).putInt("lan_prefix", prefix).apply()
+                                        advSaved = true
+                                    }, modifier = Modifier.height(30.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
+                                    ) { Text("保存", fontSize = 11.sp) }
+
+                                    Button(onClick = {
+                                        lanSubnet = "192.168.88.0"
+                                        lanPrefixStr = "24"
+                                        prefs.edit().putString("lan_subnet", "192.168.88.0").putInt("lan_prefix", 24).apply()
+                                        advSaved = true
+                                    }, modifier = Modifier.height(30.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))
+                                    ) { Text("默认", fontSize = 10.sp) }
+                                }
+                                if (advSaved) {
+                                    Text("✅ 已保存, 重连 VPN 生效", fontSize = 9.sp,
+                                        color = Color(0xFF22C55E), modifier = Modifier.padding(top = 4.dp))
                                 }
                             }
                         }
