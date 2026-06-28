@@ -126,6 +126,12 @@ class MainActivity : ComponentActivity() {
                 onVpnTap = {
                     if (TunNatVpnService.isRunningState.value) stopTunService()
                     else if (usbDevice != null) startAuthFlow()
+                },
+                onReconnect = {
+                    stopTunService()
+                    Thread.sleep(1500)
+                    usbDevice = findUsbDevice()
+                    if (usbDevice != null) startAuthFlow()
                 }
             )
         }
@@ -178,7 +184,7 @@ class MainActivity : ComponentActivity() {
 // ═══════════════════════════════════════════════════════
 
 @Composable
-fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String = "idle", usbPollCount: Int = 0, onVpnTap: () -> Unit) {
+fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String = "idle", usbPollCount: Int = 0, onVpnTap: () -> Unit, onReconnect: (() -> Unit)? = null) {
     val ctx = LocalContext.current
     val prefs = ctx.getSharedPreferences("tun_nat_hub", Context.MODE_PRIVATE)
 
@@ -221,6 +227,11 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
     var fwdDestPort by remember { mutableStateOf("") }  // DJI RC 目标端口
     var fwdDestIp by remember { mutableStateOf("10.0.0.2") }
     var fwdMsg by remember { mutableStateOf("") }       // 校验/错误提示
+
+    // ── LAN 网段 (预读 SharedPrefs, 给 config poller + 高级设置共用) ──
+    val savedLanSubnet = prefs.getString("lan_subnet", "192.168.88.0") ?: "192.168.88.0"
+    val savedLanPrefix = prefs.getInt("lan_prefix", 24)
+    var needVpnReconnect by remember { mutableStateOf(false) }
 
     // ── HTTP POST helper (协程 IO 线程, 跟随 Composable 生命周期) ──
     fun apiPost(path: String, body: String) {
@@ -268,7 +279,7 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
         }
     }
 
-    // ── 加载摄像头列表 + 端口转发 ──
+    // ── 加载摄像头列表 + 端口转发 + LAN 网段同步 ──
     LaunchedEffect(vpnRunning) {
         if (!vpnRunning) return@LaunchedEffect
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -284,10 +295,7 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                 camPattern.findAll(text).forEach { m ->
                     camList.add(CamInfo(m.groupValues[1], m.groupValues[2]))
                 }
-                if (camList.isNotEmpty()) {
-                    cameras = camList
-                    if (rtspUrl.isEmpty()) rtspUrl = camList[0].url
-                }
+                if (camList.isNotEmpty()) { cameras = camList; if (rtspUrl.isEmpty()) rtspUrl = camList[0].url }
                 // Parse port forwards
                 val fwdList = mutableListOf<FwdInfo>()
                 val fwdPattern = Regex("\"proto\": \"(\\w+)\"[^}]*\"port\": (\\d+)[^}]*\"dest\": \"([^\"]+)\"")
@@ -295,6 +303,16 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                     fwdList.add(FwdInfo(m.groupValues[1], m.groupValues[2].toInt(), m.groupValues[3]))
                 }
                 forwards = fwdList
+                // LAN 网段同步: web_panel 改过→App 自动同步→提示重连
+                val lanMatch = Regex("\"lan_subnet\": \"(\\d+\\.\\d+\\.\\d+)\\.0/(\\d+)\"").find(text)
+                if (lanMatch != null) {
+                    val remoteSubnet = "${lanMatch.groupValues[1]}.0"
+                    val remotePrefix = lanMatch.groupValues[2].toInt()
+                    if (remoteSubnet != savedLanSubnet || remotePrefix != savedLanPrefix) {
+                        prefs.edit().putString("lan_subnet", remoteSubnet).putInt("lan_prefix", remotePrefix).apply()
+                        needVpnReconnect = true
+                    }
+                }
             } catch (e: Exception) {
                 android.util.Log.e("TunNatHub", "配置加载失败: ${e.javaClass.simpleName} ${e.message}")
             }
@@ -441,6 +459,24 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                                     Text("✅ 设备已发现，点击连接", fontSize = 11.sp, color = Color(0xFF22C55E))
                                 } else {
                                     Text("请插入 USB 线连接设备", fontSize = 11.sp, color = Color(0xFF475569))
+                                }
+                                // ── 网段变化提示 (web_panel 改过 → App 需重连) ──
+                                if (needVpnReconnect) {
+                                    Spacer(Modifier.height(6.dp))
+                                    Row(modifier = Modifier.fillMaxWidth().background(Color(0x33F59E0B), RoundedCornerShape(6.dp)).padding(8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("⚡ 网段已变更: $savedLanSubnet/$savedLanPrefix", fontSize = 10.sp, color = Color(0xFFFBBF24))
+                                        Button(onClick = {
+                                            needVpnReconnect = false
+                                            if (vpnRunning) onVpnTap()  // 先断开
+                                            onReconnect?.let { Thread { Thread.sleep(1500); android.os.Handler(android.os.Looper.getMainLooper()).post(it) }.start() }
+                                        }, modifier = Modifier.height(24.dp),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF59E0B))
+                                        ) { Text("重连", fontSize = 10.sp, color = Color.Black) }
+                                    }
                                 }
                             }
                         }
@@ -768,8 +804,6 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                             Spacer(Modifier.height(8.dp))
                             HorizontalDivider(color = Color(0xFF1E293B))
                             var advancedExpanded by remember { mutableStateOf(false) }
-                            val savedLanSubnet = prefs.getString("lan_subnet", "192.168.88.0") ?: "192.168.88.0"
-                            val savedLanPrefix = prefs.getInt("lan_prefix", 24)
                             var lanSubnet by remember { mutableStateOf(savedLanSubnet) }
                             var lanPrefixStr by remember { mutableStateOf(savedLanPrefix.toString()) }
                             var advSaved by remember { mutableStateOf(false) }
