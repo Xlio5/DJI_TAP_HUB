@@ -1,15 +1,13 @@
 /**
  * MainActivity.kt — VPN 控制 + RTSP 播放器
  * 横屏优化：左侧控制栏 + 右侧全屏视频
+ * V3s: USB 同线供电, 设备需 10s 启动 → 自动轮询发现 + 自动连接
  */
 
 package com.tunnathub.app
 
 import android.app.PendingIntent
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
+import android.content.*
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.net.VpnService
@@ -59,13 +57,17 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val USB_PERM_ACTION = "com.tunnathub.app.USB_PERM"
+        // V3s 同线供电, 开机需 10-15s → 最多轮询 30 次 (每 2s = 60s)
+        private const val USB_POLL_MAX = 30
     }
     private var usbDevice: UsbDevice? = null
+    private var connectionState = "idle"
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
             if (USB_PERM_ACTION != intent.action) return
             if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+                connectionState = "connecting"
                 requestVpn()
             }
         }
@@ -74,31 +76,60 @@ class MainActivity : ComponentActivity() {
     private val vpnLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == RESULT_OK) startTunService()
+        if (result.resultCode == RESULT_OK) {
+            startTunService()
+            connectionState = "connected"
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         registerReceiver(usbReceiver, IntentFilter(USB_PERM_ACTION), Context.RECEIVER_NOT_EXPORTED)
         usbDevice = findUsbDevice()
+        if (usbDevice != null) connectionState = "found"
 
         setContent {
+            // ── Compose 内驱动 USB 轮询 + 自动连接 ──
+            var polledDevice by remember { mutableStateOf<UsbDevice?>(usbDevice) }
+            var pollState by remember { mutableStateOf(if (usbDevice != null) "found" else "scanning") }
+            var pollCount by remember { mutableIntStateOf(0) }
+            var autoConnected by remember { mutableStateOf(false) }
+
+            LaunchedEffect(pollState) {
+                if (pollState != "scanning") return@LaunchedEffect
+                var count = 0
+                while (count < USB_POLL_MAX) {
+                    count++
+                    pollCount = count
+                    kotlinx.coroutines.delay(2000)
+                    val dev = findUsbDevice()
+                    if (dev != null) {
+                        usbDevice = dev
+                        polledDevice = dev
+                        pollState = "found"
+                        if (!autoConnected) {
+                            autoConnected = true
+                            startAuthFlow()
+                        }
+                        return@LaunchedEffect
+                    }
+                }
+                pollState = "timeout"
+            }
+
             TunNatHubApp(
-                usbFound = usbDevice != null,
+                usbFound = polledDevice != null,
                 vpnRunning = TunNatVpnService.isRunningState.value,
+                connectionState = pollState,
+                usbPollCount = pollCount,
                 onVpnTap = {
                     if (TunNatVpnService.isRunningState.value) stopTunService()
-                    else startAuthFlow()
+                    else if (usbDevice != null) startAuthFlow()
                 }
             )
         }
 
         if (usbDevice != null) startAuthFlow()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        // VPN 状态由 TunNatVpnService.isRunningState 驱动, Compose 自动观察
     }
 
     override fun onDestroy() {
@@ -146,7 +177,7 @@ class MainActivity : ComponentActivity() {
 // ═══════════════════════════════════════════════════════
 
 @Composable
-fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
+fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String = "idle", usbPollCount: Int = 0, onVpnTap: () -> Unit) {
     val ctx = LocalContext.current
     val prefs = ctx.getSharedPreferences("tun_nat_hub", Context.MODE_PRIVATE)
 
@@ -398,9 +429,17 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                                             fontSize = 9.sp, color = Color(0xFF64748B))
                                     }
                                 } else if (vpnRunning) {
-                                    Text("⏳ 链路轮询中...", fontSize = 11.sp, color = Color(0xFF64748B))
+                                    Text("⏳ 链路建立中...", fontSize = 11.sp, color = Color(0xFFF59E0B))
+                                } else if (connectionState == "scanning" && usbPollCount > 0) {
+                                    Text("🔍 正在搜索设备 (${usbPollCount}s)...", fontSize = 11.sp, color = Color(0xFFF59E0B))
+                                } else if (connectionState == "scanning") {
+                                    Text("🔍 正在搜索设备...", fontSize = 11.sp, color = Color(0xFFF59E0B))
+                                } else if (connectionState == "timeout") {
+                                    Text("⚠ 未找到设备，请确认 USB 线已连接", fontSize = 11.sp, color = Color(0xFFF87171))
+                                } else if (connectionState == "found") {
+                                    Text("✅ 设备已发现，点击连接", fontSize = 11.sp, color = Color(0xFF22C55E))
                                 } else {
-                                    Text("等待 VPN 连接...", fontSize = 11.sp, color = Color(0xFF475569))
+                                    Text("请插入 USB 线连接设备", fontSize = 11.sp, color = Color(0xFF475569))
                                 }
                             }
                         }
@@ -729,8 +768,8 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, onVpnTap: () -> Unit) {
                         HorizontalDivider(color = Color(0xFF1E293B))
                         Surface(modifier = Modifier.fillMaxWidth(), color = Color(0xFF0F172A)) {
                             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                                Text("RK3588 192.168.88.66", fontSize = 9.sp, color = Color(0xFF475569))
-                                Text("TUN 10.0.0.0/24 · VID 0x0BDA", fontSize = 9.sp, color = Color(0xFF475569))
+                                Text("Linux 192.168.88.66 · USB 隧道", fontSize = 9.sp, color = Color(0xFF475569))
+                                Text("TUN 10.0.0.0/24 · VID 0x0BDA PID 0x8812", fontSize = 9.sp, color = Color(0xFF475569))
                                 Text("v${BuildConfig.VERSION_NAME}", fontSize = 10.sp, color = Color(0xFF38BDF8))
                             }
                         }
