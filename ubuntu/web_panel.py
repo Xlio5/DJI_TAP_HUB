@@ -622,6 +622,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             cfg = load_cfg()
             if "rtsp_url" in body: cfg["rtsp_url"] = body["rtsp_url"]
             if "cameras" in body: cfg["cameras"] = body["cameras"]
+            if "lan_subnet" in body:
+                # App 改了 LAN 网段 → 同步改 V3s eth0 IP
+                # 格式: "192.168.144.0/24" → V3s IP = "192.168.144.66"
+                from ipaddress import ip_network
+                try:
+                    net = ip_network(body["lan_subnet"], strict=False)
+                    v3s_ip = str(net.network_address + 66)  # x.x.x.66
+                    new_cidr = body["lan_subnet"]
+                    # 更新 /etc/network/interfaces
+                    subprocess.run(["sed","-i",f"s/address .*/address {v3s_ip}/","/etc/network/interfaces"])
+                    subprocess.run(["sed","-i",f"s/netmask .*/netmask {net.netmask}/","/etc/network/interfaces"])
+                    # 立即生效
+                    subprocess.run(["ip","addr","flush","dev","eth0"])
+                    subprocess.run(["ip","addr","add",new_cidr.replace("0/",f"{v3s_ip.split('.')[-1]}/"),"dev","eth0"])
+                    subprocess.run(["ip","link","set","eth0","up"])
+                    cfg["lan_subnet"] = new_cidr
+                except Exception:
+                    pass
             save_cfg(cfg); self._json({"ok":True})
         elif p == "/api/camera/add":
             cfg = load_cfg()
