@@ -11,7 +11,12 @@ TUN_PREFIX="24"
 TUN_MTU="1400"
 TUN_SUBNET="${TUN_IP%.*}.0/24"
 
-# 1. USB Gadget: g_serial 已内建在内核，通过 modprobe 触发绑定
+# 1. USB OTG 模式: V3s DT 默认 dr_mode=otg，USB ID 脚未拉低时会进 host 模式
+#    必须先切到 peripheral，g_serial 才能绑定 UDC
+echo peripheral > /sys/devices/platform/soc/1c19000.usb/musb-hdrc.2.auto/mode 2>/dev/null || true
+sleep 0.5
+
+# 2. USB Gadget: g_serial 已内建在内核，通过 modprobe 触发绑定
 #    (/lib/modules 缺失的 warning 可忽略 — 驱动已静态编入内核)
 if [ -c /dev/ttyGS0 ]; then
     echo "g_serial: /dev/ttyGS0 已就绪"
