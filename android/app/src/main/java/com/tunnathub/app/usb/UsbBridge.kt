@@ -19,6 +19,7 @@ import android.hardware.usb.*
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.tunnathub.app.proto.FrameCodec
+import com.tunnathub.app.util.AppLog
 import kotlinx.coroutines.*
 import kotlin.coroutines.coroutineContext
 import java.io.FileInputStream
@@ -67,16 +68,20 @@ class UsbBridge(
     suspend fun start(scope: CoroutineScope) {
         val device = findDevice() ?: throw IllegalStateException("未找到 TUN_NAT_HUB USB 设备")
         val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+        AppLog.i(TAG, "找到 USB 设备: VID=0x${USB_VID.toString(16)} PID=0x${USB_PID.toString(16)}")
 
         // 检查 USB 权限，没有则请求（冷启后权限可能丢失）
         if (!usbManager.hasPermission(device)) {
             Log.w(TAG, "USB 权限未授予，正在请求...")
+            AppLog.w(TAG, "USB 权限未授予，正在请求...")
             val latch = CountDownLatch(1)
             val permAction = "com.tunnathub.app.USB_PERM"
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(ctx: Context, intent: Intent) {
                     if (permAction == intent.action) {
-                        Log.i(TAG, "USB 权限结果: ${intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)}")
+                        val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                        Log.i(TAG, "USB 权限结果: $granted")
+                        AppLog.i(TAG, "USB 权限${if (granted) "已" else "未"}授予")
                         latch.countDown()
                     }
                 }
@@ -93,6 +98,7 @@ class UsbBridge(
 
         usbConnection = usbManager.openDevice(device)
             ?: throw IllegalStateException("无法打开 USB 设备，请重新插拔 USB 线并授权")
+        AppLog.i(TAG, "USB openDevice 成功")
 
         // 遍历所有接口找 Bulk 端点
         findEndpoints(device)
@@ -102,12 +108,14 @@ class UsbBridge(
         }
 
         Log.i(TAG, "USB 已连接: epOut=0x${epOut!!.address.toString(16)}, epIn=0x${epIn!!.address.toString(16)}")
+        AppLog.i(TAG, "USB 已连接 epOut=0x${epOut!!.address.toString(16)} epIn=0x${epIn!!.address.toString(16)}")
 
         // 发送 DTR/RTS 激活 g_serial TTY 数据通道
         activateTty()
 
         isConnected = true
         onLinkStateChange?.invoke(LinkState.Connected)
+        AppLog.i(TAG, "双协程启动，开始 TUN↔USB 转发")
 
         val tunInput = FileInputStream(tunFd.fileDescriptor)
         val tunOutput = FileOutputStream(tunFd.fileDescriptor)
@@ -167,6 +175,7 @@ class UsbBridge(
 
     private suspend fun tunToUsbLoop(tunInput: FileInputStream) {
         val buf = acquireBuffer()
+        var firstPacket = true
 
         while (coroutineContext.isActive && isConnected) {
             try {
@@ -178,7 +187,8 @@ class UsbBridge(
                 val frameLen = FrameCodec.writeHeader(buf, n)
                 val written = usbConnection!!.bulkTransfer(epOut, buf, 0, frameLen, USB_TIMEOUT_MS)
 
-                if (written < 0) { Log.e(TAG, "USB write 失败"); break }
+                if (firstPacket) { AppLog.d(TAG, "TUN→USB 首包: ${n}B → bulkTransfer wrote=$written"); firstPacket = false }
+                if (written < 0) { Log.e(TAG, "USB write 失败"); AppLog.e(TAG, "USB bulkTransfer(OUT) 失败"); break }
             } catch (e: Exception) {
                 if (coroutineContext.isActive) Log.e(TAG, "TUN→USB 异常", e)
                 break
@@ -192,6 +202,7 @@ class UsbBridge(
 
     private suspend fun usbToTunLoop(tunOutput: FileOutputStream) {
         val buf = acquireBuffer()
+        var firstPacket = true
 
         while (coroutineContext.isActive && isConnected) {
             try {
@@ -207,6 +218,7 @@ class UsbBridge(
                 when (val result = FrameCodec.unpack(buf, n)) {
                     is FrameCodec.UnpackResult.Data -> tunOutput.write(result.payload)
                     is FrameCodec.UnpackResult.Heartbeat -> {
+                        if (firstPacket) { AppLog.d(TAG, "USB→TUN 首帧: 心跳 PONG"); firstPacket = false }
                         usbConnection!!.bulkTransfer(epOut, PONG_FRAME, 0, PONG_FRAME.size, 100)
                     }
                     is FrameCodec.UnpackResult.Credit -> {} // Phase 3
@@ -216,7 +228,7 @@ class UsbBridge(
                     is FrameCodec.UnpackResult.Error -> {} // Ignore
                 }
             } catch (e: Exception) {
-                if (coroutineContext.isActive) Log.e(TAG, "USB→TUN 异常", e)
+                if (coroutineContext.isActive) { Log.e(TAG, "USB→TUN 异常", e); AppLog.e(TAG, "USB→TUN 异常: ${e.message}", e) }
                 break
             }
         }
@@ -224,6 +236,7 @@ class UsbBridge(
         isConnected = false
         onLinkStateChange?.invoke(LinkState.Disconnected)
         Log.i(TAG, "USB→TUN 退出")
+        AppLog.w(TAG, "USB Bridge 已断开")
     }
 
     private fun findDevice(): UsbDevice? {

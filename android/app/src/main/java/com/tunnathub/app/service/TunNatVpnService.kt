@@ -28,6 +28,7 @@ import androidx.compose.runtime.mutableStateOf
 import com.tunnathub.app.MainActivity
 import com.tunnathub.app.R
 import com.tunnathub.app.usb.UsbBridge
+import com.tunnathub.app.util.AppLog
 import kotlinx.coroutines.*
 
 class TunNatVpnService : VpnService() {
@@ -96,6 +97,7 @@ class TunNatVpnService : VpnService() {
         try {
             tunFd = establishVpn()
             Log.i(TAG, "TUN 接口已建立")
+            AppLog.i(TAG, "TUN 接口已建立")
         } catch (e: Exception) {
             Log.e(TAG, "无法建立 TUN", e)
             stopSelf()
@@ -154,6 +156,7 @@ class TunNatVpnService : VpnService() {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val lanSubnet = prefs.getString(KEY_LAN_SUBNET, DEFAULT_LAN_SUBNET) ?: DEFAULT_LAN_SUBNET
         val lanPrefix = prefs.getInt(KEY_LAN_PREFIX, DEFAULT_LAN_PREFIX)
+        AppLog.i(TAG, "建立 VPN: TUN=$TUN_ADDRESS/$TUN_PREFIX, Route=$lanSubnet/$lanPrefix")
 
         val builder = Builder()
             .setSession(getString(R.string.vpn_service_name))

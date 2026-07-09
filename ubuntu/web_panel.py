@@ -10,15 +10,48 @@ CFG_FILE = os.path.expanduser("~/tun_nat_hub_config.json")
 # 若 V3s 以 root 运行则跳过 sudo；若以普通用户运行则需 sudoers 或此密码。
 _SUDO = [] if os.geteuid() == 0 else ["sudo", "-S"]
 
-def load_cfg():
+def detect_lan_subnet():
+    """从 eth0 实际 IP 自动推断 LAN 网段，例如 192.168.144.66/24 → 192.168.144.0/24"""
+    try:
+        r = subprocess.run(["ip","addr","show","eth0"], capture_output=True, text=True, timeout=5)
+        for line in r.stdout.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("inet "):
+                parts = stripped.split()
+                cidr = parts[1]  # 例如 "192.168.144.66/24"
+                ip_addr, prefix = cidr.split("/")
+                octets = ip_addr.split(".")
+                octets[3] = "0"
+                subnet = ".".join(octets) + "/" + prefix
+                return subnet
+    except Exception:
+        pass
+    return None
+
+def _merge_defaults(cfg):
     defaults = {"rtsp_url":"rtsp://192.168.88.100:554/stream1","lan_subnet":"192.168.88.0/24","tun_subnet":"10.0.0.0/24","forwards":[],"cameras":[{"name":"Camera 1","url":"rtsp://192.168.88.101:554/stream1"}]}
+    for k, v in defaults.items():
+        if k not in cfg: cfg[k] = v
+
+def load_cfg():
     try:
         with open(CFG_FILE) as f:
             cfg = json.load(f)
-        for k, v in defaults.items():
-            if k not in cfg: cfg[k] = v
+        _merge_defaults(cfg)
+        # 自动检测: 如果 V3s eth0 实际 IP 的网段与配置不同，自动更新
+        detected = detect_lan_subnet()
+        if detected and detected != cfg.get("lan_subnet"):
+            print(f"[web_panel] LAN 网段自动检测: {cfg.get('lan_subnet')} → {detected}")
+            cfg["lan_subnet"] = detected
+            save_cfg(cfg)
         return cfg
-    except Exception: return defaults
+    except Exception:
+        defaults = {"rtsp_url":"rtsp://192.168.88.100:554/stream1","lan_subnet":"192.168.88.0/24","tun_subnet":"10.0.0.0/24","forwards":[],"cameras":[{"name":"Camera 1","url":"rtsp://192.168.88.101:554/stream1"}]}
+        # 即使无配置文件，也尝试从 eth0 推断
+        detected = detect_lan_subnet()
+        if detected:
+            defaults["lan_subnet"] = detected
+        return defaults
 
 def save_cfg(cfg):
     with open(CFG_FILE, "w") as f: json.dump(cfg, f, indent=2)

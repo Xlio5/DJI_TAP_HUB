@@ -148,8 +148,8 @@ public class EasyPlayerClient implements Client.SourceCallBack {
     }
 
     private static class FrameInfoQueue extends PriorityQueue<Client.FrameInfo> {
-        public static final int CAPACITY = 20;       // TUN_NAT_HUB: USB 直连低延迟 (原 500)
-        public static final int INITIAL_CAPACITY = 10; // (原 300)
+        public static final int CAPACITY = 5;        // TUN_NAT_HUB: 极低延迟 (USB 重传可靠)
+        public static final int INITIAL_CAPACITY = 4;
 
         public FrameInfoQueue() {
             super(INITIAL_CAPACITY, new Comparator<Client.FrameInfo>() {
@@ -833,11 +833,49 @@ public class EasyPlayerClient implements Client.SourceCallBack {
         return array.get(0);
     }
 
-    // TUN_NAT_HUB: 优先选低延迟硬件解码器
+    // TUN_NAT_HUB: 用户手动指定解码器 (null = 自动选择)
+    private static volatile String sForcedCodecName = null;
+
+    /** 设置强制解码器名称, null 或 "auto" 恢复自动选择 */
+    public static void setForcedCodec(String name) {
+        if (name == null || name.equals("auto") || name.isEmpty()) {
+            sForcedCodecName = null;
+        } else {
+            sForcedCodecName = name;
+        }
+        Log.i(TAG, "setForcedCodec: " + (sForcedCodecName != null ? sForcedCodecName : "auto"));
+    }
+
+    public static String getForcedCodec() {
+        return sForcedCodecName != null ? sForcedCodecName : "auto";
+    }
+
+    /** 获取所有可用的 AVC/H.264 和 HEVC/H.265 解码器名称 */
+    public static java.util.List<String> listAvailableDecoders() {
+        java.util.List<String> list = new java.util.ArrayList<>();
+        int numCodecs = MediaCodecList.getCodecCount();
+        for (int i = 0; i < numCodecs; i++) {
+            MediaCodecInfo codecInfo = MediaCodecList.getCodecInfoAt(i);
+            if (codecInfo.isEncoder()) continue;
+            String[] types = codecInfo.getSupportedTypes();
+            for (String type : types) {
+                if (type.equalsIgnoreCase("video/avc") || type.equalsIgnoreCase("video/hevc")) {
+                    if (!list.contains(codecInfo.getName())) {
+                        list.add(codecInfo.getName());
+                    }
+                }
+            }
+        }
+        return list;
+    }
+
+    // TUN_NAT_HUB: 优先选低延迟硬件解码器，支持用户手动指定
     private static MediaCodecInfo selectCodec(String mimeType) {
         int numCodecs = MediaCodecList.getCodecCount();
         MediaCodecInfo fallbackHw = null;
         MediaCodecInfo fallbackAny = null;
+        MediaCodecInfo forcedCodec = null;
+        boolean isForced = sForcedCodecName != null && !sForcedCodecName.isEmpty();
 
         for (int i = 0; i < numCodecs; i++) {
             MediaCodecInfo codecInfo = MediaCodecList.getCodecInfoAt(i);
@@ -852,7 +890,6 @@ public class EasyPlayerClient implements Client.SourceCallBack {
                     boolean isHw = false;
                     try {
                         MediaCodecInfo.CodecCapabilities caps = codecInfo.getCapabilitiesForType(mimeType);
-                        // hw-accelerated decoder
                         if (caps != null && codecInfo.getName().contains(".qti.")) {
                             isHw = true;
                         }
@@ -860,10 +897,15 @@ public class EasyPlayerClient implements Client.SourceCallBack {
 
                     String name = codecInfo.getName();
 
-                    // 优先: 低延迟硬件解码器 (e.g. c2.qti.avc.decoder.low_latency)
+                    // 用户手动指定解码器 — 精确匹配
+                    if (isForced && name.equals(sForcedCodecName)) {
+                        forcedCodec = codecInfo;
+                    }
+
+                    // 优先: 低延迟硬件解码器
                     if (name.contains("low_latency")) {
                         Log.i(TAG, "selectCodec: prefer low-latency hw " + name);
-                        return codecInfo;
+                        if (!isForced) return codecInfo;
                     }
 
                     // 次选: Qualcomm 硬件解码器
@@ -877,6 +919,15 @@ public class EasyPlayerClient implements Client.SourceCallBack {
                     }
                 }
             }
+        }
+
+        // 用户强制指定
+        if (isForced && forcedCodec != null) {
+            Log.i(TAG, "selectCodec: forced " + forcedCodec.getName());
+            return forcedCodec;
+        }
+        if (isForced) {
+            Log.w(TAG, "selectCodec: forced codec " + sForcedCodecName + " not found, fallback");
         }
 
         if (fallbackHw != null) {
@@ -953,7 +1004,7 @@ public class EasyPlayerClient implements Client.SourceCallBack {
                                     try { format.setInteger(MediaFormat.KEY_PRIORITY, 0); } catch (Exception ignored) {}
                                     try { format.setInteger(MediaFormat.KEY_LATENCY, 0); } catch (Exception ignored) {}
                                     // 限制输出缓冲帧数 (默认 C2 low_latency 为 7，减到 2)
-                                    try { format.setInteger("vendor.qti-ext-dec-out-buf-count", 2); } catch (Exception ignored) {}
+                                    try { format.setInteger("vendor.qti-ext-dec-out-buf-count", 1); } catch (Exception ignored) {}
                                     // 解码后立即输出，不累积帧
                                     try { format.setInteger(MediaFormat.KEY_OUTPUT_REORDER_DEPTH, 0); } catch (Exception ignored) {}
                                 }
@@ -992,6 +1043,7 @@ public class EasyPlayerClient implements Client.SourceCallBack {
                                 Log.i(TAG, String.format("config codec:%s", format));
 
                                 MediaCodec codec = MediaCodec.createByCodecName(ci.getName());
+                                android.util.Log.w("TUN_DECODER", "USING CODEC: " + ci.getName());
                                 codec.configure(format, i420callback != null ? null : mSurface, null, 0);
                                 codec.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT);
                                 codec.start();
@@ -1185,7 +1237,7 @@ public class EasyPlayerClient implements Client.SourceCallBack {
 
                                                     {
                                                         long cache = mNewestStample - lastFrameStampUs;
-                                                        newSleepUs = fixSleepTime(sleepUs, cache, 10000); // TUN_NAT_HUB: 10ms (原 100ms)
+                                                        newSleepUs = fixSleepTime(sleepUs, cache, 2000); // TUN_NAT_HUB: 2ms (USB 低延迟)
                                                         // Log.d(TAG, String.format("sleepUs:%d,newSleepUs:%d,Cache:%d", sleepUs, newSleepUs, cache));
                                                     }
                                                 }

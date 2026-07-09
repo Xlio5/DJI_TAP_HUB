@@ -37,6 +37,8 @@ import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material3.*
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,7 +53,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.tunnathub.app.BuildConfig
 import com.tunnathub.app.service.TunNatVpnService
 import com.tunnathub.app.usb.UsbBridge
+import com.tunnathub.app.util.AppLog
 import kotlinx.coroutines.*
+import org.easydarwin.video.Client
 import org.easydarwin.video.EasyPlayerClient
 
 class MainActivity : ComponentActivity() {
@@ -163,11 +167,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startTunService() {
+        AppLog.i(TAG, "启动 VPN 服务")
         val i = Intent(this, TunNatVpnService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
     }
 
     private fun stopTunService() {
+        AppLog.i(TAG, "停止 VPN 服务")
         stopService(Intent(this, TunNatVpnService::class.java))
     }
 
@@ -233,6 +239,12 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
     val savedLanPrefix = prefs.getInt("lan_prefix", 24)
     var needVpnReconnect by remember { mutableStateOf(false) }
 
+    // ── 恢复已保存的解码器选择 ──
+    val savedCodec = remember { prefs.getString("forced_codec", "auto") ?: "auto" }
+    LaunchedEffect(Unit) {
+        EasyPlayerClient.setForcedCodec(savedCodec)
+    }
+
     // ── HTTP POST helper (协程 IO 线程, 跟随 Composable 生命周期) ──
     fun apiPost(path: String, body: String) {
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
@@ -289,6 +301,7 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                 conn.connectTimeout = 2000
                 conn.readTimeout = 2000
                 val text = conn.inputStream.bufferedReader().readText()
+                AppLog.d("TunNatHub", "获取 V3s 配置: OK (${text.length} bytes)")
                 // Parse cameras
                 val camList = mutableListOf<CamInfo>()
                 val camPattern = Regex("\"name\": \"([^\"]+)\"[^}]*\"url\": \"([^\"]+)\"")
@@ -308,9 +321,11 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                 if (lanMatch != null) {
                     val remoteSubnet = "${lanMatch.groupValues[1]}.0"
                     val remotePrefix = lanMatch.groupValues[2].toInt()
+                    AppLog.d("TunNatHub", "V3s LAN网段: $remoteSubnet/$remotePrefix (App: $savedLanSubnet/$savedLanPrefix)")
                     if (remoteSubnet != savedLanSubnet || remotePrefix != savedLanPrefix) {
                         prefs.edit().putString("lan_subnet", remoteSubnet).putInt("lan_prefix", remotePrefix).apply()
                         needVpnReconnect = true
+                        AppLog.w("TunNatHub", "网段不同步! V3s=$remoteSubnet/$remotePrefix App=$savedLanSubnet/$savedLanPrefix → 自动同步")
                     }
                 }
             } catch (e: Exception) {
@@ -323,7 +338,19 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
         object : ResultReceiver(Handler(ctx.mainLooper)) {
             override fun onReceiveResult(code: Int, data: Bundle?) {
                 when (code) {
-                    EasyPlayerClient.RESULT_VIDEO_DISPLAYED -> { statusText = "播放中"; isPlaying = true }
+                    EasyPlayerClient.RESULT_VIDEO_DISPLAYED -> {
+                        val decodeType = data?.getInt(EasyPlayerClient.KEY_VIDEO_DECODE_TYPE, -1) ?: -1
+                        val codecName = EasyPlayerClient.getForcedCodec()
+                        val typeStr = when {
+                            codecName != "auto" -> codecName.split(".").last().take(25)
+                            decodeType == 1 -> "MediaCodec(自动)"
+                            decodeType == 0 -> "SW(FFmpeg)"
+                            else -> "?"
+                        }
+                        statusText = "播放中 [$typeStr]"
+                        isPlaying = true
+                        AppLog.i("Player", "解码器: $typeStr")
+                    }
                     EasyPlayerClient.RESULT_VIDEO_SIZE -> {
                         val w = data?.getInt(EasyPlayerClient.EXTRA_VIDEO_WIDTH, 0) ?: 0
                         val h = data?.getInt(EasyPlayerClient.EXTRA_VIDEO_HEIGHT, 0) ?: 0
@@ -479,6 +506,62 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                                     }
                                 }
                             }
+                        }
+
+                        // ── Debug 日志面板 (可折叠) ──
+                        var debugExpanded by remember { mutableStateOf(false) }
+                        val debugLogs by AppLog.logs.collectAsState()
+                        val scrollState2 = rememberScrollState()
+
+                        // 自动滚到最底
+                        LaunchedEffect(debugLogs.size) { if (debugExpanded) scrollState2.animateScrollTo(Int.MAX_VALUE) }
+
+                        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp)
+                            .clickable { debugExpanded = !debugExpanded },
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("🐛 Debug", fontSize = 10.sp, color = Color(0xFF64748B))
+                                Spacer(Modifier.width(4.dp))
+                                Text("(${debugLogs.size})", fontSize = 9.sp, color = Color(0xFF475569))
+                            }
+                            Row { Text(if (debugExpanded) "▲" else "▼", fontSize = 9.sp, color = Color(0xFF475569)) }
+                        }
+
+                        if (debugExpanded) {
+                            Box(modifier = Modifier.fillMaxWidth().heightIn(max = 180.dp).padding(horizontal = 14.dp)
+                                .background(Color(0xFF020617), RoundedCornerShape(6.dp))
+                                .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(6.dp))
+                            ) {
+                                Column(modifier = Modifier.verticalScroll(scrollState2).padding(6.dp)) {
+                                    val recent = debugLogs.takeLast(50).reversed()
+                                    if (recent.isEmpty()) {
+                                        Text("等待日志...", fontSize = 9.sp, color = Color(0xFF475569))
+                                    }
+                                    recent.forEach { entry ->
+                                        val color = when (entry.level) {
+                                            AppLog.Level.ERROR -> Color(0xFFEF4444)
+                                            AppLog.Level.WARN -> Color(0xFFF59E0B)
+                                            AppLog.Level.INFO -> Color(0xFF38BDF8)
+                                            AppLog.Level.DEBUG -> Color(0xFF64748B)
+                                        }
+                                        Text(
+                                            text = entry.fullLine,
+                                            fontSize = 9.sp,
+                                            color = color,
+                                            lineHeight = 13.sp,
+                                            modifier = Modifier.padding(vertical = 1.dp)
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(2.dp))
+                            // Clear button
+                            TextButton(onClick = { AppLog.clear() },
+                                modifier = Modifier.height(22.dp).padding(horizontal = 14.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                            ) { Text("清空", fontSize = 9.sp, color = Color(0xFF64748B)) }
                         }
 
                         HorizontalDivider(color = Color(0xFF1E293B))
@@ -889,6 +972,100 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))
                                     ) { Text("默认", fontSize = 10.sp) }
                                 }
+                                // ── 解码器选择 ──
+                                Spacer(Modifier.height(8.dp))
+                                HorizontalDivider(color = Color(0xFF1E293B))
+                                Spacer(Modifier.height(4.dp))
+                                Text("解码器", fontSize = 9.sp, color = Color(0xFF64748B))
+
+                                var selectedCodec by remember { mutableStateOf(EasyPlayerClient.getForcedCodec()) }
+                                var codecList by remember { mutableStateOf(listOf("auto")) }
+                                var codecDropdown by remember { mutableStateOf(false) }
+                                var codecSaved by remember { mutableStateOf(false) }
+
+                                // 加载可用解码器列表
+                                LaunchedEffect(advancedExpanded) {
+                                    if (advancedExpanded) {
+                                        try {
+                                            val list = EasyPlayerClient.listAvailableDecoders()
+                                            codecList = listOf("auto") + list
+                                        } catch (_: Exception) {}
+                                    }
+                                }
+
+                                Row(modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(modifier = Modifier.weight(1f)) {
+                                        Row(modifier = Modifier.fillMaxWidth().height(32.dp)
+                                            .background(Color(0xFF0F172A), RoundedCornerShape(6.dp))
+                                            .border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp))
+                                            .clickable { codecDropdown = !codecDropdown }
+                                            .padding(horizontal = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = selectedCodec.let {
+                                                    if (it == "auto") "auto (自动)"
+                                                    else if (it.contains("low_latency")) it + " ⚡"
+                                                    else if (it.contains(".qti.")) it + " (HW)"
+                                                    else if (it.contains("android")) it + " (SW)"
+                                                    else it
+                                                },
+                                                fontSize = 10.sp,
+                                                color = if (selectedCodec == "auto") Color(0xFF22C55E) else Color(0xFFF59E0B),
+                                                maxLines = 1
+                                            )
+                                            Spacer(Modifier.weight(1f))
+                                            Text(if (codecDropdown) "▲" else "▼", fontSize = 9.sp, color = Color(0xFF64748B))
+                                        }
+                                        DropdownMenu(expanded = codecDropdown, onDismissRequest = { codecDropdown = false },
+                                            modifier = Modifier.background(Color(0xFF1E293B))
+                                        ) {
+                                            codecList.forEach { codec ->
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Text(
+                                                            text = codec.let {
+                                                                if (it == "auto") "auto (自动)"
+                                                                else if (it.contains("low_latency")) it + " ⚡"
+                                                                else if (it.contains(".qti.")) it + " (HW)"
+                                                                else if (it.contains("android")) it + " (SW)"
+                                                                else it
+                                                            },
+                                                            fontSize = 10.sp,
+                                                            color = Color(0xFFE2E8F0)
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        selectedCodec = codec
+                                                        codecDropdown = false
+                                                        codecSaved = false
+                                                    },
+                                                    modifier = Modifier.background(
+                                                        if (codec == selectedCodec) Color(0xFF334155) else Color(0xFF1E293B)
+                                                    )
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Spacer(Modifier.width(6.dp))
+                                    Button(onClick = {
+                                        EasyPlayerClient.setForcedCodec(selectedCodec)
+                                        codecSaved = true
+                                        // 保存在 SharedPrefs
+                                        prefs.edit().putString("forced_codec", selectedCodec).apply()
+                                    }, modifier = Modifier.height(30.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
+                                    ) { Text("应用", fontSize = 10.sp) }
+                                }
+                                if (codecSaved) {
+                                    Text("✅ 解码器已切换, 重启播放生效", fontSize = 9.sp,
+                                        color = Color(0xFFF59E0B), modifier = Modifier.padding(top = 2.dp))
+                                }
+
                                 if (advSaved) {
                                     Text("✅ 已保存, 重连 VPN 生效", fontSize = 9.sp,
                                         color = Color(0xFF22C55E), modifier = Modifier.padding(top = 4.dp))
