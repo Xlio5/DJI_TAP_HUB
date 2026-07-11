@@ -210,6 +210,11 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
     var playerRef by remember { mutableStateOf<EasyPlayerClient?>(null) }
     var sidebarExpanded by remember { mutableStateOf(true) }
 
+    // ── 录制 ──
+    var isRecording by remember { mutableStateOf(false) }
+    val RECORD_PATH = "${ctx.externalCacheDir?.absolutePath}/test_record.mp4"
+    var recordPath by remember { mutableStateOf(RECORD_PATH) }
+
     // ── 心跳状态 ──
     var hbDaemon by remember { mutableStateOf(false) }
     var hbTty by remember { mutableStateOf(false) }
@@ -367,13 +372,35 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
         }
     }
 
+    fun doStopRecord() {
+        playerRef?.stopRecord()
+        isRecording = false
+    }
+
+    // ── 从 RTSP URL 提取 IP 网段，自动同步 LAN 配置 ──
+    fun autoSyncSubnet(url: String) {
+        // 匹配 rtsp://x.x.x.x:port/path 中的 IP
+        val ipMatch = Regex("rtsp://(\\d+\\.\\d+\\.\\d+)\\.\\d+").find(url) ?: return
+        val base = ipMatch.groupValues[1]  // e.g. "192.168.144"
+        val newSubnet = "$base.0"
+        val currentSubnet = prefs.getString("lan_subnet", "192.168.88.0") ?: "192.168.88.0"
+        if (newSubnet != currentSubnet) {
+            prefs.edit().putString("lan_subnet", newSubnet).putInt("lan_prefix", 24).apply()
+            needVpnReconnect = true
+            AppLog.w("TunNatHub", "网段自动同步: $currentSubnet → $newSubnet (从 RTSP 地址推断)")
+        }
+    }
+
     fun togglePlay() {
         if (isPlaying) {
+            if (isRecording) doStopRecord()
             playerRef?.stop(); playerRef = null; isPlaying = false; statusText = "已停止"
         } else {
             val sv = surfaceViewRef ?: return
             try {
                 prefs.edit().putString("rtsp_url", rtspUrl).apply()
+                // 自动同步 LAN 网段
+                autoSyncSubnet(rtspUrl)
                 val client = EasyPlayerClient(ctx, sv.holder.surface, receiver)
                 client.start(rtspUrl, org.easydarwin.video.Client.TRANSTYPE_TCP, 1,
                     org.easydarwin.video.Client.EASY_SDK_VIDEO_FRAME_FLAG or
@@ -381,6 +408,36 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                 playerRef = client; isPlaying = true; statusText = "连接中..."
             } catch (e: Exception) { Log.e("TunNatHub", "播放失败", e); statusText = "播放失败" }
         }
+    }
+
+    fun toggleRecord() {
+        val client = playerRef ?: return
+        if (isRecording) {
+            client.stopRecord()
+            isRecording = false
+            statusText = "录制完成: $RECORD_PATH"
+            AppLog.i("Record", "录制完成: $RECORD_PATH")
+        } else {
+            java.io.File(RECORD_PATH).parentFile?.mkdirs()
+            java.io.File(RECORD_PATH).delete()  // 删除旧文件
+            client.startRecord(RECORD_PATH)
+            isRecording = true
+            statusText = "录制中..."
+            AppLog.i("Record", "开始录制: $RECORD_PATH")
+        }
+    }
+
+    fun playLocalFile() {
+        val file = java.io.File(RECORD_PATH)
+        if (!file.exists()) { statusText = "无录制文件"; return }
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(androidx.core.content.FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file), "video/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            ctx.startActivity(intent)
+            statusText = "本地回放中..."
+        } catch (e: Exception) { statusText = "无可用播放器"; Log.e("TunNatHub", "本地回放失败", e) }
     }
 
     // 延迟测试状态 (提升到顶层，避免滚动时丢失)
@@ -606,6 +663,26 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                                     containerColor = if (isPlaying) Color(0xFFDC2626) else Color(0xFF16A34A))
                             ) { Text(if (isPlaying) "■ 停止" else "▶ 播放", fontSize = 13.sp,
                                 fontWeight = FontWeight.Medium) }
+
+                            // ── 录制按钮行 ──
+                            if (isPlaying) {
+                                Spacer(Modifier.height(4.dp))
+                                Row(modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Button(onClick = { toggleRecord() },
+                                        modifier = Modifier.weight(1f).height(28.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (isRecording) Color(0xFFDC2626) else Color(0xFF7C3AED))
+                                    ) { Text(if (isRecording) "⏹ 停止录制" else "⏺ 录制", fontSize = 10.sp) }
+                                    Button(onClick = { playLocalFile() },
+                                        modifier = Modifier.weight(1f).height(28.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0EA5E9))
+                                    ) { Text("📁 本地回放", fontSize = 10.sp) }
+                                }
+                            }
 
                             if (statusText.isNotEmpty()) {
                                 Spacer(Modifier.height(4.dp))
