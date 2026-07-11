@@ -240,8 +240,8 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
     data class FwdInfo(val proto: String, val port: Int, val dest: String)
     var forwards by remember { mutableStateOf(listOf<FwdInfo>()) }
     var fwdProto by remember { mutableStateOf("udp") }
-    var fwdExtPort by remember { mutableStateOf("") }
-    var fwdDestPort by remember { mutableStateOf("") }
+    var fwdExtPort by remember { mutableStateOf("14550") }
+    var fwdDestPort by remember { mutableStateOf("0") }
     var fwdDestIp by remember { mutableStateOf("10.0.0.2") }
     var fwdMsg by remember { mutableStateOf("") }
 
@@ -393,18 +393,20 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // 左侧: USB● VPN● + 码率
+                    // 左侧: USB● VPN● + 状态
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Surface(shape = CircleShape, color = if (usbFound) Color(0xFF22C55E) else Color(0xFFEF4444), modifier = Modifier.size(6.dp)) {}
                         Spacer(Modifier.width(3.dp))
                         Surface(shape = CircleShape, color = if (vpnRunning) Color(0xFF22C55E) else Color(0xFFEF4444), modifier = Modifier.size(6.dp)) {}
-                        if (vpnRunning && hbCount > 0) {
-                            Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(6.dp))
+                        if (TunNatVpnService.isReconnectingState.value) {
+                            // 最高优先：正在重连
+                            Text("USB 重连...", fontSize = 11.sp, color = Color(0xFFF59E0B), fontWeight = FontWeight.Medium)
+                        } else if (vpnRunning && hbCount > 0) {
                             Text("${hbBw} Mbps", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = Color(0xFF38BDF8))
                             Spacer(Modifier.width(10.dp))
                             Text("Tx${fmtSize(hbTx)} Rx${fmtSize(hbRx)}", fontSize = 10.sp, color = Color(0xFF64748B))
                         } else if (!vpnRunning) {
-                            Spacer(Modifier.width(8.dp))
                             val st = when (connectionState) {
                                 "scanning" -> if (usbPollCount > 0) "搜索中 (${usbPollCount}s)" else "搜索中..."
                                 "timeout" -> "未找到设备"
@@ -413,7 +415,6 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                             }
                             Text(st, fontSize = 11.sp, color = Color(0xFF64748B))
                         } else {
-                            Spacer(Modifier.width(8.dp))
                             Text("链路建立中...", fontSize = 11.sp, color = Color(0xFFF59E0B))
                         }
                     }
@@ -562,6 +563,60 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                                         modifier = Modifier.height(30.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))) { Text("默认", fontSize = 10.sp) }
                                 }
                                 if (advSaved) Text("已保存, 重连 VPN 生效", fontSize = 9.sp, color = Color(0xFF22C55E), modifier = Modifier.padding(top = 4.dp))
+
+                                // ── 端口转发 ──
+                                Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
+                                SectionHdr("端口转发")
+                                Text("PC → V3s:外网端口 ─DNAT─→ DJI:目标端口", fontSize = 9.sp, color = Color(0xFF475569))
+                                Spacer(Modifier.height(8.dp))
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Surface(modifier = Modifier.height(36.dp).widthIn(min = 48.dp), color = Color(0xFF1E293B), shape = RoundedCornerShape(6.dp),
+                                        onClick = { fwdProto = if (fwdProto == "udp") "tcp" else "udp" }
+                                    ) { Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) { Text(fwdProto.uppercase(), fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Color(0xFF38BDF8)) } }
+                                    Box(modifier = Modifier.weight(1f).height(36.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).padding(horizontal = 10.dp), contentAlignment = Alignment.CenterStart) {
+                                        BasicTextField(value = fwdExtPort, onValueChange = { fwdExtPort = it }, singleLine = true,
+                                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = Color(0xFFE2E8F0)),
+                                            modifier = Modifier.fillMaxWidth())
+                                    }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Box(modifier = Modifier.weight(1f).height(36.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).padding(horizontal = 10.dp), contentAlignment = Alignment.CenterStart) {
+                                        BasicTextField(value = fwdDestIp, onValueChange = { fwdDestIp = it }, singleLine = true,
+                                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = Color(0xFFE2E8F0)),
+                                            modifier = Modifier.fillMaxWidth())
+                                    }
+                                    Box(modifier = Modifier.width(72.dp).height(36.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).padding(horizontal = 10.dp), contentAlignment = Alignment.CenterStart) {
+                                        BasicTextField(value = fwdDestPort, onValueChange = { fwdDestPort = it }, singleLine = true,
+                                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = Color(0xFFE2E8F0)),
+                                            modifier = Modifier.fillMaxWidth())
+                                    }
+                                }
+                                if (fwdMsg.isNotEmpty()) { Spacer(Modifier.height(4.dp)); Text(fwdMsg, fontSize = 10.sp, color = Color(0xFFF87171)) }
+                                Spacer(Modifier.height(6.dp))
+                                Button(onClick = {
+                                    fwdMsg = ""
+                                    val ePort = fwdExtPort.filter { it.isDigit() }.toIntOrNull()
+                                    val dPort = fwdDestPort.filter { it.isDigit() }.toIntOrNull()
+                                    if (ePort == null || ePort < 1 || ePort > 65535) { fwdMsg = "外网端口无效 (1-65535)"; return@Button }
+                                    val dest = fwdDestIp.ifEmpty { "10.0.0.2" } + if (dPort != null) ":$dPort" else ""
+                                    forwards = forwards + FwdInfo(fwdProto, ePort, dest)
+                                    apiPost("/api/forward/add", """{"proto":"$fwdProto","port":$ePort,"dest":"$dest"}""")
+                                    fwdExtPort = "0"; fwdDestPort = "0"
+                                }, modifier = Modifier.fillMaxWidth().height(36.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
+                                ) { Text("＋ 添加转发", fontSize = 12.sp) }
+                                if (forwards.isNotEmpty()) {
+                                    Spacer(Modifier.height(4.dp))
+                                    forwards.forEach { f ->
+                                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Text("${f.proto.uppercase()} :${f.port} → ${f.dest}", fontSize = 10.sp, color = Color(0xFF22C55E), modifier = Modifier.weight(1f))
+                                            TextButton(onClick = {
+                                                apiPost("/api/forward/del", """{"port":${f.port}}""")
+                                                forwards = forwards.filter { it.port != f.port }
+                                            }, modifier = Modifier.height(22.dp), contentPadding = PaddingValues(3.dp, 0.dp)) { Text("✕", fontSize = 10.sp, color = Color(0xFFEF4444)) }
+                                        }
+                                    }
+                                }
 
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("解码器")

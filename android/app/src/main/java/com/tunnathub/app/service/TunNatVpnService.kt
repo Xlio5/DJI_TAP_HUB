@@ -19,7 +19,12 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -38,11 +43,14 @@ class TunNatVpnService : VpnService() {
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "tun_nat_hub_vpn"
 
-        /** 供 MainActivity Compose 观察 VPN 运行状态 */
+        /** 供 MainActivity 观察 VPN 运行状态 */
         val isRunningState = mutableStateOf(false)
         var isRunning: Boolean
             get() = isRunningState.value
             private set(value) { isRunningState.value = value }
+
+        /** 是否正在重连 USB */
+        val isReconnectingState = mutableStateOf(false)
 
         /** 当前 VpnService 实例（供 protectSocket 静态调用） */
         @Volatile private var instance: TunNatVpnService? = null
@@ -58,6 +66,7 @@ class TunNatVpnService : VpnService() {
         private const val TUN_MTU = 1400
         private const val TUN_ROUTE = "10.0.0.0"
         private const val TUN_PREFIX_ROUTE = 24
+        private const val RECONNECT_DELAY = 1500L  // USB 断开后重连间隔
 
         // LAN 网段可从 SharedPreferences 覆盖 (高级设置)
         private const val PREFS_NAME = "tun_nat_hub"
@@ -71,6 +80,7 @@ class TunNatVpnService : VpnService() {
     private var usbBridge: UsbBridge? = null
     private var isStarted = false
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val reconnectScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onCreate() {
         super.onCreate()
@@ -106,37 +116,26 @@ class TunNatVpnService : VpnService() {
 
         // 启动 USB Bridge（带自动重试 + 回调更新通知）
         usbBridge = UsbBridge(this, tunFd!!)
+        // 无限重连 — USB 断开自动恢复，等 USB_DEVICE_ATTACHED 广播
         usbBridge!!.onLinkStateChange = { state ->
             when (state) {
-                com.tunnathub.app.usb.LinkState.Connected -> updateNotification("已连接 (USB Bulk)")
-                com.tunnathub.app.usb.LinkState.Disconnected -> updateNotification("USB 已断开")
+                com.tunnathub.app.usb.LinkState.Connected -> {
+                    isReconnectingState.value = false
+                    updateNotification("已连接 (USB Bulk)")
+                }
+                com.tunnathub.app.usb.LinkState.Disconnected -> {
+                    isReconnectingState.value = true
+                    updateNotification("USB 已断开")
+                    AppLog.w(TAG, "USB 链路断开，等待设备重新连接...")
+                    // 启动重连协程
+                    reconnectScope.launch { doReconnect() }
+                }
                 else -> updateNotification("重连中...")
             }
         }
 
-        scope.launch {
-            var lastError: Exception? = null
-            for (attempt in 1..3) {
-                try {
-                    updateNotification("USB 连接中...($attempt/3)")
-                    usbBridge!!.start(this)
-                    lastError = null
-                    break
-                } catch (e: Exception) {
-                    Log.w(TAG, "USB Bridge 启动失败 (尝试 $attempt/3)", e)
-                    lastError = e
-                    if (attempt < 3) {
-                        updateNotification("重试中...(${attempt}/3)")
-                        delay(1500)
-                    }
-                }
-            }
-            if (lastError != null) {
-                Log.e(TAG, "USB Bridge 3 次重试均失败")
-                updateNotification("USB 连接失败: ${lastError.message}")
-                stopVpn()
-            }
-        }
+        // 首次连接
+        scope.launch { doReconnect() }
 
         return START_STICKY
     }
@@ -144,6 +143,8 @@ class TunNatVpnService : VpnService() {
     override fun onDestroy() {
         Log.i(TAG, "VpnService 销毁")
         scope.cancel()
+        reconnectScope.cancel()
+        unregisterReconnectReceiver()
         stopVpn()
         super.onDestroy()
     }
@@ -169,6 +170,96 @@ class TunNatVpnService : VpnService() {
 
         return builder.establish()
             ?: throw IllegalStateException("VpnService.Builder.establish() 返回 null")
+    }
+
+    private var reconnectReceiver: BroadcastReceiver? = null
+    private val reconnectLatch = java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CountDownLatch?>(null)
+    private val reconnecting = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * 尝试一次性连接 USB，失败时注册 USB_DEVICE_ATTACHED 等待设备重新插入
+     */
+    private suspend fun doReconnect() {
+        if (!isStarted || !reconnecting.compareAndSet(false, true)) return
+        usbBridge?.disconnect()
+        isReconnectingState.value = true
+
+        // 先在主线程注册 USB 监听（防止漏掉插入事件）
+        withContext(Dispatchers.Main) {
+            unregisterReconnectReceiver()
+            val latch = java.util.concurrent.CountDownLatch(1)
+            reconnectLatch.set(latch)
+            reconnectReceiver = object : BroadcastReceiver() {
+                override fun onReceive(ctx: Context, intent: Intent) {
+                    if ("android.hardware.usb.action.USB_DEVICE_ATTACHED" == intent.action) {
+                        val dev = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+                        if (dev != null && dev.vendorId == UsbBridge.USB_VID && dev.productId == UsbBridge.USB_PID) {
+                            AppLog.i(TAG, "收到 V3s 插入广播")
+                            latch.countDown()
+                        }
+                    }
+                }
+            }
+            registerReceiver(reconnectReceiver, IntentFilter("android.hardware.usb.action.USB_DEVICE_ATTACHED"), Context.RECEIVER_NOT_EXPORTED)
+        }
+
+        try {
+            var retries = 0
+            while (isStarted) {
+                retries++
+                // 先立即试一次（第一次可能设备已经在线）
+                if (retries == 1) {
+                    try {
+                        updateNotification("USB 连接中...")
+                        usbBridge!!.start(scope)
+                        AppLog.i(TAG, "USB 首次连接成功")
+                        isReconnectingState.value = false
+                        return
+                    } catch (e: Exception) {
+                        AppLog.w(TAG, "USB 未在线: ${e.message}，等待插入...")
+                        updateNotification("等待 USB 设备...")
+                    }
+                }
+
+                // 等待 USB 插入（阻塞 IO 线程，等待硬件事件）
+                val latch = reconnectLatch.get()
+                if (latch != null) {
+                    withContext(Dispatchers.IO) { latch.await() }
+                    reconnectLatch.set(java.util.concurrent.CountDownLatch(1))  // 重置
+                }
+                if (!isStarted) break
+
+                delay(1000)  // 等驱动加载完
+                // DJI RC 权限授予有延迟 → 重试多次
+                var reconnected = false
+                for (attempt in 1..5) {
+                    try {
+                        updateNotification("重连中... ($retries)")
+                        usbBridge?.disconnect()
+                        usbBridge!!.start(scope)
+                        AppLog.i(TAG, "USB 重连成功 (第${retries}次)")
+                        isReconnectingState.value = false
+                        reconnected = true
+                        break
+                    } catch (e: Exception) {
+                        AppLog.w(TAG, "USB 重连尝试 $attempt/5 失败: ${e.message}")
+                        usbBridge?.disconnect()
+                        if (attempt < 5) delay(800)
+                    }
+                }
+                if (reconnected) return
+                // 5 次都失败 → 重新等广播
+            }
+        } finally {
+            reconnecting.set(false)
+            withContext(Dispatchers.Main) { unregisterReconnectReceiver() }
+        }
+    }
+
+    private fun unregisterReconnectReceiver() {
+        reconnectReceiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }
+        reconnectReceiver = null
+        reconnectLatch.set(null)
     }
 
     /**
