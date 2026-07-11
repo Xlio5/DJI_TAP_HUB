@@ -475,9 +475,12 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                 // ── 内容区：视频始终保留，配置页覆盖 ──
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                     // 视频区 — 始终在 composition 中
-                    var showUrlBar by remember { mutableStateOf(false) }
+                    var showUrlBar by remember { mutableStateOf(true) }  // 默认显示，点视频切换
                     Box(modifier = Modifier.fillMaxSize()) {
-                        Surface(modifier = Modifier.fillMaxSize().padding(4.dp), color = Color(0xFF020617), shape = RoundedCornerShape(8.dp)) {
+                        // 视频画面 — 点击切换 RTSP 栏
+                        Surface(modifier = Modifier.fillMaxSize().padding(4.dp).clickable { showUrlBar = !showUrlBar },
+                            color = Color(0xFF020617), shape = RoundedCornerShape(8.dp)
+                        ) {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 AndroidView(
                                     factory = { SurfaceView(it).apply { surfaceViewRef = this } },
@@ -491,36 +494,33 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                             }
                         }
 
-                        // RTSP 栏 (顶部可收起) — 仅在视频 Tab 显示
-                        if (selectedTab == Tab.VIDEO) {
-                            Column(modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(8.dp)) {
-                                Row(modifier = Modifier.fillMaxWidth().clickable { showUrlBar = !showUrlBar }
-                                    .background(Color(0xDD0F172A), RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp))
-                                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(if (showUrlBar) "▾ RTSP" else "▸ RTSP", fontSize = 10.sp, color = Color(0xFF94A3B8))
-                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        if (statusText.isNotEmpty()) Text(statusText, fontSize = 9.sp, color = if (isPlaying) Color(0xFF22C55E) else Color(0xFF94A3B8), maxLines = 1)
-                                        if (resolutionText.isNotEmpty()) Text(resolutionText, fontSize = 9.sp, color = Color(0xFF64748B))
-                                        Text(rtspUrl.take(35) + if (rtspUrl.length > 35) "..." else "", fontSize = 9.sp, color = Color(0xFF475569), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 180.dp))
-                                        Button(onClick = { togglePlay() }, modifier = Modifier.height(26.dp),
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                                            colors = ButtonDefaults.buttonColors(containerColor = if (isPlaying) Color(0xFFDC2626) else Color(0xFF16A34A))
-                                        ) { Text(if (isPlaying) "■" else "▶", fontSize = 11.sp) }
-                                    }
-                                }
-                                if (showUrlBar) {
-                                    Row(modifier = Modifier.fillMaxWidth().background(Color(0xEE0F172A), RoundedCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp)).padding(horizontal = 12.dp, vertical = 6.dp),
+                        // RTSP 信息栏 (顶部，非全屏时显示，点击视频画面切换) — 仅在视频 Tab 显示
+                        if (selectedTab == Tab.VIDEO && showUrlBar) {
+                            Surface(modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(8.dp),
+                                color = Color(0xDD0F172A), shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                                    Row(modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Box(modifier = Modifier.weight(1f).height(36.dp).background(Color(0xFF020617), RoundedCornerShape(8.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(8.dp)).padding(horizontal = 10.dp), contentAlignment = Alignment.CenterStart) {
-                                            BasicTextField(value = rtspUrl, onValueChange = { rtspUrl = it }, singleLine = true,
-                                                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = Color(0xFFE2E8F0)),
-                                                cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF38BDF8)),
-                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done), modifier = Modifier.fillMaxWidth())
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                if (statusText.isNotEmpty()) Text(statusText, fontSize = 10.sp, color = if (isPlaying) Color(0xFF22C55E) else Color(0xFF94A3B8), maxLines = 1)
+                                                if (resolutionText.isNotEmpty()) Text(resolutionText, fontSize = 10.sp, color = Color(0xFF64748B))
+                                            }
+                                            Spacer(Modifier.height(4.dp))
+                                            Box(modifier = Modifier.fillMaxWidth().height(34.dp).background(Color(0xFF020617), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).padding(horizontal = 10.dp), contentAlignment = Alignment.CenterStart) {
+                                                BasicTextField(value = rtspUrl, onValueChange = { rtspUrl = it }, singleLine = true,
+                                                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = Color(0xFFE2E8F0)),
+                                                    cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF38BDF8)),
+                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done), modifier = Modifier.fillMaxWidth())
+                                            }
                                         }
+                                        Spacer(Modifier.width(8.dp))
+                                        Button(onClick = { togglePlay() }, modifier = Modifier.height(34.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = if (isPlaying) Color(0xFFDC2626) else Color(0xFF16A34A))
+                                        ) { Text(if (isPlaying) "■" else "▶", fontSize = 12.sp) }
                                     }
                                 }
                             }
