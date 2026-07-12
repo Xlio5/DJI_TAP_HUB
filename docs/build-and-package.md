@@ -1,95 +1,131 @@
 # TUN_NAT_HUB V3s 完整编译与打包流程
 
-> 从源码到可烧录 SD 卡镜像的完整流水线，每个阶段的输入/输出/命令。
+> 从源码到可启动 SD 卡。U-Boot、Kernel、Buildroot **三者独立编译**，手动制作 SD 卡。
 
 ---
 
 ## 一、总览
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        第一阶段：基础设施层                           │
-│                       Buildroot 构建 U-Boot + Kernel + Rootfs        │
-│                                                                     │
-│  输入: buildroot源码 + kernel源码 + defconfig                        │
-│  输出: zImage, sun8i-v3s-*.dtb, rootfs.tar, u-boot-sunxi-with-spl.bin│
-└───────────────────────────────┬─────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        第二阶段：应用层                               │
-│                       TUN_NAT_HUB daemon + web_panel                  │
-│                                                                     │
-│  输入: TUN_NAT_HUB/ubuntu/src/*.cpp                                  │
-│  输出: usb_tund (ARMv7 ELF 29KB)                                    │
-└───────────────────────────────┬─────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        第三阶段：整合打包                             │
-│                       Overlay → SD 卡镜像                            │
-│                                                                     │
-│  输入: 第一阶段产物 + 第二阶段产物 + 启动脚本                          │
-│  输出: sdcard.img (可直接 dd 烧录)                                   │
-│  或: tun_nat_hub_v3s_backup.tar.gz (增量更新包)                      │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────┐    ┌──────────────┐    ┌──────────────────┐
+│   U-Boot    │    │   Kernel     │    │    Buildroot     │
+│  单独编译    │    │   单独编译    │    │  只做 rootfs     │
+│             │    │              │    │  (外部工具链)     │
+└──────┬──────┘    └──────┬───────┘    └────────┬─────────┘
+       │                  │                     │
+       ▼                  ▼                     ▼
+ u-boot-sunxi-       zImage +              rootfs.tar
+ with-spl.bin        sun8i-v3s-*.dtb       (含 TUN_NAT_HUB)
+       │                  │                     │
+       └──────────────────┼─────────────────────┘
+                          │
+                          ▼
+                   SD 卡手动制作
+                   dd → fdisk → mkfs → cp → tar xf
+                          │
+                          ▼
+                     可启动 SD 卡 ✅
+```
+
+**和之前文档的关键区别：**
+- U-Boot 不通过 Buildroot 编译，直接从 Lichee-Pi 仓库
+- Kernel 不通过 Buildroot 编译，直接用 lichee-pi 内核仓库
+- Buildroot 使用**外部 Linaro 工具链**，只出 rootfs，不管 kernel/U-Boot
+- SD 卡是**手动分区制作**，不是 Buildroot 的 genimage
+
+---
+
+## 二、前提：工具链
+
+```bash
+# 下载 Linaro GCC 6.3.1 arm-linux-gnueabihf 工具链
+cd ~
+wget https://releases.linaro.org/components/toolchain/binaries/latest/arm-linux-gnueabihf/gcc-linaro-6.3.1-2017.05-x86_64_arm-linux-gnueabihf.tar.xz
+tar xvf gcc-linaro-6.3.1-2017.05-x86_64_arm-linux-gnueabihf.tar.xz
+sudo mv gcc-linaro-6.3.1-2017.05-x86_64_arm-linux-gnueabihf /opt/
+
+# 添加到 ~/.bashrc
+export PATH=/opt/gcc-linaro-6.3.1-2017.05-x86_64_arm-linux-gnueabihf/bin:$PATH
+export ARCH=arm
+export CROSS_COMPILE=arm-linux-gnueabihf-
+
+# 验证
+source ~/.bashrc
+arm-linux-gnueabihf-gcc -v
+# 应显示: gcc version 6.3.1 20170109 (Linaro GCC 6.3-2017.02)
 ```
 
 ---
 
-## 二、第一阶段：Buildroot 构建基础设施
-
-### 前置
+## 三、Step 1：编译 U-Boot
 
 ```bash
-# 获取 Buildroot
-git clone https://github.com/buildroot/buildroot.git
-cd buildroot
+git clone https://github.com/Lichee-Pi/u-boot.git -b v3s-current
+cd u-boot
 
-# 获取 V3s Linux kernel（已配置好 sun8i-v3s 支持）
-git clone https://github.com/Lichee-Pi/linux.git ~/v3s/linux
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- LicheePi_Zero_defconfig
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc)
 ```
 
-### 2.1 Kernel 配置
+**产物：** `u-boot-sunxi-with-spl.bin`（~400KB）
 
-V3s kernel 必须内置或模块化以下特性：
+---
+
+## 四、Step 2：编译 Kernel
+
+```bash
+git clone https://github.com/Lichee-Pi/linux.git -b zero-5.2.y --depth 1
+cd linux
+
+# 配置
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- licheepi_zero_defconfig
+
+# 检查必须的内核选项（如果菜单里没开）
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- menuconfig
+```
+
+必须确保以下选项开启：
 
 ```
 Device Drivers →
   [*] USB support →
-    <*>   USB Gadget Support →
-      <*>   USB Gadget Drivers →
-        <M>   Serial Gadget (g_serial)        ← 关键! USB Bulk 通道
+    <M>   USB Gadget Support →
+      <M>   USB Gadget Drivers → Serial Gadget (g_serial)
   [*] Network device support →
-    <*>   Universal TUN/TAP device driver support    ← 关键! TUN 虚拟网卡
+    <*>   Universal TUN/TAP device driver support
 
 Networking support →
   [*] Networking options →
     [*]   Network packet filtering (Netfilter) →
-      <*>   IP tables support (required for filter/masq)
-      <*>     MASQUERADE target support
-      <*>     TCPMSS target support
+      <*> IP tables support
+      <*>   MASQUERADE target support
+      <*>   TCPMSS target support
 ```
-
-Kernel 配置文件通常为：
-
-```
-~/v3s/linux/arch/arm/configs/sunxi_defconfig
-```
-
-修改后手动开启缺失项：
 
 ```bash
-cd ~/v3s/linux
-make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- sunxi_defconfig
-make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- menuconfig   # 勾选上面三项
-make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- savedefconfig
-cp defconfig arch/arm/configs/sunxi_defconfig
+# 编译
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) zImage
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- dtbs
 ```
 
-### 2.2 Buildroot 配置
+**产物：**
+- `arch/arm/boot/zImage`（~5.7MB）
+- `arch/arm/boot/dts/allwinner/sun8i-v3s-licheepi-zero-dock.dtb`（~13KB）
 
-关键选项（`make menuconfig`）：
+---
+
+## 五、Step 3：Buildroot 出 rootfs
+
+```bash
+cd ~/v3s/buildroot-2024.02
+
+# 清理 Windows PATH（WSL 自动注入了含空格的 PATH）
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+make menuconfig
+```
+
+关键配置：
 
 ```
 Target options →
@@ -99,370 +135,194 @@ Target options →
   Floating point strategy = VFPv4-D16
 
 Toolchain →
-  C library = glibc (或 uClibc-ng, 两者都行)
-  [*] Enable C++ support                          ← daemon 用 C++17
+  Toolchain type = External toolchain
+  Toolchain = Custom toolchain
+  Toolchain origin = Pre-installed toolchain
+  Toolchain path = /opt/gcc-linaro-6.3.1-2017.05-x86_64_arm-linux-gnueabihf
+  External toolchain C library = glibc/eglibc
+  [*] Toolchain has C++ support?
 
 System configuration →
   Root password = root
+  Init system = BusyBox
   /dev management = Dynamic using devtmpfs + mdev
-  Path to the permission table = board/allwinner/v3s/device_table.txt
-  [*] Install timezone info
+  Root filesystem overlay directories = board/allwinner/v3s/overlay
 
 Target packages →
   Interpreter languages and scripting →
-    [*] python3                                    ← web_panel 依赖
-        python3 library = whole python3 (不要 core-only, 缺模块)
+    [*] python3
   Networking applications →
-    [*] iptables                                   ← NAT 转发
-  Hardware handling →
-    [*] usbutils                                   ← lsusb 调试
+    [*] iptables
 
 Filesystem images →
-  [*] ext2/3/4 root filesystem
-      ext2/3/4 variant = ext4
-  [*] tar the root filesystem                      ← 做 overlay 需要
-
-Kernel →
-  [*] Linux Kernel
-      Kernel version = Custom Git repository
-      URL of custom repository = ~/v3s/linux
-      Custom Git tag/commit = (当前 commit hash)
-      Kernel configuration = Using an in-tree defconfig file
-      Defconfig name = sunxi
-      Kernel binary format = zImage
-      [*] Build a Device Tree Blob (DTB)
-          In-tree Device Tree Source file names = sun8i-v3s-licheepi-zero-dock
-
-Bootloaders →
-  [*] U-Boot
-      Build system = Kconfig
-      U-Boot board name = LicheePi_Zero
-      U-Boot Version = Custom Git repository
-      URL of custom repository = https://github.com/Lichee-Pi/u-boot.git
-      [*] U-Boot needs dtc
+  [*] ext2/3/4 root filesystem → ext4
+  [*] tar the root filesystem
 ```
-
-### 2.3 Buildroot overlay 配置
-
-创建 overlay 目录（第一阶段先留空，第三阶段再填）：
 
 ```bash
-mkdir -p ~/buildroot/board/allwinner/v3s/overlay/{usr/local/bin,etc/init.d}
-```
-
-在 Buildroot `menuconfig` 中：
-
-```
-System configuration →
-  Root filesystem overlay directories = board/allwinner/v3s/overlay
-```
-
-### 2.4 构建
-
-```bash
-cd ~/buildroot
-
-# 生成完整配置
-make BR2_DEFCONFIG=board/allwinner/v3s/defconfig defconfig
-
-# 构建 (首次约 2-4 小时，后续增量 <10 分钟)
 make -j$(nproc)
 ```
 
-### 第一阶段产物
-
-```
-buildroot/output/
-├── images/
-│   ├── zImage                              ← kernel (ARM 32-bit, ~5.7MB)
-│   ├── sun8i-v3s-licheepi-zero-dock.dtb     ← 设备树 (~13KB)
-│   ├── rootfs.ext4                          ← 完整 rootfs (50-150MB)
-│   ├── rootfs.tar                           ← rootfs 归档
-│   └── u-boot-sunxi-with-spl.bin            ← U-Boot + SPL (~400KB)
-└── build/
-    └── linux-*/                             ← kernel 构建目录
-```
+**产物：** `output/images/rootfs.tar`（~50-150MB）
 
 ---
 
-## 三、第二阶段：应用层编译
-
-### 3.1 编译 daemon (usb_tund)
-
-**输入：** `TUN_NAT_HUB/ubuntu/src/{main.cpp, tun_iface.cpp}`  
-**命令：**
+## 六、Step 4：编译 TUN_NAT_HUB daemon
 
 ```bash
-cd TUN_NAT_HUB
+# 在 TUN_NAT_HUB 目录下
+# Windows (Git Bash / WSL 都可以, 用同一个 Linaro 工具链)
+rm -rf ubuntu/build_v3s/CMakeCache.txt ubuntu/build_v3s/CMakeFiles
 bash scripts/cross_build_v3s.sh
 ```
 
-实际执行的 cmake 命令：
-
-```bash
-cd ubuntu/build_v3s
-cmake .. \
-    -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchain-armv7-linux.cmake \
-    -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-```
-
-工具链：`arm-linux-gnueabihf-g++`（Ubuntu 包 `g++-arm-linux-gnueabihf`）
-
-### 3.2 web_panel.py
-
-**无需编译。** 纯 Python3 标准库，直接使用。
-
-### 3.3 编译 Android APK（可选，打包时附带）
-
-```bash
-cd TUN_NAT_HUB/android
-./gradlew assembleDebug
-```
-
-### 第二阶段产物
-
-| 产物 | 路径 | 大小 | 目标架构 |
-|------|------|------|----------|
-| **usb_tund** | `ubuntu/build_v3s/usb_tund` | ~29 KB | ARMv7 EABIhf |
-| **web_panel.py** | `ubuntu/web_panel.py` | ~39 KB | Python3 (any) |
-| app-debug.apk | `android/app/build/outputs/apk/debug/app-debug.apk` | ~5 MB | Android ARM64 |
+**产物：** `ubuntu/build_v3s/usb_tund`（~29KB ARMv7 ELF）
 
 ---
 
-## 四、第三阶段：整合打包
+## 七、Step 5：制作 SD 卡
 
-### 方案 A：完整固件（量产用，一台产出多台刷）
+插入 SD 卡，假设设备为 `/dev/sdX`。
 
-把第一阶段和第二阶段产物合并，生成一个 sdcard.img，烧录后即用。
-
-```
-┌───────────────────────────────────────────────┐
-│              sdcard.img 结构                    │
-├───────────────────────────────────────────────┤
-│ 前 8KB:   U-Boot SPL (从 u-boot-sunxi-with-spl.bin)  │
-│ 扇区 16+:  U-Boot proper                            │
-├───────────────────────────────────────────────┤
-│ 分区 1: FAT32 (内核 + DTB)                          │
-│   ├── zImage                                        │
-│   └── sun8i-v3s-licheepi-zero-dock.dtb              │
-├───────────────────────────────────────────────┤
-│ 分区 2: ext4 (Rootfs)                               │
-│   ├── /usr/local/bin/usb_tund        ← daemon      │
-│   ├── /usr/local/bin/web_panel.py    ← Web API     │
-│   ├── /usr/local/bin/setup_gadget.sh ← g_serial    │
-│   ├── /usr/local/bin/setup_nat.sh    ← NAT 规则    │
-│   └── /etc/init.d/S99tun_nat_hub     ← 开机自启    │
-└───────────────────────────────────────────────┘
-```
-
-#### Step A1：生成 sdcard.img
-
-在 Buildroot 里已经自动生成了 `sdcard.img`（前提是配置了正确的分区布局）。
-
-如果没有 `.img`，手动用 genimage 或脚本拼接。Buildroot 通常已有 `board/allwinner/v3s/genimage.cfg`，定义类似：
-
-```
-image sdcard.img {
-    hdimage {
-    }
-    partition u-boot {
-        in-partition-table = "no"
-        image = "u-boot-sunxi-with-spl.bin"
-        offset = 8K
-        size = 1016K
-    }
-    partition boot {
-        partition-type = 0xC
-        bootable = "true"
-        files = {
-            "zImage",
-            "sun8i-v3s-licheepi-zero-dock.dtb",
-        }
-        size = 32M
-    }
-    partition rootfs {
-        partition-type = 0x83
-        image = "rootfs.ext4"
-        size = 512M
-    }
-}
-```
-
-#### Step A2：将应用层文件注入 rootfs
+### 5.1 分区
 
 ```bash
-# 方法1: 在 Buildroot make 之前放入 overlay
-cp ubuntu/build_v3s/usb_tund ~/buildroot/board/allwinner/v3s/overlay/usr/local/bin/
-cp ubuntu/web_panel.py ~/buildroot/board/allwinner/v3s/overlay/usr/local/bin/
-cp ubuntu/scripts/setup_gadget.sh ~/buildroot/board/allwinner/v3s/overlay/usr/local/bin/
-cp ubuntu/scripts/setup_nat.sh ~/buildroot/board/allwinner/v3s/overlay/usr/local/bin/
-cp ubuntu/scripts/S99tun_nat_hub ~/buildroot/board/allwinner/v3s/overlay/etc/init.d/
-
-# 然后再 make
-cd ~/buildroot && make
-# → output/images/sdcard.img 已包含 TUN_NAT_HUB 文件
-
-# 方法2: 已有 rootfs.ext4，在线挂载注入
-mkdir -p /tmp/rootfs
-sudo mount -o loop ~/buildroot/output/images/rootfs.ext4 /tmp/rootfs
-sudo cp ubuntu/build_v3s/usb_tund /tmp/rootfs/usr/local/bin/
-sudo cp ubuntu/web_panel.py /tmp/rootfs/usr/local/bin/
-# ...
-sudo umount /tmp/rootfs
-# 然后用 genimage 重新生成 sdcard.img
+sudo fdisk /dev/sdX
+# 输入: o          (新建空分区表)
+# 输入: n p 1 [回车] +32M   (boot 分区)
+# 输入: n p 2 [回车] [回车]  (rootfs 分区)
+# 输入: w          (写入并退出)
 ```
 
-#### Step A3：烧录
+### 5.2 格式化
 
 ```bash
-# Windows: 用 balenaEtcher 或 Win32DiskImager
-# Linux:
-sudo dd if=output/images/sdcard.img of=/dev/sdX bs=4M status=progress
+sudo mkfs.vfat -n BOOT /dev/sdX1
+sudo mkfs.ext4 -L ROOTFS /dev/sdX2
 ```
+
+### 5.3 烧写 U-Boot（8KB 偏移，关键！）
+
+```bash
+sudo dd if=u-boot-sunxi-with-spl.bin of=/dev/sdX bs=1024 seek=8
+sync
+```
+
+### 5.4 复制文件
+
+```bash
+# 挂载
+sudo mkdir -p /mnt/{boot,rootfs}
+sudo mount /dev/sdX1 /mnt/boot
+sudo mount /dev/sdX2 /mnt/rootfs
+
+# 内核 + 设备树 → boot 分区 (FAT32)
+sudo cp ~/v3s/linux/arch/arm/boot/zImage /mnt/boot/
+sudo cp ~/v3s/linux/arch/arm/boot/dts/allwinner/sun8i-v3s-licheepi-zero-dock.dtb /mnt/boot/
+
+# rootfs → rootfs 分区 (ext4)
+sudo tar xf ~/v3s/buildroot-2024.02/output/images/rootfs.tar -C /mnt/rootfs/
+
+# TUN_NAT_HUB 应用层文件 → rootfs
+sudo cp TUN_NAT_HUB/ubuntu/build_v3s/usb_tund /mnt/rootfs/usr/local/bin/
+sudo cp TUN_NAT_HUB/ubuntu/web_panel.py /mnt/rootfs/usr/local/bin/
+sudo cp TUN_NAT_HUB/ubuntu/scripts/setup_gadget.sh /mnt/rootfs/usr/local/bin/
+sudo cp TUN_NAT_HUB/ubuntu/scripts/setup_nat.sh /mnt/rootfs/usr/local/bin/
+sudo cp TUN_NAT_HUB/ubuntu/scripts/S99tun_nat_hub /mnt/rootfs/etc/init.d/
+
+# 确保可执行
+sudo chmod +x /mnt/rootfs/usr/local/bin/usb_tund
+sudo chmod +x /mnt/rootfs/usr/local/bin/web_panel.py
+sudo chmod +x /mnt/rootfs/usr/local/bin/*.sh
+sudo chmod +x /mnt/rootfs/etc/init.d/S99tun_nat_hub
+
+# 卸载
+sudo umount /mnt/boot /mnt/rootfs
+```
+
+### 5.5 U-Boot 环境变量（开机时在 U-Boot 控制台设置一次）
+
+上电后在 U-Boot 倒计时按任意键进入 U-Boot 控制台：
+
+```
+=> setenv bootcmd 'fatload mmc 0:1 0x41000000 zImage; fatload mmc 0:1 0x42000000 sun8i-v3s-licheepi-zero-dock.dtb; bootz 0x41000000 - 0x42000000'
+=> setenv bootargs 'console=ttyS0,115200 root=/dev/mmcblk0p2 rootwait g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0'
+=> saveenv
+=> boot
+```
+
+> `g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0` 是关键！
+> 内核启动时自动加载 g_serial 并伪装 RTL8812AU VID/PID。
 
 ---
 
-### 方案 B：增量更新包（已有系统用）
+## 八、Step 6：验证
 
-已有系统 + 只需更新 TUN_NAT_HUB 文件时。
+插 SD 卡上电，串口（115200）观察启动日志：
 
-#### Step B1：打包
+```
+U-Boot SPL 2017.01 ... → U-Boot → Starting kernel ... → rootfs 挂载成功 → login: root
+```
 
 ```bash
-cd TUN_NAT_HUB
-bash scripts/pack_backup.sh
+# 串口登录后验证
+ps aux | grep -E 'usb_tund|web_panel'     # 两个进程都在
+ip addr show tun_hub                        # 10.0.0.1/24
+ls -la /dev/ttyGS0                          # g_serial gadget 已创建
+wget -q -O - http://127.0.0.1:8080/api/heartbeat  # web_panel 正常
 ```
 
-生成 `backup/tun_nat_hub_v3s_backup.tar.gz` (~41MB)：
+插上 DJI RC USB 线，App 显示 USB● + VPN● 双绿 → 完成。
+
+---
+
+## 九、产物对照
+
+| 产物 | 来源 | 大小 | 说明 |
+|------|------|------|------|
+| `u-boot-sunxi-with-spl.bin` | U-Boot 编译 | ~400KB | dd 到 SD 卡 8KB 偏移 |
+| `zImage` | Kernel 编译 | ~5.7MB | 放到 SD 卡 boot 分区 |
+| `sun8i-v3s-licheepi-zero-dock.dtb` | Kernel 编译 | ~13KB | 放到 SD 卡 boot 分区 |
+| `rootfs.tar` | Buildroot | ~50-150MB | 解压到 SD 卡 rootfs 分区 |
+| `usb_tund` | cross_build_v3s.sh | ~29KB | 放到 rootfs /usr/local/bin/ |
+
+---
+
+## 十、量产流程
+
+对于全新 V3s：
 
 ```
-tun_nat_hub_v3s_backup.tar.gz
-├── zImage                                     ← 内核
-├── sun8i-v3s-licheepi-zero-dock.dtb           ← 设备树
-├── usb_tund                                   ← daemon
-├── web_panel.py                               ← Web API
-├── setup_v3s.sh / v3s_start.sh                ← 启动脚本
-├── S99tun_nat_hub                             ← 自启脚本
-├── app-debug.apk                              ← Android APK
-├── uboot_env.txt                              ← U-Boot 参考参数
-└── VERSION.txt                                ← 版本信息
-```
+1. 编译 U-Boot     → u-boot-sunxi-with-spl.bin
+2. 编译 Kernel     → zImage + dtb
+3. Buildroot       → rootfs.tar
+4. cross_build     → usb_tund
+5. 插 SD 卡, 按 Step 5 制作        ← 首次需要手动分区
+6. 验证 (Step 6)
 
-#### Step B2：部署到 V3s
-
-```bash
-V3S_IP="192.168.144.66"
-tar xzf backup/tun_nat_hub_v3s_backup.tar.gz
-
-# 可选：更新内核 (需重启)
-scp zImage sun8i-v3s-licheepi-zero-dock.dtb root@$V3S_IP:/boot/
-
-# 更新应用层
-scp usb_tund root@$V3S_IP:/usr/local/bin/
-scp web_panel.py root@$V3S_IP:/usr/local/bin/
-scp setup_v3s.sh root@$V3S_IP:/usr/local/bin/
-scp v3s_start.sh root@$V3S_IP:/usr/local/bin/
-scp S99tun_nat_hub root@$V3S_IP:/etc/init.d/
-
-ssh root@$V3S_IP "chmod +x /usr/local/bin/*.sh /usr/local/bin/usb_tund /usr/local/bin/web_panel.py"
-ssh root@$V3S_IP "/etc/init.d/S99tun_nat_hub restart"
+第二台开始: 用 dd 克隆整张 SD 卡
+  sudo dd if=/dev/sdX of=master.img bs=4M
+  sudo dd if=master.img of=/dev/sdY bs=4M
 ```
 
 ---
 
-## 五、完整流水线总结
-
-```
-┌──────────────┐
-│ Kernel 源码   │──make ARCH=arm sunxi_defconfig──► zImage + DTB
-│ ~/v3s/linux  │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│ Buildroot    │──make──────────────────► u-boot-sunxi-with-spl.bin
-│ ~/buildroot  │──make──────────────────► rootfs.ext4 / rootfs.tar
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│ TUN_NAT_HUB  │──cross_build_v3s.sh────► usb_tund (ARMv7 29KB)
-│ ubuntu/src/  │  (直接可用, 无需编译)─── web_panel.py (39KB)
-└──────┬───────┘
-       │
-       ├─── 量产 ──► overlay → Buildroot make → sdcard.img → dd 烧录
-       │
-       └─── 增量 ──► pack_backup.sh → backup/*.tar.gz → scp 部署
-```
-
-### 一次性量产（5 分钟产出，N 台烧录）
-
-| Step | 命令 | 耗时 |
-|------|------|------|
-| 编译 kernel | `make -C ~/v3s/linux ARCH=arm ... zImage dtbs` | 5-30 min |
-| 编译 Buildroot | `make -C ~/buildroot` | 5 min(增量) |
-| 编译 daemon | `bash scripts/cross_build_v3s.sh` | 3 sec |
-| 合并到 overlay | `cp` 5 个文件到 overlay 目录 | 1 sec |
-| 重新制作 rootfs | `make -C ~/buildroot` | 1 min |
-| 制作 SD 卡镜像 | genimage（Buildroot 自动） | 30 sec |
-| 烧录 | `dd if=sdcard.img of=/dev/sdX` | 1 min |
-| **总耗时** | | **~10 min（增量）/ ~2h（首次）** |
-
-### 产物对照表
-
-| 产物 | 生成者 | 可启动? | 用途 |
-|------|--------|---------|------|
-| `zImage` | Kernel make | ❌ 需配合 U-Boot + rootfs | kernel 更新 |
-| `u-boot-sunxi-with-spl.bin` | Buildroot | ❌ 需配合 kernel + rootfs | 烧录到 SD 卡前 1MB |
-| `rootfs.ext4` | Buildroot | ❌ 需配合 U-Boot + kernel | rootfs 分区内容 |
-| `sdcard.img` | Buildroot genimage | ✅ 完整可启动 | 量产烧录 |
-| `usb_tund` | cross_build_v3s.sh | ❌ 应用层 | 放到 rootfs 的 /usr/local/bin |
-| `tun_nat_hub_v3s_backup.tar.gz` | pack_backup.sh | ❌ 仅应用层 + kernel | 已有系统的增量更新 |
-
----
-
-## 六、开发者工作流
-
-### 日常开发（修改 TUN_NAT_HUB 代码）
+## 十一、日常开发快速部署
 
 ```bash
-# 1. 改代码
-vim ubuntu/src/main.cpp
-
-# 2. 重新编译 daemon（3 秒）
+# 改代码 → 编译 → 部署（30 秒）
 bash scripts/cross_build_v3s.sh
-
-# 3. 快速部署到现有 V3s（30 秒）
 scp ubuntu/build_v3s/usb_tund root@192.168.144.66:/usr/local/bin/
-ssh root@192.168.144.66 "killall usb_tund; sleep 1; /usr/local/bin/usb_tund > /var/log/usb_tund.log 2>&1 &"
-
-# 4. 验证
-ssh root@192.168.144.66 "tail -20 /var/log/usb_tund.log"
+ssh root@192.168.144.66 "/etc/init.d/S99tun_nat_hub restart"
 ```
 
-### 修改 kernel 配置
+---
 
-```bash
-cd ~/v3s/linux
-make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- menuconfig
-make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) zImage dtbs
+## 十二、当前备份文件说明
 
-# 更新到 V3s
-scp arch/arm/boot/zImage root@192.168.144.66:/boot/
-scp arch/arm/boot/dts/allwinner/sun8i-v3s-licheepi-zero-dock.dtb root@192.168.144.66:/boot/
-ssh root@192.168.144.66 "reboot"
-```
+| 文件 | 用途 |
+|------|------|
+| `backup/tun_nat_hub_v3s_backup.tar.gz` (41MB) | 应用层 + kernel 快照，**增量更新用** |
+| | 含: zImage, dtb, usb_tund, web_panel.py, 脚本, APK |
 
-### 发布新版本（更新包）
-
-```bash
-# 确保产物都在
-bash scripts/cross_build_v3s.sh
-cd android && ./gradlew assembleDebug && cd ..
-
-# 打包
-bash scripts/pack_backup.sh
-
-# 产物: backup/tun_nat_hub_v3s_backup.tar.gz
-```
+此备份**不是可启动固件**。缺 U-Boot 和 rootfs。必须配合已装好 Buildroot 系统的 V3s 使用。
