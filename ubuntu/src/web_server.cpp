@@ -586,10 +586,8 @@ ref();setInterval(ref,3000);
 static std::string apiHeartbeat() {
     bool daemon = pidof("usb_tund");
     bool tty = fileExists("/dev/ttyGS0");
-    bool tun = execRet({"ip", "addr", "show", "tun_hub"}) == 0;
-    // 有些 busybox ip 返回码不同，也更可靠地用 grep
-    auto ipOut = exec({"ip", "addr", "show", "tun_hub"});
-    tun = ipOut.find("inet ") != std::string::npos;
+    // TUN 接口在此内核上 IFF_UP 位不会置 1，但能读到 stats 目录即表示接口已创建
+    bool tun = fileExists("/sys/class/net/tun_hub/statistics/tx_bytes");
 
     uint64_t tx = readSysfs("/sys/class/net/tun_hub/statistics/tx_bytes");
     uint64_t rx = readSysfs("/sys/class/net/tun_hub/statistics/rx_bytes");
