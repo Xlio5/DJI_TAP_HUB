@@ -3,19 +3,17 @@
 set -e
 echo '=== TUN_NAT_HUB V3s Starting ==='
 
-# Kill old instances (只杀 usb_tund + web_panel.py，不杀所有 python3)
-killall usb_tund 2>/dev/null || true
-WEB_PID=$(pidof python3 2>/dev/null)
-[ -n "$WEB_PID" ] && kill $WEB_PID 2>/dev/null || true
+# Kill old instances (只杀 usb_tund + web_server)
+killall usb_tund web_server 2>/dev/null || true
 sleep 1
 
 # Start daemon
 /usr/local/bin/usb_tund > /var/log/usb_tund.log 2>&1 &
 echo "usb_tund: PID=$!"
 
-# Start web panel
-python3 /usr/local/bin/web_panel.py > /var/log/web_panel.log 2>&1 &
-echo "web_panel: PID=$!"
+# Start web panel (C++ 嵌入式)
+/usr/local/bin/web_server > /var/log/web_server.log 2>&1 &
+echo "web_server: PID=$!"
 
 sleep 2
 

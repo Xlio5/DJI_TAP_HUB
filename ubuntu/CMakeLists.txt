@@ -40,5 +40,14 @@ target_link_libraries(usb_tund PRIVATE
 )
 
 # 安装
-install(TARGETS usb_tund DESTINATION /usr/local/bin)
+# Web 面板 (C++ 嵌入式 HTTP 服务, 替代 Python3)
+add_executable(web_server
+    src/web_server.cpp
+)
+
+target_link_libraries(web_server PRIVATE
+    Threads::Threads
+)
+
+install(TARGETS usb_tund web_server DESTINATION /usr/local/bin)
 install(FILES ${CMAKE_SOURCE_DIR}/../protocol/frame.h DESTINATION /usr/local/include/tun_nat_hub)

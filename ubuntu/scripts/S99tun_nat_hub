@@ -17,8 +17,8 @@ case "$1" in
     # 2. TUN + NAT
     /usr/local/bin/setup_v3s.sh
 
-    # 3. Web 面板
-    python3 /usr/local/bin/web_panel.py > /var/log/web_panel.log 2>&1 &
+    # 3. Web 面板 (C++ 嵌入式, 无需 Python3)
+    /usr/local/bin/web_server > /var/log/web_server.log 2>&1 &
 
     # 4. 切 peripheral — g_serial 绑定 UDC，DJI RC 看到设备
     echo peripheral > "$MODE_SYSFS" 2>/dev/null || true
@@ -36,9 +36,7 @@ case "$1" in
     ;;
   stop)
     echo "Stopping TUN_NAT_HUB..."
-    killall usb_tund 2>/dev/null || true
-    WEB_PID=$(pidof python3 2>/dev/null)
-    [ -n "$WEB_PID" ] && kill $WEB_PID 2>/dev/null || true
+    killall usb_tund web_server 2>/dev/null || true
     ;;
   restart)
     $0 stop; sleep 1; $0 start
