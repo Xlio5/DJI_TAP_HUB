@@ -35,6 +35,9 @@ import com.tunnathub.app.R
 import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
 import kotlinx.coroutines.*
+import java.net.DatagramSocket
+import java.net.InetSocketAddress
+import java.util.concurrent.ConcurrentHashMap
 
 class TunNatVpnService : VpnService() {
 
@@ -58,6 +61,45 @@ class TunNatVpnService : VpnService() {
         /** 静态 protect UDP socket，供外部（如 MainActivity 延迟测试）使用 */
         fun protectSocket(socket: java.net.DatagramSocket): Boolean {
             return instance?.protect(socket) ?: false
+        }
+
+        /** 受保护的 UDP 端口映射 (port → DatagramSocket) */
+        private val protectedPorts = java.util.concurrent.ConcurrentHashMap<Int, java.net.DatagramSocket>()
+        val protectedPortsState = mutableStateOf(emptyList<Int>())
+
+        /** 保护一个 UDP 端口：创建 socket + bind + protect，保持存活让内核路由包 */
+        fun protectPort(port: Int): Boolean {
+            val inst = instance ?: return false
+            if (protectedPorts.containsKey(port)) return true // 已保护
+            return try {
+                val socket = java.net.DatagramSocket(null)
+                socket.reuseAddress = true
+                socket.bind(java.net.InetSocketAddress(TUN_ADDRESS, port))
+                inst.protect(socket)
+                protectedPorts[port] = socket
+                protectedPortsState.value = protectedPorts.keys().toList().sorted()
+                AppLog.i(TAG, "UDP端口保护: $port")
+                true
+            } catch (e: Exception) {
+                AppLog.e(TAG, "UDP端口保护失败: $port — ${e.message}")
+                false
+            }
+        }
+
+        /** 释放一个受保护的 UDP 端口 */
+        fun releasePort(port: Int) {
+            protectedPorts.remove(port)?.let {
+                try { it.close() } catch (_: Exception) {}
+                protectedPortsState.value = protectedPorts.keys().toList().sorted()
+                AppLog.i(TAG, "UDP端口释放: $port")
+            }
+        }
+
+        /** 释放所有受保护的端口 */
+        fun releaseAllPorts() {
+            protectedPorts.values.forEach { try { it.close() } catch (_: Exception) {} }
+            protectedPorts.clear()
+            protectedPortsState.value = emptyList()
         }
 
         // TUN 配置 (默认值, 高级设置可覆盖)
@@ -276,6 +318,7 @@ class TunNatVpnService : VpnService() {
         } catch (_: Exception) {}
         tunFd = null
 
+        releaseAllPorts()
         Log.i(TAG, "VPN 已停止")
     }
 

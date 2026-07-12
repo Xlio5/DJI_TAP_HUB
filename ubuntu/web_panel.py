@@ -121,8 +121,9 @@ def _validate_fwd(proto, port, dest):
 def add_forward(cfg, proto, port, dest_ip):
     if not _validate_fwd(proto, port, dest_ip): return False
     dest = f"{dest_ip}:{port}" if ":" not in dest_ip else dest_ip
-    _run_iptables(["iptables","-t","nat","-A","PREROUTING","-i","end1","-p",proto,"--dport",str(port),"-j","DNAT","--to-destination",dest])
-    _run_iptables(["iptables","-A","FORWARD","-i","end1","-o","tun_hub","-p",proto,"--dport",str(port),"-j","ACCEPT"])
+    lan = LAN_IFACE
+    _run_iptables(["iptables","-t","nat","-A","PREROUTING","-i",lan,"-p",proto,"--dport",str(port),"-j","DNAT","--to-destination",dest])
+    _run_iptables(["iptables","-A","FORWARD","-i",lan,"-o","tun_hub","-p",proto,"--dport",str(port),"-j","ACCEPT"])
     cfg["forwards"].append({"proto":proto,"port":port,"dest":dest})
     save_cfg(cfg)
     return True
@@ -131,22 +132,44 @@ def remove_forward(cfg, port):
     found = next((r for r in cfg["forwards"] if r["port"]==port), None)
     if not found: return False
     p = found["proto"]; pt = str(port); d = found["dest"]
-    _run_iptables(["iptables","-t","nat","-D","PREROUTING","-i","end1","-p",p,"--dport",pt,"-j","DNAT","--to-destination",d])
-    _run_iptables(["iptables","-D","FORWARD","-i","end1","-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"])
+    lan = LAN_IFACE
+    _run_iptables(["iptables","-t","nat","-D","PREROUTING","-i",lan,"-p",p,"--dport",pt,"-j","DNAT","--to-destination",d])
+    _run_iptables(["iptables","-D","FORWARD","-i",lan,"-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"])
     cfg["forwards"] = [r for r in cfg["forwards"] if r["port"]!=port]
     save_cfg(cfg)
     return True
 
+def detect_lan_iface():
+    """自动检测 LAN 网口名称 (eth0 > end1 > end0 > enp*)"""
+    import re
+    try:
+        r = subprocess.run(["ip","addr","show"], capture_output=True, text=True, timeout=5)
+        ifaces = re.findall(r'^\d+:\s+(\S+):', r.stdout, re.MULTILINE)
+        # 排除 lo/tun/docker/veth 等虚拟接口
+        for iface in ifaces:
+            if iface in ("lo","tun_hub","tun0","docker0","veth","br-","virbr"): continue
+            if iface.startswith(("tun","docker","veth","br","vir")): continue
+            # 检查是否有 IPv4 地址
+            r2 = subprocess.run(["ip","addr","show",iface], capture_output=True, text=True, timeout=5)
+            if "inet " in r2.stdout and "inet 10.0.0." not in r2.stdout:
+                return iface
+    except Exception: pass
+    return "eth0"  # fallback
+
+LAN_IFACE = detect_lan_iface()
+
 def apply_all_forwards(cfg):
+    global LAN_IFACE
+    lan = LAN_IFACE
     for rule in cfg.get("forwards",[]):
         p = rule["proto"]; pt = str(rule["port"]); d = rule["dest"]
         # -C 检查规则是否存在，不存在才 -A（防止重复）
-        check = _run_iptables(["iptables","-t","nat","-C","PREROUTING","-i","end1","-p",p,"--dport",pt,"-j","DNAT","--to-destination",d])
+        check = _run_iptables(["iptables","-t","nat","-C","PREROUTING","-i",lan,"-p",p,"--dport",pt,"-j","DNAT","--to-destination",d])
         if check.returncode != 0:
-            _run_iptables(["iptables","-t","nat","-A","PREROUTING","-i","end1","-p",p,"--dport",pt,"-j","DNAT","--to-destination",d])
-        check = _run_iptables(["iptables","-C","FORWARD","-i","end1","-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"])
+            _run_iptables(["iptables","-t","nat","-A","PREROUTING","-i",lan,"-p",p,"--dport",pt,"-j","DNAT","--to-destination",d])
+        check = _run_iptables(["iptables","-C","FORWARD","-i",lan,"-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"])
         if check.returncode != 0:
-            _run_iptables(["iptables","-A","FORWARD","-i","end1","-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"])
+            _run_iptables(["iptables","-A","FORWARD","-i",lan,"-o","tun_hub","-p",p,"--dport",pt,"-j","ACCEPT"])
 
 # ══════════════════════════════════════════════════════════
 # HTML — 完整中文面板

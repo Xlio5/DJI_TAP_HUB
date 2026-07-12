@@ -618,6 +618,12 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                                     }
                                 }
 
+                                // ── UDP 端口提示 ──
+                                Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
+                                SectionHdr("UDP 端口转发说明")
+                                Text("端口转发配置后，QGC 等 App 无需额外设\n置。数据自动经 V3s 的 DNAT 规则转发到\nDJI RC 的对应端口。", fontSize = 10.sp, color = Color(0xFF64748B), lineHeight = 15.sp)
+                                Text("外部 App (QGC等) 的 UDP socket 会自动走\nVPN 隧道到达目标网段。", fontSize = 10.sp, color = Color(0xFF64748B), lineHeight = 15.sp, modifier = Modifier.padding(top = 4.dp))
+
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("解码器")
                                 var selectedCodec by remember { mutableStateOf(EasyPlayerClient.getForcedCodec()) }
