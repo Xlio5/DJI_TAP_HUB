@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+case "$1" in
+  start)
+    echo 'Starting TUN_NAT_HUB...'
+    /usr/local/bin/usb_tund > /var/log/usb_tund.log 2>&1 &
+    echo 'daemon: started'
+    /usr/local/bin/setup_v3s.sh
+    /usr/local/bin/web_server > /var/log/web_server.log 2>&1 &
+    echo 'TUN_NAT_HUB started'
+    ;;
+  stop)
+    killall usb_tund web_server 2>/dev/null || true
+    ;;
+  restart)
+    "$0" stop; sleep 1; "$0" start
+    ;;
+esac
