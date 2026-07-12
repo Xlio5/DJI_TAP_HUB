@@ -303,3 +303,116 @@ Networking support →
 | 1.2.2 | UDP 端口保护 + LAN 网段自动同步 |
 | 1.2.0 | Tab 导航 UI 重构 |
 | 1.1.0 | 初始版本 |
+
+---
+
+## 十、量产部署
+
+> 量产场景：每块 V3s 板子烧录系统后，插电即用，无需 SSH 手动 scp。
+
+### 核心原理
+
+将 TUN_NAT_HUB 文件放入 **Buildroot rootfs overlay** 目录，Buildroot 制作 rootfs 时会自动包含进去。烧录后开机自动启动。
+
+### 当前编译产物
+
+| 文件 | 路径 | 大小 |
+|------|------|------|
+| `usb_tund` (ARMv7) | `ubuntu/build_v3s/usb_tund` | 29 KB |
+| `usb_tund` (x86_64 开发用) | `ubuntu/build/usb_tund` | 18 KB |
+| `web_panel.py` | `ubuntu/web_panel.py` | 39 KB |
+
+均已编译/就绪，量产无需重新编译。
+
+### 量产步骤
+
+#### 1. 创建 rootfs overlay
+
+在 Buildroot 目录下创建 overlay 目录结构：
+
+```bash
+# 假设 Buildroot 在 ~/buildroot 下
+mkdir -p ~/buildroot/board/allwinner/v3s/overlay/usr/local/bin
+mkdir -p ~/buildroot/board/allwinner/v3s/overlay/etc/init.d
+mkdir -p ~/buildroot/board/allwinner/v3s/overlay/var/log
+```
+
+#### 2. 拷贝文件到 overlay
+
+```bash
+# daemon (ARMv7 交叉编译产物)
+cp ubuntu/build_v3s/usb_tund ~/buildroot/board/allwinner/v3s/overlay/usr/local/bin/
+
+# web 面板
+cp ubuntu/web_panel.py ~/buildroot/board/allwinner/v3s/overlay/usr/local/bin/
+
+# 启动脚本
+cp ubuntu/scripts/setup_gadget.sh ~/buildroot/board/allwinner/v3s/overlay/usr/local/bin/
+cp ubuntu/scripts/setup_nat.sh ~/buildroot/board/allwinner/v3s/overlay/usr/local/bin/
+cp ubuntu/scripts/S99tun_nat_hub ~/buildroot/board/allwinner/v3s/overlay/etc/init.d/
+```
+
+#### 3. 配置 Buildroot
+
+在 `buildroot/.config` 或 `defconfig` 中确认：
+
+```
+# 内核特性 — 必须在 kernel config 中开启（非 Buildroot 选项）
+#   CONFIG_USB_G_SERIAL=m          (g_serial 模块)
+#   CONFIG_TUN=y                    (TUN/TAP 驱动)
+#   CONFIG_NETFILTER_XT_TARGET_MASQUERADE=y
+#   CONFIG_NETFILTER_XT_TARGET_TCPMSS=y
+
+# Buildroot rootfs overlay 路径
+BR2_ROOTFS_OVERLAY="board/allwinner/v3s/overlay"
+
+# 必须包含 Python3（web_panel 需要）
+BR2_PACKAGE_PYTHON3=y
+
+# 必须包含 iptables（NAT 转发）
+BR2_PACKAGE_IPTABLES=y
+
+# 可选：预置 ssh key
+BR2_TARGET_GENERIC_ROOT_PASSWD="root"
+```
+
+#### 4. 构建 + 烧录
+
+```bash
+cd ~/buildroot
+make linux-menuconfig   # 确认内核 USB gadget + TUN + netfilter
+make menuconfig         # 确认 rootfs overlay + Python3 + iptables
+make -j$(nproc)
+```
+
+产物：`output/images/sdcard.img` 或 `output/images/rootfs.tar`，烧录到 SPI Flash / SD 卡。
+
+#### 5. 出厂验证
+
+每块板子刷完后做三件事确认：
+
+```bash
+# (1) 串口登录，检查 TUN_NAT_HUB 是否自启
+ps aux | grep -E 'usb_tund|web_panel'
+
+# (2) 检查 USB gadget 是否创建了 /dev/ttyGS0
+ls -la /dev/ttyGS0
+
+# (3) 插 DJI RC，App 上 USB● 和 VPN● 都绿 → 完成
+```
+
+### 无网络环境量产
+
+如果产线没有网口（V3s 无法 DHCP 拿到 IP），仍然可以验证：
+
+| 验证项 | 不需要网络 | 方法 |
+|--------|-----------|------|
+| daemon 启动 | ✅ | 串口看 `ps` |
+| TUN 接口 | ✅ | 串口 `ip addr show tun_hub` |
+| g_serial | ✅ | 串口 `ls /dev/ttyGS0` |
+| DJI RC 连接 | ✅ | App 上看 USB● VPN● |
+| 数据透传 | ❌ | 需 DHCP 拿到 IP 后 LAN 侧连设备 |
+
+### 一指令部署（开发阶段）
+
+不走 Buildroot overlay，用 SSH 部署：已有 `ubuntu/build_v3s/usb_tund` 编译产物，用 `scp` 一次上传即可，详见上文"三、Step by Step"。
