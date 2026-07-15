@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <fcntl.h>
 #include <fstream>
 #include <iostream>
 #include <netinet/in.h>
@@ -533,8 +534,18 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
     </div>
   </div>
   <div class="grid2" style="margin-top:16px">
+    <div class="card">
+      <h3>🔧 固件升级</h3>
+      <div style="color:var(--dim);font-size:0.8em;margin-bottom:8px">
+        上传 spi_image.bin (16MB), 自动校验并烧录 SPI Flash. 烧录完成后需手动重启.</div>
+      <div class="form-row">
+        <input type="file" id="fw-file" accept=".bin" style="flex:1">
+        <button class="btn btn-blue" onclick="uploadFirmware()">⬆ 升级</button>
+      </div>
+      <div id="fw-progress" style="margin-top:8px;font-size:0.85em;color:var(--muted)"></div>
+      <div id="fw-result" style="margin-top:4px;font-size:0.85em"></div>
+    </div>
     <div class="card"><h3>🌐 网口信息</h3><pre class="code-block" id="net-info"></pre></div>
-    <div class="card"><h3>🔒 iptables</h3><pre class="code-block" id="ipt-info"></pre></div>
   </div>
   <div class="info" style="margin-top:16px">
     <b>服务管理:</b> <code>systemctl restart tun_nat_hub</code> 或 <code>/etc/init.d/S99tun_nat_hub restart</code>
@@ -576,6 +587,21 @@ async function addCam(){
 async function delCam(i){
   await fetch(A+"/camera/del",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({index:i})});
   ref();}
+async function uploadFirmware(){
+  let f=document.getElementById("fw-file").files[0];
+  if(!f){alert("请先选择固件文件");return}
+  if(f.size<65536||f.size>20*1024*1024){alert("文件大小异常 (应为 ~16MB)");return}
+  if(!confirm("确定烧录 "+f.name+" ("+(f.size/1024/1024).toFixed(1)+"MB) 到 SPI Flash?\\n烧录完成后需手动重启."))return;
+  let p=document.getElementById("fw-progress");
+  let r=document.getElementById("fw-result");
+  p.textContent="上传中..."; r.textContent="";
+  let resp=await fetch(A+"/firmware/upload",{method:"POST",body:f,
+    headers:{"Content-Type":"application/octet-stream","Content-Length":String(f.size)}});
+  let j=await resp.json();
+  p.textContent="";
+  if(j.ok){r.innerHTML='<span style=\\"color:var(--green)\\">✅ 烧录成功! 大小: '+j.size+' 字节. 请执行 reboot 重启.</span>'}
+  else{r.innerHTML='<span style=\\"color:var(--red)\\">❌ 失败: '+(j.error||"未知错误")+'</span>'}
+}
 ref();setInterval(ref,3000);
 </script>
 </body></html>
@@ -865,6 +891,12 @@ static Response handleRequest(const Request& req) {
             JsonObj obj;
             obj.pair("ok", JsonValue::boolean(idx >= 0 && idx < (int)cfg.cameras.size()));
             resp.body = obj.done();
+        } else if (p == "/api/firmware/upload") {
+            // Handled in main loop before parseRequest
+            JsonObj obj;
+            obj.pair("ok", JsonValue::boolean(false));
+            obj.pair("error", JsonValue::string("use POST with raw binary body"));
+            resp.body = obj.done();
         } else {
             resp.code = 404;
             resp.body = R"({"error":"not found"})";
@@ -875,6 +907,126 @@ static Response handleRequest(const Request& req) {
     resp.code = 405;
     resp.body = R"({"error":"method not allowed"})";
     return resp;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 固件升级
+// ═══════════════════════════════════════════════════════════════
+
+static std::string readLine(int fd) {
+    std::string line;
+    char c;
+    while (::recv(fd, &c, 1, 0) > 0) {
+        if (c == '\r') continue;
+        if (c == '\n') break;
+        line += c;
+    }
+    return line;
+}
+
+static std::string findHeader(const std::string& headers, const std::string& key) {
+    auto pos = headers.find(key + ": ");
+    if (pos == std::string::npos) return "";
+    pos += key.size() + 2;
+    auto end = headers.find("\r\n", pos);
+    return headers.substr(pos, end - pos);
+}
+
+static void handleFirmwareUpload(int fd) {
+    Response resp;
+    resp.contentType = "application/json";
+
+    // Read request line
+    std::string reqLine = readLine(fd);
+    if (reqLine.find("POST") == std::string::npos) {
+        resp.code = 405;
+        resp.body = R"({"ok":false,"error":"method not allowed"})";
+        resp.send(fd);
+        return;
+    }
+
+    // Read all headers
+    std::string headers;
+    while (true) {
+        std::string line = readLine(fd);
+        if (line.empty()) break;
+        headers += line + "\n";
+    }
+
+    auto clStr = findHeader(headers, "Content-Length");
+    size_t contentLen = clStr.empty() ? 0 : std::stoull(clStr);
+
+    if (contentLen < 64 || contentLen > 20*1024*1024) {
+        resp.code = 400;
+        resp.body = R"({"ok":false,"error":"invalid size"})";
+        resp.send(fd);
+        return;
+    }
+
+    // Stream body to /tmp/fw.bin
+    std::string tmpPath = "/tmp/fw.bin";
+    int fwFd = ::open(tmpPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fwFd < 0) {
+        resp.body = R"({"ok":false,"error":"cannot create temp file"})";
+        resp.send(fd);
+        return;
+    }
+
+    char buf[32768];
+    size_t remaining = contentLen;
+    while (remaining > 0) {
+        size_t chunk = remaining < sizeof(buf) ? remaining : sizeof(buf);
+        ssize_t n = ::recv(fd, buf, chunk, 0);
+        if (n <= 0) break;
+        ::write(fwFd, buf, n);
+        remaining -= n;
+    }
+    ::close(fwFd);
+
+    if (remaining > 0) {
+        ::unlink(tmpPath.c_str());
+        resp.body = R"({"ok":false,"error":"upload incomplete"})";
+        resp.send(fd);
+        return;
+    }
+
+    // Validate header (SPI image starts with eGON at offset 0)
+    int vFd = ::open(tmpPath.c_str(), O_RDONLY);
+    if (vFd >= 0) {
+        uint8_t magic[16];
+        ::read(vFd, magic, 16);
+        ::close(vFd);
+        // Check for eGON.BT0 header
+        if (magic[0] != 0x16 && magic[4] != 'e') {
+            ::unlink(tmpPath.c_str());
+            JsonObj obj;
+            obj.pair("ok", JsonValue::boolean(false));
+            obj.pair("error", JsonValue::string("invalid firmware image (no eGON header)"));
+            resp.body = obj.done();
+            resp.send(fd);
+            return;
+        }
+    }
+
+    // Flash to SPI via mtdblock0
+    std::string flashCmd = "dd if=" + tmpPath + " of=/dev/mtdblock0 bs=4096 2>&1";
+    std::cout << "[fw] flash: " << flashCmd << std::endl;
+    int rc = system(flashCmd.c_str());
+    if (rc != 0) {
+        JsonObj obj;
+        obj.pair("ok", JsonValue::boolean(false));
+        obj.pair("error", JsonValue::string("flash write failed"));
+        resp.body = obj.done();
+        resp.send(fd);
+        return;
+    }
+
+    JsonObj obj;
+    obj.pair("ok", JsonValue::boolean(true));
+    obj.pair("size", JsonValue::number((int)contentLen));
+    obj.pair("message", JsonValue::string("Firmware flashed. Reboot to apply."));
+    resp.body = obj.done();
+    resp.send(fd);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -912,8 +1064,21 @@ int main() {
         int cli = accept(srv, nullptr, nullptr);
         if (cli < 0) { if (errno == EINTR) continue; break; }
 
-        // 每个请求一个线程（嵌入式场景并发量极低，这样最简单）
+        // 每个请求一个线程
         std::thread([cli]() {
+            // Peek at request line to detect firmware upload
+            char peek[64] = {};
+            int peekLen = ::recv(cli, peek, sizeof(peek)-1, MSG_PEEK);
+            if (peekLen > 0) {
+                peek[peekLen] = '\0';
+                std::string peekStr(peek);
+                if (peekStr.find("POST /api/firmware/upload") != std::string::npos) {
+                    handleFirmwareUpload(cli);
+                    close(cli);
+                    return;
+                }
+            }
+
             char buf[BUF_SZ];
             int n = recv(cli, buf, sizeof(buf) - 1, 0);
             if (n > 0) {
