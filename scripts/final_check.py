@@ -1,26 +1,37 @@
-"""Final V3s status check"""
-import paramiko
+import serial, time
 
-ssh = paramiko.SSHClient()
-ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect("192.168.144.66", username="root", password="root", timeout=5)
+ser = serial.Serial("COM10", 115200, timeout=0.5)
+time.sleep(0.2)
+ser.read(ser.in_waiting)
 
-checks = [
-    ("NAT", "iptables -t nat -L POSTROUTING -n 2>&1 | grep -E 'MASQ|10.0'"),
+# Login
+ser.write(b"root\n")
+time.sleep(1.5)
+out = ser.read(ser.in_waiting).decode(errors="replace")
+if "Password" in out:
+    ser.write(b"root\n")
+    time.sleep(1)
+    ser.read(ser.in_waiting)
+
+tests = [
+    ("VID/PID", "cat /sys/module/g_serial/parameters/idVendor /sys/module/g_serial/parameters/idProduct 2>/dev/null"),
+    ("USB state", "cat /sys/class/udc/*/state 2>/dev/null"),
+    ("NAT", "iptables -t nat -L POSTROUTING -n 2>&1 | grep -E 'MASQ|10\\.0'"),
     ("GW", "ip route | grep default"),
-    ("USB", "cat /sys/class/udc/*/state 2>&1"),
+    ("IP forward", "cat /proc/sys/net/ipv4/ip_forward"),
     ("daemon", "ps | grep usb_tund"),
     ("web", "ps | grep web_server"),
-    ("rootfs", "mount | head -2"),
-    ("MTD", "cat /proc/mtd"),
+    ("MTD", "cat /proc/mtd | head -3"),
 ]
 
-for label, cmd in checks:
-    _, o, _ = ssh.exec_command(cmd, timeout=3)
-    out = o.read().decode(errors="replace").strip()
-    lines = out.split("\n")[:3]
+for label, cmd in tests:
+    ser.write((cmd + "\n").encode())
+    time.sleep(0.8)
+    out = ser.read(ser.in_waiting).decode(errors="replace").strip()
+    lines = out.split("\n")
+    best = [l for l in lines if l.strip() and "#" not in l]
     print(f"{label}:")
-    for l in lines:
-        print(f"  {l.strip()[:120]}")
+    for l in best[:3]:
+        print(f"  {l.strip()[:100]}")
 
-ssh.close()
+ser.close()
