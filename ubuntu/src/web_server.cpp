@@ -33,7 +33,7 @@
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.3.0"   // 固件版本 — 改这里全局生效
+#define VERSION     "1.3.1"   // 固件版本 — 改这里全局生效
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
@@ -1012,16 +1012,10 @@ static void handleFirmwareUpload(int fd) {
         }
     }
 
-    // Flash to rootfs partition ONLY (mtdblock3) — does NOT touch U-Boot/kernel/DTB
-    // fallback: write to raw /dev/mtd0 at offset 0x710000 if mtdblock3 doesn't exist
-    std::string flashCmd;
-    if (fileExists("/dev/mtdblock3")) {
-        flashCmd = "dd if=" + tmpPath + " of=/dev/mtdblock3 bs=4096 2>&1";
-    } else {
-        // mtdparts may not be active — write to raw mtd0 at rootfs offset
-        flashCmd = "dd if=" + tmpPath + " of=/dev/mtd0 bs=4096 seek=1808 2>&1";
-    }
-    std::cout << "[fw] flashing rootfs: " << flashCmd << std::endl;
+    // Flash to rootfs partition via raw MTD char device (handles NOR erase)
+    // rootfs starts at SPI offset 0x710000 = 7405568 bytes = 1808 blocks of 4096
+    std::string flashCmd = "dd if=" + tmpPath + " of=/dev/mtd0 bs=4096 seek=1808 2>&1";
+    std::cout << "[fw] flashing rootfs via mtd0 seek=1808" << std::endl;
     int rc = system(flashCmd.c_str());
     if (rc != 0) {
         JsonObj obj;
