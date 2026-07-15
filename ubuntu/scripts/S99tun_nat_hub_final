@@ -1,0 +1,33 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+  start)
+    echo 'Starting TUN_NAT_HUB...'
+
+    # Load g_serial with RTL8812AU VID/PID for DJI RC detection
+    rmmod g_serial 2>/dev/null || true
+    sleep 1
+    insmod /lib/modules/7.1.0/g_serial.ko use_acm=0 idVendor=0x0BDA idProduct=0x8812 2>/dev/null || true
+
+    # USB re-enumeration
+    MODE=/sys/devices/platform/soc/1c19000.usb/musb-hdrc.2.auto/mode
+    if [ -f "$MODE" ]; then
+      echo host > "$MODE" 2>/dev/null || true
+      sleep 3
+      echo peripheral > "$MODE" 2>/dev/null || true
+    fi
+
+    /usr/local/bin/usb_tund > /var/log/usb_tund.log 2>&1 &
+    echo 'daemon: started'
+    /usr/local/bin/setup_v3s.sh
+    /usr/local/bin/web_server > /var/log/web_server.log 2>&1 &
+    echo 'TUN_NAT_HUB started'
+    ;;
+  stop)
+    killall usb_tund web_server 2>/dev/null || true
+    ;;
+  restart)
+    "$0" stop; sleep 1; "$0" start
+    ;;
+esac
