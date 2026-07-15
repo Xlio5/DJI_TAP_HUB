@@ -535,11 +535,12 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
   </div>
   <div class="grid2" style="margin-top:16px">
     <div class="card">
-      <h3>🔧 固件升级</h3>
+      <h3>🔧 固件升级 (Rootfs)</h3>
       <div style="color:var(--dim);font-size:0.8em;margin-bottom:8px">
-        上传 spi_image.bin (16MB), 自动校验并烧录 SPI Flash. 烧录完成后需手动重启.</div>
+        上传 <b>rootfs.squashfs</b> (4MB). 只更新根文件系统, 不碰 U-Boot/kernel.<br>
+        烧录完成后需手动 <code>reboot</code> 重启.</div>
       <div class="form-row">
-        <input type="file" id="fw-file" accept=".bin" style="flex:1">
+        <input type="file" id="fw-file" accept=".squashfs,.sq,.bin" style="flex:1">
         <button class="btn btn-blue" onclick="uploadFirmware()">⬆ 升级</button>
       </div>
       <div id="fw-progress" style="margin-top:8px;font-size:0.85em;color:var(--muted)"></div>
@@ -589,9 +590,9 @@ async function delCam(i){
   ref();}
 async function uploadFirmware(){
   let f=document.getElementById("fw-file").files[0];
-  if(!f){alert("请先选择固件文件");return}
-  if(f.size<65536||f.size>20*1024*1024){alert("文件大小异常 (应为 ~16MB)");return}
-  if(!confirm("确定烧录 "+f.name+" ("+(f.size/1024/1024).toFixed(1)+"MB) 到 SPI Flash?\\n烧录完成后需手动重启."))return;
+  if(!f){alert("请先选择 rootfs.squashfs 文件");return}
+  if(f.size<1e6||f.size>8e6){alert("文件大小异常 (应为 ~4MB rootfs.squashfs)");return}
+  if(!confirm("确定烧录 rootfs ("+(f.size/1024/1024).toFixed(1)+"MB) 到 rootfs 分区?\\nU-Boot/kernel 不受影响.\\n烧录完成后需手动 reboot."))return;
   let p=document.getElementById("fw-progress");
   let r=document.getElementById("fw-result");
   p.textContent="上传中..."; r.textContent="";
@@ -599,7 +600,7 @@ async function uploadFirmware(){
     headers:{"Content-Type":"application/octet-stream","Content-Length":String(f.size)}});
   let j=await resp.json();
   p.textContent="";
-  if(j.ok){r.innerHTML='<span style=\\"color:var(--green)\\">✅ 烧录成功! 大小: '+j.size+' 字节. 请执行 reboot 重启.</span>'}
+  if(j.ok){r.innerHTML='<span style=\\"color:var(--green)\\">✅ Rootfs 烧录成功! '+j.message+'</span>'}
   else{r.innerHTML='<span style=\\"color:var(--red)\\">❌ 失败: '+(j.error||"未知错误")+'</span>'}
 }
 ref();setInterval(ref,3000);
@@ -956,15 +957,16 @@ static void handleFirmwareUpload(int fd) {
     auto clStr = findHeader(headers, "Content-Length");
     size_t contentLen = clStr.empty() ? 0 : std::stoull(clStr);
 
-    if (contentLen < 64 || contentLen > 20*1024*1024) {
+    // rootfs.squashfs is ~4MB, allow 1–8MB
+    if (contentLen < 1024*1024 || contentLen > 8*1024*1024) {
         resp.code = 400;
-        resp.body = R"({"ok":false,"error":"invalid size"})";
+        resp.body = R"({"ok":false,"error":"invalid size, expect rootfs.squashfs ~4MB"})";
         resp.send(fd);
         return;
     }
 
-    // Stream body to /tmp/fw.bin
-    std::string tmpPath = "/tmp/fw.bin";
+    // Stream body to /tmp/new_rootfs.sq
+    std::string tmpPath = "/tmp/new_rootfs.sq";
     int fwFd = ::open(tmpPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fwFd < 0) {
         resp.body = R"({"ok":false,"error":"cannot create temp file"})";
@@ -990,27 +992,33 @@ static void handleFirmwareUpload(int fd) {
         return;
     }
 
-    // Validate header (SPI image starts with eGON at offset 0)
+    // Validate squashfs magic: first 4 bytes must be "hsqs"
     int vFd = ::open(tmpPath.c_str(), O_RDONLY);
     if (vFd >= 0) {
-        uint8_t magic[16];
-        ::read(vFd, magic, 16);
+        uint8_t magic[4];
+        ::read(vFd, magic, 4);
         ::close(vFd);
-        // Check for eGON.BT0 header
-        if (magic[0] != 0x16 && magic[4] != 'e') {
+        if (magic[0] != 'h' || magic[1] != 's' || magic[2] != 'q' || magic[3] != 's') {
             ::unlink(tmpPath.c_str());
             JsonObj obj;
             obj.pair("ok", JsonValue::boolean(false));
-            obj.pair("error", JsonValue::string("invalid firmware image (no eGON header)"));
+            obj.pair("error", JsonValue::string("not a valid squashfs (no hsqs magic)"));
             resp.body = obj.done();
             resp.send(fd);
             return;
         }
     }
 
-    // Flash to SPI via mtdblock0
-    std::string flashCmd = "dd if=" + tmpPath + " of=/dev/mtdblock0 bs=4096 2>&1";
-    std::cout << "[fw] flash: " << flashCmd << std::endl;
+    // Flash to rootfs partition ONLY (mtdblock3) — does NOT touch U-Boot/kernel/DTB
+    // fallback: write to raw /dev/mtd0 at offset 0x710000 if mtdblock3 doesn't exist
+    std::string flashCmd;
+    if (fileExists("/dev/mtdblock3")) {
+        flashCmd = "dd if=" + tmpPath + " of=/dev/mtdblock3 bs=4096 2>&1";
+    } else {
+        // mtdparts may not be active — write to raw mtd0 at rootfs offset
+        flashCmd = "dd if=" + tmpPath + " of=/dev/mtd0 bs=4096 seek=1808 2>&1";
+    }
+    std::cout << "[fw] flashing rootfs: " << flashCmd << std::endl;
     int rc = system(flashCmd.c_str());
     if (rc != 0) {
         JsonObj obj;
@@ -1024,7 +1032,7 @@ static void handleFirmwareUpload(int fd) {
     JsonObj obj;
     obj.pair("ok", JsonValue::boolean(true));
     obj.pair("size", JsonValue::number((int)contentLen));
-    obj.pair("message", JsonValue::string("Firmware flashed. Reboot to apply."));
+    obj.pair("message", JsonValue::string("Rootfs updated. Reboot to apply. U-Boot/kernel NOT touched."));
     resp.body = obj.done();
     resp.send(fd);
 }
