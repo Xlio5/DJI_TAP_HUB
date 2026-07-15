@@ -33,6 +33,7 @@
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
+#define VERSION     "1.3.0"   // 固件版本 — 改这里全局生效
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
@@ -503,7 +504,7 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 </head>
 <body>
 <header>
-  <span class="logo">TUN NAT HUB</span><span style="font-size:0.7em;color:var(--dim)">g_serial RTL8812AU · C++</span>
+  <span class="logo">TUN NAT HUB</span><span style="font-size:0.7em;color:var(--dim)" id="hdr-ver">g_serial RTL8812AU · C++</span>
 </header>
 <div class="page">
   <div class="card" style="margin-bottom:16px">
@@ -603,7 +604,9 @@ async function uploadFirmware(){
   if(j.ok){r.innerHTML='<span style=\\"color:var(--green)\\">✅ Rootfs 烧录成功! '+j.message+'</span>'}
   else{r.innerHTML='<span style=\\"color:var(--red)\\">❌ 失败: '+(j.error||"未知错误")+'</span>'}
 }
+async function initVer(){try{let v=await(await fetch(A+"/version")).json();document.getElementById("hdr-ver").textContent="v"+v.version+" · g_serial · C++"}catch(e){}}
 ref();setInterval(ref,3000);
+initVer();
 </script>
 </body></html>
 )html";
@@ -649,7 +652,7 @@ static std::string apiHeartbeat() {
     }
 
     JsonObj obj;
-    obj.pair("version", JsonValue::string("1.1.0"));
+    obj.pair("version", JsonValue::string(VERSION));
     obj.pair("daemon", JsonValue::boolean(daemon));
     obj.pair("tty_ready", JsonValue::boolean(tty));
     obj.pair("tun_up", JsonValue::boolean(tun));
@@ -832,7 +835,7 @@ static Response handleRequest(const Request& req) {
             resp.body = apiIptables();
         } else if (p == "/api/version") {
             JsonObj obj;
-            obj.pair("version", JsonValue::string("1.1.0"));
+            obj.pair("version", JsonValue::string(VERSION));
             resp.body = obj.done();
         } else {
             resp.code = 404;
