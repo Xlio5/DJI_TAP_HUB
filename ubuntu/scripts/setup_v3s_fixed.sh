@@ -1,5 +1,5 @@
 #!/bin/sh
-# setup_v3s.sh - TUN + NAT + USB init (SPI Flash edition)
+# setup_v3s.sh - TUN + NAT + USB init (SPI Flash edition, dr_mode=peripheral)
 set -e
 
 TUN_NAME=tun_hub
@@ -58,13 +58,7 @@ iptables -A FORWARD -i $TUN_NAME -o $LAN_IF -j ACCEPT
 iptables -A FORWARD -i $LAN_IF -o $TUN_NAME -m state --state ESTABLISHED,RELATED -j ACCEPT
 echo "NAT: $TUN_NAME <-> $LAN_IF (MASQUERADE)"
 
-# USB mode: host -> sleep -> peripheral (force DJI RC detection)
-MODE_SYSFS=/sys/devices/platform/soc/1c19000.usb/musb-hdrc.2.auto/mode
-if [ -f "$MODE_SYSFS" ]; then
-    echo host > "$MODE_SYSFS" 2>/dev/null || true
-    sleep 3
-    echo peripheral > "$MODE_SYSFS" 2>/dev/null || true
-    echo "USB: peripheral mode"
-fi
+# USB: dr_mode=peripheral (DTB lock) - no mode switching needed
+echo "USB: peripheral (DTB locked)"
 
 echo "=== Setup complete ==="

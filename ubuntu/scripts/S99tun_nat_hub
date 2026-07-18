@@ -1,10 +1,7 @@
 #!/bin/sh
 # S99tun_nat_hub — TUN_NAT_HUB V3s BusyBox init 自启脚本
-# daemon 先启动并等 /dev/ttyGS0 → host→peripheral 切换触发重枚举
-# 注意: 不要用 soft_connect (MUSB 驱动有 bug，connect 会内核崩溃)
+# DTB dr_mode=peripheral (device-only) — g_serial 自动绑定，无需 mode 切换
 set -e
-
-MODE_SYSFS="/sys/devices/platform/soc/1c19000.usb/musb-hdrc.2.auto/mode"
 
 case "$1" in
   start)
@@ -12,7 +9,6 @@ case "$1" in
 
     # 0. tmpfs for /var/log (squashfs is read-only)
     mount -t tmpfs tmpfs /var/log 2>/dev/null || true
-    echo "tmpfs: /var/log mounted"
 
     # 1. daemon 先启动 (循环等 /dev/ttyGS0 出现)
     /usr/local/bin/usb_tund > /var/log/usb_tund.log 2>&1 &
@@ -21,20 +17,10 @@ case "$1" in
     # 2. TUN + NAT
     /usr/local/bin/setup_v3s.sh
 
-    # 3. Web 面板 (C++ 嵌入式, 无需 Python3)
+    # 3. Web 面板
     /usr/local/bin/web_server > /var/log/web_server.log 2>&1 &
 
-    # 4. 切 peripheral — g_serial 绑定 UDC，DJI RC 看到设备
-    echo peripheral > "$MODE_SYSFS" 2>/dev/null || true
-    sleep 1
-
-    # 5. 延时重枚举: host(断开)→等 5s→peripheral(重连)
-    #    给 DJI RC Android 足够时间看到 USB 消失→出现 的完整事件
-    echo host > "$MODE_SYSFS" 2>/dev/null || true
-    sleep 5
-    echo peripheral > "$MODE_SYSFS" 2>/dev/null || true
-    sleep 1
-
+    # 4. dr_mode=peripheral — 不需要 mode 切换
     [ -c /dev/ttyGS0 ] && chmod 666 /dev/ttyGS0
     echo "TUN_NAT_HUB started"
     ;;
