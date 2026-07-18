@@ -968,8 +968,8 @@ static void handleFirmwareUpload(int fd) {
         return;
     }
 
-    // Stream body to /tmp/new_rootfs.sq
-    std::string tmpPath = "/tmp/new_rootfs.sq";
+    // Stream body to /var/log/new_rootfs.sq (tmpfs, writable even on squashfs)
+    std::string tmpPath = "/var/log/new_rootfs.sq";
     int fwFd = ::open(tmpPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fwFd < 0) {
         resp.body = R"({"ok":false,"error":"cannot create temp file"})";
@@ -1012,24 +1012,15 @@ static void handleFirmwareUpload(int fd) {
         }
     }
 
-    // Flash to rootfs partition via raw MTD char device (handles NOR erase)
-    // rootfs starts at SPI offset 0x710000 = 7405568 bytes = 1808 blocks of 4096
-    std::string flashCmd = "dd if=" + tmpPath + " of=/dev/mtd0 bs=4096 seek=1808 2>&1";
-    std::cout << "[fw] flashing rootfs via mtd0 seek=1808" << std::endl;
-    int rc = system(flashCmd.c_str());
-    if (rc != 0) {
-        JsonObj obj;
-        obj.pair("ok", JsonValue::boolean(false));
-        obj.pair("error", JsonValue::string("flash write failed"));
-        resp.body = obj.done();
-        resp.send(fd);
-        return;
-    }
+    // Create pending flash marker — S99 init script handles actual flashing
+    // (rootfs MTD is locked while mounted, must flash before rootfs mount)
+    int markerFd = ::open("/var/log/.pending_flash", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (markerFd >= 0) ::close(markerFd);
 
     JsonObj obj;
     obj.pair("ok", JsonValue::boolean(true));
     obj.pair("size", JsonValue::number((int)contentLen));
-    obj.pair("message", JsonValue::string("Rootfs updated. Reboot to apply. U-Boot/kernel NOT touched."));
+    obj.pair("message", JsonValue::string("Rootfs staged. Reboot now to flash — system will reboot twice (flash + apply)."));
     resp.body = obj.done();
     resp.send(fd);
 }

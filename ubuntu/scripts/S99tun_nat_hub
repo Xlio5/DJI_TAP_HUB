@@ -13,6 +13,21 @@ case "$1" in
     # 0. tmpfs for /var/log (squashfs is read-only)
     mount -t tmpfs tmpfs /var/log 2>/dev/null || true
 
+    # 0.5 Check for pending firmware flash (web upgrade, 2-stage)
+    if [ -f /var/log/.pending_flash ] && [ -f /var/log/new_rootfs.sq ]; then
+        _ts "FIRMWARE UPGRADE: flashing rootfs..."
+        dd if=/var/log/new_rootfs.sq of=/dev/mtd0 bs=4096 seek=1808 2>&1
+        RC=$?
+        sync
+        rm -f /var/log/.pending_flash /var/log/new_rootfs.sq
+        if [ $RC -eq 0 ]; then
+            _ts "Firmware flash OK — rebooting"
+        else
+            _ts "Firmware flash FAILED (exit=$RC)"
+        fi
+        reboot
+    fi
+
     # 1. daemon
     /usr/local/bin/usb_tund > /var/log/usb_tund.log 2>&1 &
     _ts "usb_tund: started"
