@@ -1,5 +1,5 @@
 #!/bin/sh
-# S99tun_nat_hub — TUN_NAT_HUB V3s BusyBox init
+# S99tun_nat_hub — TUN_NAT_HUB V3s BusyBox init (A/B OTA version)
 # DTB dr_mode=peripheral (device-only) — g_serial auto-bind, no mode switch
 set -e
 
@@ -13,18 +13,44 @@ case "$1" in
     # 0. tmpfs for /var/log (squashfs is read-only)
     mount -t tmpfs tmpfs /var/log 2>/dev/null || true
 
-    # 0.5 Check for pending firmware flash (web upgrade, 2-stage)
-    if [ -f /var/log/.pending_flash ] && [ -f /var/log/new_rootfs.sq ]; then
-        _ts "FIRMWARE UPGRADE: flashing rootfs..."
-        dd if=/var/log/new_rootfs.sq of=/dev/mtd0 bs=4096 seek=1808 2>&1
-        RC=$?
-        sync
-        rm -f /var/log/.pending_flash /var/log/new_rootfs.sq
-        if [ $RC -eq 0 ]; then
-            _ts "Firmware flash OK — rebooting"
+    # 0.5 A/B OTA: check for pending firmware flash
+    PENDING=/var/log/.pending_flash
+    NEW_ROOTFS=/var/log/new_rootfs.sq
+    SLOT_OFFSET=1032192   # SPI 0xFC000, in uboot partition free area
+
+    if [ -f "$PENDING" ] && [ -f "$NEW_ROOTFS" ]; then
+        _ts "FIRMWARE UPGRADE: detecting active slot..."
+
+        # Detect current slot from kernel cmdline
+        if grep -q "mtdblock4" /proc/cmdline 2>/dev/null; then
+            # Running from B (flag=0x00), flash to A (mtdblock3)
+            # mtdblock driver auto-erases before write
+            _ts "B->A: flashing rootfs_a (mtdblock3)..."
+            dd if=$NEW_ROOTFS of=/dev/mtdblock3 bs=4096 2>&1
+            RC=$?
+            _ts "Flash rootfs_a done (exit=$RC)"
+            if [ $RC -eq 0 ]; then
+                # Write 0xFF = slot A (mtdblock0 auto-erase handles this)
+                printf '\377' | dd of=/dev/mtdblock0 bs=1 count=1 seek=$SLOT_OFFSET 2>/dev/null
+                _ts "Slot flag set to A (0xFF)"
+            fi
         else
-            _ts "Firmware flash FAILED (exit=$RC)"
+            # Running from A (flag=0xFF), flash to B (mtdblock4)
+            _ts "A->B: flashing rootfs_b (mtdblock4)..."
+            dd if=$NEW_ROOTFS of=/dev/mtdblock4 bs=4096 2>&1
+            RC=$?
+            _ts "Flash rootfs_b done (exit=$RC)"
+            if [ $RC -eq 0 ]; then
+                # Write 0x00 = slot B (NOR-safe: FF→00 is 1→0 only)
+                printf '\000' | dd of=/dev/mtdblock0 bs=1 count=1 seek=$SLOT_OFFSET 2>/dev/null
+                _ts "Slot flag set to B (0x00)"
+            fi
         fi
+
+        sync
+        rm -f $PENDING $NEW_ROOTFS
+        _ts "Firmware upgrade done — rebooting..."
+        sleep 1
         reboot
     fi
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 SPI 镜像 — 含 U-Boot env 分区，重启后自动启动
-mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),-(rootfs) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0
+mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),4608k(rootfs_a),-(rootfs_b) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0
 """
 import subprocess, os, struct, binascii
 
@@ -42,8 +42,8 @@ print(f"zImage:   {len(zimage):>8,} B  ({len(zimage)/1024/1024:.1f}MB)")
 print(f"squashfs: {len(squashfs):>8,} B  ({len(squashfs)/1024/1024:.1f}MB)")
 
 # Build env binary
-bootargs = ("console=ttyS0,115200 root=/dev/mtdblock3 rootfstype=squashfs rootwait "
-            "mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),-(rootfs) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0")
+bootargs = ("console=ttyS0,115200 rootfstype=squashfs rootwait "
+            "mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),4608k(rootfs_a),-(rootfs_b) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0")
 bootcmd = "bootz 0x41000000 - 0x42000000"
 env_str = "bootargs=" + bootargs + "\0" + "bootcmd=" + bootcmd + "\0"
 env_bytes = env_str.encode().ljust(0x1FFC, b'\0')
@@ -73,9 +73,13 @@ img[dtb_off:dtb_off+len(dtb)] = dtb
 kernel_off = 1088 * 1024
 img[kernel_off:kernel_off+len(zimage)] = zimage
 
-# squashfs at 7232KB (mtd3=rootfs)
+# squashfs at 7232KB (mtd3=rootfs_a)
 rootfs_off = 7232 * 1024
 img[rootfs_off:rootfs_off+len(squashfs)] = squashfs
+
+# Initialize slot_flag @ 0xFC000 to 0x00 (slot A = mtdblock3)
+img[0xFC000] = 0xFF
+print(f"Slot flag @ 0xFC000: initial=A (mtdblock3)")
 
 used = rootfs_off + len(squashfs)
 total = len(img)
@@ -90,8 +94,8 @@ SPI NOR 16MB Layout:
   squashfs @ 0x{rootfs_off:06X} ({len(squashfs)//1024}KB)
   FREE       {(total-used)//1024}KB for OTA
 
-mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),-(rootfs) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0
-root=/dev/mtdblock3 rootfstype=squashfs
+mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),4608k(rootfs_a),-(rootfs_b) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0
+rootfstype=squashfs
 bootcmd=bootz 0x41000000 - 0x42000000
 
 SPL preload: kernel@0x41000000 (SPI 0x110000), DTB@0x42000000 (SPI 0x100000)
