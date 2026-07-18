@@ -1,72 +1,54 @@
 #!/bin/sh
-# S99tun_nat_hub — TUN_NAT_HUB V3s BusyBox init (A/B OTA version)
+# S99tun_nat_hub — TUN_NAT_HUB V3s BusyBox init (A/B OTA with auto-fallback)
 # DTB dr_mode=peripheral (device-only) — g_serial auto-bind, no mode switch
 set -e
 
-# Timestamp helper
 _ts() { echo "[$(date +%H:%M:%S)] $*"; }
 
 case "$1" in
   start)
     _ts "Starting TUN_NAT_HUB v1.3.1..."
 
-    # 0. tmpfs for /var/log (squashfs is read-only)
     mount -t tmpfs tmpfs /var/log 2>/dev/null || true
 
-    # 0.5 A/B OTA: check for pending firmware flash
-    PENDING=/var/log/.pending_flash
-    NEW_ROOTFS=/var/log/new_rootfs.sq
-    SLOT_OFFSET=1032192   # SPI 0xFC000, in uboot partition free area
+    # 0.5 A/B OTA auto-fallback check
+    # SPI: 0xFC000=slot(4B) 0xFC004=confirmed(1B) 0xFC005=retry(1B)
+    CFM=$(dd if=/dev/mtdblock0 bs=1 count=1 skip=1032196 2>/dev/null | hexdump -e '1/1 "%d"')
+    RTY=$(dd if=/dev/mtdblock0 bs=1 count=1 skip=1032197 2>/dev/null | hexdump -e '1/1 "%d"')
+    _ts "confirmed=$CFM retry=$RTY"
 
-    if [ -f "$PENDING" ] && [ -f "$NEW_ROOTFS" ]; then
-        _ts "FIRMWARE UPGRADE: detecting active slot..."
-
-        # Detect current slot from kernel cmdline
-        if grep -q "mtdblock4" /proc/cmdline 2>/dev/null; then
-            # Running from B (flag=0x00), flash to A (mtdblock3)
-            # mtdblock driver auto-erases before write
-            _ts "B->A: flashing rootfs_a (mtdblock3)..."
-            dd if=$NEW_ROOTFS of=/dev/mtdblock3 bs=4096 2>&1
-            RC=$?
-            _ts "Flash rootfs_a done (exit=$RC)"
-            if [ $RC -eq 0 ]; then
-                # Write 0xFF = slot A (mtdblock0 auto-erase handles this)
-                printf '\377' | dd of=/dev/mtdblock0 bs=1 count=1 seek=$SLOT_OFFSET 2>/dev/null
-                _ts "Slot flag set to A (0xFF)"
+    if [ "$RTY" -gt 0 ] 2>/dev/null; then
+        if [ "$CFM" != "255" ] 2>/dev/null; then
+            NEW_RTY=$((RTY - 1))
+            if [ "$NEW_RTY" -le 0 ]; then
+                _ts "FALLBACK: retries exhausted, reverting to slot A"
+                printf '\377\377\377\377' | dd of=/dev/mtdblock0 bs=4 count=1 seek=257998 2>/dev/null
+                printf '\377' | dd of=/dev/mtdblock0 bs=1 count=1 seek=1032196 2>/dev/null
+                sync
+                reboot
             fi
-        else
-            # Running from A (flag=0xFF), flash to B (mtdblock4)
-            _ts "A->B: flashing rootfs_b (mtdblock4)..."
-            dd if=$NEW_ROOTFS of=/dev/mtdblock4 bs=4096 2>&1
-            RC=$?
-            _ts "Flash rootfs_b done (exit=$RC)"
-            if [ $RC -eq 0 ]; then
-                # Write 0x00 = slot B (NOR-safe: FF→00 is 1→0 only)
-                printf '\000\000\000\000' | dd of=/dev/mtdblock0 bs=4 count=1 seek=$((SLOT_OFFSET/4)) 2>/dev/null
-                _ts "Slot flag set to B (0x00)"
-            fi
+            _ts "Upgrade trial: retry=$NEW_RTY/$RTY"
         fi
-
-        sync
-        rm -f $PENDING $NEW_ROOTFS
-        _ts "Firmware upgrade done — rebooting..."
-        sleep 1
-        reboot
     fi
 
-    # 1. daemon
     /usr/local/bin/usb_tund > /var/log/usb_tund.log 2>&1 &
     _ts "usb_tund: started"
 
-    # 2. TUN + NAT
     /usr/local/bin/setup_v3s.sh
 
-    # 3. Web panel
     /usr/local/bin/web_server > /var/log/web_server.log 2>&1 &
     _ts "web_server: started"
 
-    # 4. dr_mode=peripheral — no mode switching needed
     [ -c /dev/ttyGS0 ] && chmod 666 /dev/ttyGS0
+
+    # Mark boot confirmed stable
+    if [ "$CFM" != "255" ] 2>/dev/null || [ "$RTY" -gt 0 ] 2>/dev/null; then
+        printf '\377' | dd of=/dev/mtdblock0 bs=1 count=1 seek=1032196 2>/dev/null
+        printf '\000' | dd of=/dev/mtdblock0 bs=1 count=1 seek=1032197 2>/dev/null
+        sync
+        _ts "Boot confirmed stable"
+    fi
+
     _ts "TUN_NAT_HUB ready"
     ;;
   stop)

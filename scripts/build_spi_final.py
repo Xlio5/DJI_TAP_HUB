@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 SPI 镜像 — 含 U-Boot env 分区，重启后自动启动
-mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),4800k(rootfs_a),-(rootfs_b) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0
+mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),4576k(rootfs_a),-(rootfs_b) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0
 """
 import subprocess, os, struct, binascii
 
@@ -43,7 +43,7 @@ print(f"squashfs: {len(squashfs):>8,} B  ({len(squashfs)/1024/1024:.1f}MB)")
 
 # Build env binary
 bootargs = ("console=ttyS0,115200 rootfstype=squashfs rootwait "
-            "mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),4800k(rootfs_a),-(rootfs_b) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0")
+            "mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),4576k(rootfs_a),-(rootfs_b) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0")
 bootcmd = "bootz 0x41000000 - 0x42000000"
 env_str = "bootargs=" + bootargs + "\0" + "bootcmd=" + bootcmd + "\0"
 env_bytes = env_str.encode().ljust(0x1FFC, b'\0')
@@ -77,9 +77,14 @@ img[kernel_off:kernel_off+len(zimage)] = zimage
 rootfs_off = 7232 * 1024
 img[rootfs_off:rootfs_off+len(squashfs)] = squashfs
 
-# Initialize slot_flag @ 0xFC000 to 0x00 (slot A = mtdblock3)
+# Initialize A/B OTA control bytes
+# 0xFC000: slot_flag (4B): 0xFFFFFFFF=A, 0x00000000=B
+# 0xFC004: confirmed (1B): 0xFF=stable, 0x00=trial
+# 0xFC005: retry_count (1B): 0=normal, >0=trial remaining
 img[0xFC000] = 0xFF
-print(f"Slot flag @ 0xFC000: initial=A (mtdblock3)")
+img[0xFC004] = 0xFF  # confirmed = stable
+img[0xFC005] = 0     # retry = 0 (normal)
+print(f"Slot flag @ 0xFC000: initial=A (mtdblock3), confirmed=FF, retry=0")
 
 used = rootfs_off + len(squashfs)
 total = len(img)
@@ -94,7 +99,7 @@ SPI NOR 16MB Layout:
   squashfs @ 0x{rootfs_off:06X} ({len(squashfs)//1024}KB)
   FREE       {(total-used)//1024}KB for OTA
 
-mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),4800k(rootfs_a),-(rootfs_b) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0
+mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),4576k(rootfs_a),-(rootfs_b) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0
 rootfstype=squashfs
 bootcmd=bootz 0x41000000 - 0x42000000
 

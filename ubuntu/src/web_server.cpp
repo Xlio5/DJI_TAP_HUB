@@ -1034,13 +1034,17 @@ static void handleFirmwareUpload(int fd) {
         return;
     }
 
-    // Write slot flag: 0x00000000=B, 0xFFFFFFFF=A (on mtdblock0)
-    // Use direct write, not printf|dd (printf produces ASCII, not binary bytes)
+    // Write slot flag + confirmed + retry (A/B OTA with auto-fallback)
+    // Layout: 0xFC000=sot_flag(4B), 0xFC004=confirmed(1B), 0xFC005=retry(1B)
     int slotFd = ::open("/dev/mtdblock0", O_WRONLY);
     if (slotFd >= 0) {
         uint32_t flagVal = runningOnB ? 0xFFFFFFFF : 0x00000000;
         ::lseek(slotFd, 0xFC000, SEEK_SET);
         ::write(slotFd, &flagVal, 4);
+        // Set upgrade as unconfirmed with 3 retries
+        uint8_t buf[2] = {0x00, 0x03};  // confirmed=00(待确认), retry=3
+        ::lseek(slotFd, 0xFC004, SEEK_SET);
+        ::write(slotFd, buf, 2);
         ::close(slotFd);
         sync();
     }
