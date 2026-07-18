@@ -8,7 +8,7 @@ _ts() { echo "[$(date +%H:%M:%S)] $*"; }
 
 case "$1" in
   start)
-    _ts "Starting TUN_NAT_HUB..."
+    _ts "Starting TUN_NAT_HUB v1.3.1..."
 
     # 0. tmpfs for /var/log (squashfs is read-only)
     mount -t tmpfs tmpfs /var/log 2>/dev/null || true
@@ -42,7 +42,7 @@ case "$1" in
             _ts "Flash rootfs_b done (exit=$RC)"
             if [ $RC -eq 0 ]; then
                 # Write 0x00 = slot B (NOR-safe: FF→00 is 1→0 only)
-                printf '\000' | dd of=/dev/mtdblock0 bs=1 count=1 seek=$SLOT_OFFSET 2>/dev/null
+                printf '\000\000\000\000' | dd of=/dev/mtdblock0 bs=4 count=1 seek=$((SLOT_OFFSET/4)) 2>/dev/null
                 _ts "Slot flag set to B (0x00)"
             fi
         fi

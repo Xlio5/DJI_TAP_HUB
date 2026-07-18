@@ -1012,15 +1012,45 @@ static void handleFirmwareUpload(int fd) {
         }
     }
 
-    // Create pending flash marker — S99 init script handles actual flashing
-    // (rootfs MTD is locked while mounted, must flash before rootfs mount)
-    int markerFd = ::open("/var/log/.pending_flash", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (markerFd >= 0) ::close(markerFd);
+    // Detect current slot from kernel cmdline, flash to inactive partition
+    bool runningOnB = false;
+    std::string cmdline = exec({"cat", "/proc/cmdline"});
+    if (cmdline.find("mtdblock4") != std::string::npos) runningOnB = true;
+
+    std::string inactiveDev = runningOnB ? "/dev/mtdblock3" : "/dev/mtdblock4";
+    std::cout << "[fw] current slot: " << (runningOnB ? "B" : "A")
+              << ", flashing to: " << inactiveDev << std::endl;
+
+    // dd squashfs to inactive partition
+    std::string flashCmd = "dd if=" + tmpPath + " of=" + inactiveDev + " bs=4096 2>&1";
+    int rc = system(flashCmd.c_str());
+    if (rc != 0) {
+        ::unlink(tmpPath.c_str());
+        JsonObj obj;
+        obj.pair("ok", JsonValue::boolean(false));
+        obj.pair("error", JsonValue::string("flash write failed"));
+        resp.body = obj.done();
+        resp.send(fd);
+        return;
+    }
+
+    // Write slot flag: 0x00000000=B, 0xFFFFFFFF=A (on mtdblock0)
+    // Use direct write, not printf|dd (printf produces ASCII, not binary bytes)
+    int slotFd = ::open("/dev/mtdblock0", O_WRONLY);
+    if (slotFd >= 0) {
+        uint32_t flagVal = runningOnB ? 0xFFFFFFFF : 0x00000000;
+        ::lseek(slotFd, 0xFC000, SEEK_SET);
+        ::write(slotFd, &flagVal, 4);
+        ::close(slotFd);
+        sync();
+    }
+
+    ::unlink(tmpPath.c_str());
 
     JsonObj obj;
     obj.pair("ok", JsonValue::boolean(true));
     obj.pair("size", JsonValue::number((int)contentLen));
-    obj.pair("message", JsonValue::string("Rootfs staged. Reboot now to flash — system will reboot twice (flash + apply)."));
+    obj.pair("message", JsonValue::string("Flashed to " + inactiveDev + ". Reboot now to switch."));
     resp.body = obj.done();
     resp.send(fd);
 }
