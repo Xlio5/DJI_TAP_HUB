@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 SPI 镜像 — 含 U-Boot env 分区，重启后自动启动
-mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),-(rootfs)
+mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),-(rootfs) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0
 """
 import subprocess, os, struct, binascii
 
@@ -43,7 +43,7 @@ print(f"squashfs: {len(squashfs):>8,} B  ({len(squashfs)/1024/1024:.1f}MB)")
 
 # Build env binary
 bootargs = ("console=ttyS0,115200 root=/dev/mtdblock3 rootfstype=squashfs rootwait "
-            "mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),-(rootfs)")
+            "mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),-(rootfs) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0")
 bootcmd = "bootz 0x41000000 - 0x42000000"
 env_str = "bootargs=" + bootargs + "\0" + "bootcmd=" + bootcmd + "\0"
 env_bytes = env_str.encode().ljust(0x1FFC, b'\0')
@@ -90,7 +90,7 @@ SPI NOR 16MB Layout:
   squashfs @ 0x{rootfs_off:06X} ({len(squashfs)//1024}KB)
   FREE       {(total-used)//1024}KB for OTA
 
-mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),-(rootfs)
+mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),-(rootfs) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0
 root=/dev/mtdblock3 rootfstype=squashfs
 bootcmd=bootz 0x41000000 - 0x42000000
 
