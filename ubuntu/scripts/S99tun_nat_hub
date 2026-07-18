@@ -1,31 +1,35 @@
 #!/bin/sh
-# S99tun_nat_hub — TUN_NAT_HUB V3s BusyBox init 自启脚本
-# DTB dr_mode=peripheral (device-only) — g_serial 自动绑定，无需 mode 切换
+# S99tun_nat_hub — TUN_NAT_HUB V3s BusyBox init
+# DTB dr_mode=peripheral (device-only) — g_serial auto-bind, no mode switch
 set -e
+
+# Timestamp helper
+_ts() { echo "[$(date +%H:%M:%S)] $*"; }
 
 case "$1" in
   start)
-    echo "Starting TUN_NAT_HUB..."
+    _ts "Starting TUN_NAT_HUB..."
 
     # 0. tmpfs for /var/log (squashfs is read-only)
     mount -t tmpfs tmpfs /var/log 2>/dev/null || true
 
-    # 1. daemon 先启动 (循环等 /dev/ttyGS0 出现)
+    # 1. daemon
     /usr/local/bin/usb_tund > /var/log/usb_tund.log 2>&1 &
-    echo "daemon: started"
+    _ts "usb_tund: started"
 
     # 2. TUN + NAT
     /usr/local/bin/setup_v3s.sh
 
-    # 3. Web 面板
+    # 3. Web panel
     /usr/local/bin/web_server > /var/log/web_server.log 2>&1 &
+    _ts "web_server: started"
 
-    # 4. dr_mode=peripheral — 不需要 mode 切换
+    # 4. dr_mode=peripheral — no mode switching needed
     [ -c /dev/ttyGS0 ] && chmod 666 /dev/ttyGS0
-    echo "TUN_NAT_HUB started"
+    _ts "TUN_NAT_HUB ready"
     ;;
   stop)
-    echo "Stopping TUN_NAT_HUB..."
+    _ts "Stopping TUN_NAT_HUB..."
     killall usb_tund web_server 2>/dev/null || true
     ;;
   restart)

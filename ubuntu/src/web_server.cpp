@@ -1072,7 +1072,7 @@ int main() {
         // 每个请求一个线程
         std::thread([cli]() {
             // Peek at request line to detect firmware upload
-            char peek[64] = {};
+            char peek[2048] = {};
             int peekLen = ::recv(cli, peek, sizeof(peek)-1, MSG_PEEK);
             if (peekLen > 0) {
                 peek[peekLen] = '\0';
