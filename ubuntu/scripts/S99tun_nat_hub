@@ -10,6 +10,10 @@ case "$1" in
   start)
     echo "Starting TUN_NAT_HUB..."
 
+    # 0. tmpfs for /var/log (squashfs is read-only)
+    mount -t tmpfs tmpfs /var/log 2>/dev/null || true
+    echo "tmpfs: /var/log mounted"
+
     # 1. daemon 先启动 (循环等 /dev/ttyGS0 出现)
     /usr/local/bin/usb_tund > /var/log/usb_tund.log 2>&1 &
     echo "daemon: started"
