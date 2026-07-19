@@ -33,7 +33,7 @@
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.3.1"   // 固件版本 — 改这里全局生效
+#define VERSION     "1.4.2"   // 固件版本 — 改这里全局生效
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
@@ -1035,7 +1035,8 @@ static void handleFirmwareUpload(int fd) {
     std::cout << "[fw] ERASE: " << eraseCmd << std::endl;
     system(eraseCmd.c_str());
 
-    std::string flashCmd = "dd if=" + tmpPath + " of=" + inactiveDev + " bs=4096 2>&1";
+    std::cout << "[fw] dd " << tmpPath << " -> " << inactiveDev << std::endl;
+	std::string flashCmd = "dd if=" + tmpPath + " of=" + inactiveDev + " bs=4096 2>&1";
     std::cout << "[fw] DD: " << flashCmd << std::endl;
     int rc = system(flashCmd.c_str());
     std::cout << "[fw] DD: exit=" << rc << std::endl;
