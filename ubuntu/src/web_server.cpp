@@ -1049,11 +1049,21 @@ static void handleFirmwareUpload(int fd) {
     std::cout << "[fw] VFY: " << (vfy.find("hsqs") != std::string::npos ? "hsqs OK" : "hsqs MISSING!") << std::endl;
     int slotFd = ::open("/dev/mtdblock0", O_WRONLY);
     if (slotFd >= 0) {
-        uint32_t flagVal = runningOnB ? 0xFFFFFFFF : 0x00000000;
-        ::lseek(slotFd, 0xFC000, SEEK_SET); ::write(slotFd, &flagVal, 4);
-        uint8_t ctrl[2] = {0x00, 0x03}; ::lseek(slotFd, 0xFC004, SEEK_SET); ::write(slotFd, ctrl, 2);
+        // TUN_NAT_HUB A/B OTA ctl block @ 0xFC000 (6 bytes):
+        // [0] flag:       0xFF=A(mtdblock3), 0x00=B(mtdblock4) — TARGET slot
+        // [1] confirmed:  0xFF=stable, 0x00=trial
+        // [2] retry:      remaining trial boots (decremented per boot by SPL)
+        // [3] version:    OTA protocol version (0x01)
+        // [4] last_slot:  source slot before switch (for fallback)
+        // [5] boot_count: wraps on each boot
+        uint8_t lastSlot = runningOnB ? 0x00 : 0xFF;     // B or A
+        uint8_t tgtFlag  = runningOnB ? 0xFF : 0x00;     // A or B
+        uint8_t ctl[6] = {tgtFlag, 0x00, 0x03, 0x01, lastSlot, 0x00};
+        ::lseek(slotFd, 0xFC000, SEEK_SET); ::write(slotFd, ctl, 6);
         ::close(slotFd); sync();
-        std::cout << "[fw] FLAG: slot=" << (flagVal ? "0xFF(A)" : "0x00(B)") << " c=00 r=3" << std::endl;
+        std::cout << "[fw] FLAG: target=" << (tgtFlag ? "A" : "B")
+                  << " last=" << (lastSlot ? "A" : "B")
+                  << " trial=3 retries" << std::endl;
     }
     int vf2 = ::open("/dev/mtdblock0", O_RDONLY);
     if (vf2 >= 0) {
