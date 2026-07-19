@@ -44,7 +44,7 @@ constexpr int    CFG_MAX    = 0x3000;   // 12KB
 
 // 带宽历史（用于计算实时 Mbps）
 struct BwPrev {
-    double time = 0;
+    double ts = 0;
     uint64_t tx = 0, rx = 0;
 };
 static BwPrev g_bwPrev;  // heartbeat 用
@@ -645,8 +645,8 @@ static std::string apiHeartbeat() {
 
     std::string bandwidth = "0.0";
     double now = nowSec();
-    if (g_bwPrev.time > 0) {
-        double elapsed = now - g_bwPrev.time;
+    if (g_bwPrev.ts > 0) {
+        double elapsed = now - g_bwPrev.ts;
         if (elapsed > 0) {
             double mbps = ((tx - g_bwPrev.tx) + (rx - g_bwPrev.rx)) * 8.0 / (elapsed * 1e6);
             char buf[32];
@@ -718,8 +718,8 @@ static std::string apiStats() {
     // 实时带宽
     std::string bw = "0.0";
     double now = nowSec();
-    if (g_stPrev.time > 0) {
-        double elapsed = now - g_stPrev.time;
+    if (g_stPrev.ts > 0) {
+        double elapsed = now - g_stPrev.ts;
         if (elapsed > 0) {
             double mbps = (txBytes - g_stPrev.tx) * 8.0 / (elapsed * 1e6);
             char buf[32];
@@ -1100,7 +1100,7 @@ int main() {
         if (cli < 0) { if (errno == EINTR) continue; break; }
 
         // 每个请求一个线程
-        std::thread([cli]() {
+        // single-threaded (ARM static NPTL compat)
             // Peek at request line to detect firmware upload
             char peek[2048] = {};
             int peekLen = ::recv(cli, peek, sizeof(peek)-1, MSG_PEEK);
@@ -1110,7 +1110,7 @@ int main() {
                 if (peekStr.find("POST /api/firmware/upload") != std::string::npos) {
                     handleFirmwareUpload(cli);
                     close(cli);
-                    return;
+                    continue;
                 }
             }
 
@@ -1123,7 +1123,6 @@ int main() {
                 resp.send(cli);
             }
             close(cli);
-        }).detach();
     }
 
     close(srv);
