@@ -284,12 +284,12 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                     val text = java.net.URL("http://10.0.0.1:8080/api/heartbeat").openConnection()
                         .apply { connectTimeout = 2000; readTimeout = 2000 }
                         .getInputStream().bufferedReader().readText()
-                    hbDaemon = text.contains("\"daemon\": true")
-                    hbTty = text.contains("\"tty_ready\": true")
-                    hbTun = text.contains("\"tun_up\": true")
-                    hbBw = Regex("\"bandwidth_mbps\": \"([^\"]+)\"").find(text)?.groupValues?.get(1) ?: "0.0"
-                    hbTx = Regex("\"tx_bytes\": (\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-                    hbRx = Regex("\"rx_bytes\": (\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                    hbDaemon = text.contains("\"daemon\":true")
+                    hbTty = text.contains("\"tty_ready\":true")
+                    hbTun = text.contains("\"tun_up\":true")
+                    hbBw = Regex("\"bandwidth_mbps\":\"([^\"]+)\"").find(text)?.groupValues?.get(1) ?: "0.0"
+                    hbTx = Regex("\"tx_bytes\":(\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                    hbRx = Regex("\"rx_bytes\":(\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
                     hbCount++
                 } catch (_: Exception) { hbDaemon = false; hbTty = false; hbTun = false }
             }
