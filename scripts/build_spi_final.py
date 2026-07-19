@@ -42,7 +42,8 @@ print(f"zImage:   {len(zimage):>8,} B  ({len(zimage)/1024/1024:.1f}MB)")
 print(f"squashfs: {len(squashfs):>8,} B  ({len(squashfs)/1024/1024:.1f}MB)")
 
 # Build env binary
-bootargs = ("console=ttyS0,115200 rootfstype=squashfs rootwait "
+bootargs = ("console=ttyS0,115200 tun_nat_version=v1.4.3 panic=5 sunxi_wdt.nowayout=1 "
+            "rootfstype=squashfs rootwait "
             "mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),4576k(rootfs_a),-(rootfs_b) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0")
 bootcmd = "bootz 0x41000000 - 0x42000000"
 env_str = "bootargs=" + bootargs + "\0" + "bootcmd=" + bootcmd + "\0"

@@ -1066,6 +1066,10 @@ static void handleFirmwareUpload(int fd) {
     obj.pair("message", JsonValue::string("Flashed to " + inactiveDev + ". Reboot now to switch."));
     resp.body = obj.done(); resp.send(fd);
     std::cout << "[fw] === UPGRADE DONE ===" << std::endl;
+    // 自动重启：清空页面缓存，2秒后 reboot
+    sync();
+    std::cout << "[fw] Rebooting in 2s..." << std::endl;
+    system("sleep 2 && reboot &");
 }
 
 int main() {
