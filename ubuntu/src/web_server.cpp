@@ -33,7 +33,7 @@
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.3.1"   // 固件版本 — 改这里全局生效
+#define VERSION     "1.4.0"   // 固件版本 — 改这里全局生效
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
@@ -939,129 +939,106 @@ static std::string findHeader(const std::string& headers, const std::string& key
 static void handleFirmwareUpload(int fd) {
     Response resp;
     resp.contentType = "application/json";
-
-    // Read request line
+    std::cout << "[fw] === UPGRADE START ===" << std::endl;
     std::string reqLine = readLine(fd);
     if (reqLine.find("POST") == std::string::npos) {
-        resp.code = 405;
-        resp.body = R"({"ok":false,"error":"method not allowed"})";
-        resp.send(fd);
-        return;
+        std::cout << "[fw] ERR: not POST" << std::endl;
+        resp.code = 405; resp.body = R"({"ok":false,"error":"method not allowed"})";
+        resp.send(fd); return;
     }
-
-    // Read all headers
     std::string headers;
-    while (true) {
-        std::string line = readLine(fd);
-        if (line.empty()) break;
-        headers += line + "\n";
-    }
-
+    while (true) { std::string line = readLine(fd); if (line.empty()) break; headers += line + "\n"; }
     auto clStr = findHeader(headers, "Content-Length");
     size_t contentLen = clStr.empty() ? 0 : std::stoull(clStr);
-
-    // rootfs.squashfs is ~4MB, allow 1–8MB
+    std::cout << "[fw] SIZE: " << contentLen << " bytes (" << (contentLen/1024) << "KB)" << std::endl;
     if (contentLen < 1024*1024 || contentLen > 8*1024*1024) {
-        resp.code = 400;
-        resp.body = R"({"ok":false,"error":"invalid size, expect rootfs.squashfs ~4MB"})";
-        resp.send(fd);
-        return;
+        std::cout << "[fw] ERR: invalid size" << std::endl;
+        resp.code = 400; resp.body = R"({"ok":false,"error":"invalid size"})";
+        resp.send(fd); return;
     }
-
-    // Stream body to /var/log/new_rootfs.sq (tmpfs, writable even on squashfs)
     std::string tmpPath = "/var/log/new_rootfs.sq";
     int fwFd = ::open(tmpPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fwFd < 0) {
+        std::cout << "[fw] ERR: cannot create tmp file" << std::endl;
         resp.body = R"({"ok":false,"error":"cannot create temp file"})";
-        resp.send(fd);
-        return;
+        resp.send(fd); return;
     }
-
-    char buf[32768];
-    size_t remaining = contentLen;
+    char buf[32768]; size_t remaining = contentLen, lastRpt = 0;
     while (remaining > 0) {
         size_t chunk = remaining < sizeof(buf) ? remaining : sizeof(buf);
-        ssize_t n = ::recv(fd, buf, chunk, 0);
-        if (n <= 0) break;
-        ::write(fwFd, buf, n);
-        remaining -= n;
-    }
-    ::close(fwFd);
-
-    if (remaining > 0) {
-        ::unlink(tmpPath.c_str());
-        resp.body = R"({"ok":false,"error":"upload incomplete"})";
-        resp.send(fd);
-        return;
-    }
-
-    // Validate squashfs magic: first 4 bytes must be "hsqs"
-    int vFd = ::open(tmpPath.c_str(), O_RDONLY);
-    if (vFd >= 0) {
-        uint8_t magic[4];
-        ::read(vFd, magic, 4);
-        ::close(vFd);
-        if (magic[0] != 'h' || magic[1] != 's' || magic[2] != 'q' || magic[3] != 's') {
-            ::unlink(tmpPath.c_str());
-            JsonObj obj;
-            obj.pair("ok", JsonValue::boolean(false));
-            obj.pair("error", JsonValue::string("not a valid squashfs (no hsqs magic)"));
-            resp.body = obj.done();
-            resp.send(fd);
-            return;
+        ssize_t n = ::recv(fd, buf, chunk, 0); if (n <= 0) break;
+        ::write(fwFd, buf, n); remaining -= n;
+        if (contentLen - remaining - lastRpt >= 512*1024) {
+            lastRpt = contentLen - remaining;
+            std::cout << "[fw] RECV: " << (lastRpt/1024) << "/" << (contentLen/1024) << "KB" << std::endl;
         }
     }
-
-    // Detect current slot from kernel cmdline, flash to inactive partition
+    ::close(fwFd);
+    std::cout << "[fw] RECV: done, " << (contentLen-remaining) << " bytes" << std::endl;
+    if (remaining > 0) {
+        std::cout << "[fw] ERR: upload incomplete" << std::endl;
+        ::unlink(tmpPath.c_str()); resp.body = R"({"ok":false,"error":"upload incomplete"})";
+        resp.send(fd); return;
+    }
+    int vFd = ::open(tmpPath.c_str(), O_RDONLY);
+    if (vFd >= 0) {
+        uint8_t magic[4]; ::read(vFd, magic, 4); ::close(vFd);
+        std::cout << "[fw] MAGIC: " << magic[0] << magic[1] << magic[2] << magic[3] << " (expect hsqs)" << std::endl;
+        if (magic[0] != 'h' || magic[1] != 's' || magic[2] != 'q' || magic[3] != 's') {
+            std::cout << "[fw] ERR: bad magic" << std::endl;
+            ::unlink(tmpPath.c_str());
+            JsonObj obj; obj.pair("ok", JsonValue::boolean(false));
+            obj.pair("error", JsonValue::string("bad squashfs magic"));
+            resp.body = obj.done(); resp.send(fd); return;
+        }
+    }
+    struct stat st;
+    if (::stat(tmpPath.c_str(), &st) == 0 && st.st_size > 12) {
+        int tf = ::open(tmpPath.c_str(), O_RDONLY);
+        if (tf >= 0) {
+            char tail[12]; ::lseek(tf, st.st_size - 12, SEEK_SET); ::read(tf, tail, 12); ::close(tf);
+            if (memcmp(tail, "TUN_NAT_HUB", 11) == 0) {
+                uint32_t crc = *(uint32_t*)(tail + 8);
+                std::cout << "[fw] TAIL: CRC32=0x" << std::hex << crc << std::dec << " OK" << std::endl;
+            } else { std::cout << "[fw] TAIL: not present" << std::endl; }
+        }
+    }
     bool runningOnB = false;
     std::string cmdline = exec({"cat", "/proc/cmdline"});
     if (cmdline.find("mtdblock4") != std::string::npos) runningOnB = true;
-
     std::string inactiveDev = runningOnB ? "/dev/mtdblock3" : "/dev/mtdblock4";
-    std::cout << "[fw] current slot: " << (runningOnB ? "B" : "A")
-              << ", flashing to: " << inactiveDev << std::endl;
-
-    // dd squashfs to inactive partition
+    std::cout << "[fw] SLOT: " << (runningOnB ? "B->A" : "A->B") << " target=" << inactiveDev << std::endl;
     std::string flashCmd = "dd if=" + tmpPath + " of=" + inactiveDev + " bs=4096 2>&1";
+    std::cout << "[fw] DD: " << flashCmd << std::endl;
     int rc = system(flashCmd.c_str());
+    std::cout << "[fw] DD: exit=" << rc << std::endl;
     if (rc != 0) {
-        ::unlink(tmpPath.c_str());
-        JsonObj obj;
-        obj.pair("ok", JsonValue::boolean(false));
+        ::unlink(tmpPath.c_str()); JsonObj obj; obj.pair("ok", JsonValue::boolean(false));
         obj.pair("error", JsonValue::string("flash write failed"));
-        resp.body = obj.done();
-        resp.send(fd);
-        return;
+        resp.body = obj.done(); resp.send(fd); return;
     }
-
-    // Write slot flag + confirmed + retry (A/B OTA with auto-fallback)
-    // Layout: 0xFC000=sot_flag(4B), 0xFC004=confirmed(1B), 0xFC005=retry(1B)
+    std::string vfy = exec({"sh", "-c", ("dd if=" + inactiveDev + " bs=1 count=16 2>/dev/null | hexdump -C 2>/dev/null").c_str()});
+    std::cout << "[fw] VFY: " << (vfy.find("hsqs") != std::string::npos ? "hsqs OK" : "hsqs MISSING!") << std::endl;
     int slotFd = ::open("/dev/mtdblock0", O_WRONLY);
     if (slotFd >= 0) {
         uint32_t flagVal = runningOnB ? 0xFFFFFFFF : 0x00000000;
-        ::lseek(slotFd, 0xFC000, SEEK_SET);
-        ::write(slotFd, &flagVal, 4);
-        // Set upgrade as unconfirmed with 3 retries
-        uint8_t buf[2] = {0x00, 0x03};  // confirmed=00(待确认), retry=3
-        ::lseek(slotFd, 0xFC004, SEEK_SET);
-        ::write(slotFd, buf, 2);
-        ::close(slotFd);
-        sync();
+        ::lseek(slotFd, 0xFC000, SEEK_SET); ::write(slotFd, &flagVal, 4);
+        uint8_t ctrl[2] = {0x00, 0x03}; ::lseek(slotFd, 0xFC004, SEEK_SET); ::write(slotFd, ctrl, 2);
+        ::close(slotFd); sync();
+        std::cout << "[fw] FLAG: slot=" << (flagVal ? "0xFF(A)" : "0x00(B)") << " c=00 r=3" << std::endl;
     }
-
+    int vf2 = ::open("/dev/mtdblock0", O_RDONLY);
+    if (vf2 >= 0) {
+        uint8_t ctl[6]; ::lseek(vf2, 0xFC000, SEEK_SET); ::read(vf2, ctl, 6); ::close(vf2);
+        std::cout << "[fw] VFY: ctl=" << std::hex << (int)ctl[4] << "|" << (int)ctl[5] << std::dec << std::endl;
+    }
     ::unlink(tmpPath.c_str());
-
-    JsonObj obj;
-    obj.pair("ok", JsonValue::boolean(true));
+    JsonObj obj; obj.pair("ok", JsonValue::boolean(true));
     obj.pair("size", JsonValue::number((int)contentLen));
     obj.pair("message", JsonValue::string("Flashed to " + inactiveDev + ". Reboot now to switch."));
-    resp.body = obj.done();
-    resp.send(fd);
+    resp.body = obj.done(); resp.send(fd);
+    std::cout << "[fw] === UPGRADE DONE ===" << std::endl;
 }
-
-// ═══════════════════════════════════════════════════════════════
-// 主函数
-// ═══════════════════════════════════════════════════════════════
 
 int main() {
     // 检测 LAN 网口名
