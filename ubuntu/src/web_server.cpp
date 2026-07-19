@@ -38,7 +38,9 @@ constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
 constexpr int    MAX_CFG    = 32768;
-const char*      CFG_FILE   = "/root/tun_nat_hub_config.json";
+const char*      CFG_DEV    = "/dev/mtdblock0";
+constexpr int    CFG_OFFSET = 0xFD000;  // uboot 分区尾部空闲区(12KB, 距SPL 1012KB)
+constexpr int    CFG_MAX    = 0x3000;   // 12KB
 
 // 带宽历史（用于计算实时 Mbps）
 struct BwPrev {
@@ -270,15 +272,18 @@ static std::string detectLanIface() {
 
 static Config loadConfig() {
     Config cfg;
-    std::ifstream f(CFG_FILE);
-    if (!f.is_open()) {
-        auto detected = detectLanSubnet();
-        if (!detected.empty()) cfg.lanSubnet = detected;
-        return cfg;
-    }
-    std::string json((std::istreambuf_iterator<char>(f)),
-                      std::istreambuf_iterator<char>());
-    f.close();
+    // Read config from SPI Flash (persistent, survives reboot)
+    int fd = ::open(CFG_DEV, O_RDONLY);
+    if (fd < 0) return cfg;
+    uint16_t len = 0;
+    ::lseek(fd, CFG_OFFSET, SEEK_SET);
+    ssize_t r = ::read(fd, &len, 2);
+    if (r != 2 || len == 0 || len > CFG_MAX) { ::close(fd); return cfg; }
+    std::vector<char> buf(len + 1);
+    ::read(fd, buf.data(), len);
+    buf[len] = '\0';
+    ::close(fd);
+    std::string json(buf.data(), len);
 
     auto v = jsonStr(json, "rtsp_url");
     if (!v.empty()) cfg.rtspUrl = v;
@@ -344,27 +349,40 @@ static Config loadConfig() {
 }
 
 static void saveConfig(const Config& cfg) {
-    std::ofstream f(CFG_FILE);
-    if (!f.is_open()) return;
-    f << "{\n";
-    f << "  \"rtsp_url\": \"" << cfg.rtspUrl << "\",\n";
-    f << "  \"lan_subnet\": \"" << cfg.lanSubnet << "\",\n";
-    f << "  \"tun_subnet\": \"" << cfg.tunSubnet << "\",\n";
-    f << "  \"forwards\": [\n";
+    // Write config to SPI Flash @0xFD000 (persistent across reboots)
+    std::stringstream ss;
+    ss << "{\n";
+    ss << "  \"rtsp_url\": \"" << cfg.rtspUrl << "\",\n";
+    ss << "  \"lan_subnet\": \"" << cfg.lanSubnet << "\",\n";
+    ss << "  \"tun_subnet\": \"" << cfg.tunSubnet << "\",\n";
+    ss << "  \"forwards\": [\n";
     for (size_t i = 0; i < cfg.forwards.size(); i++) {
         auto& r = cfg.forwards[i];
-        f << "    {\"proto\":\"" << r.proto << "\",\"port\":" << r.port << ",\"dest\":\"" << r.dest << "\"}";
-        f << (i+1 < cfg.forwards.size() ? ",\n" : "\n");
+        ss << "    {\"proto\":\"" << r.proto << "\",\"port\":" << r.port << ",\"dest\":\"" << r.dest << "\"}";
+        ss << (i+1 < cfg.forwards.size() ? ",\n" : "\n");
     }
-    f << "  ],\n";
-    f << "  \"cameras\": [\n";
+    ss << "  ],\n";
+    ss << "  \"cameras\": [\n";
     for (size_t i = 0; i < cfg.cameras.size(); i++) {
         auto& c = cfg.cameras[i];
-        f << "    {\"name\":\"" << c.name << "\",\"url\":\"" << c.url << "\"}";
-        f << (i+1 < cfg.cameras.size() ? ",\n" : "\n");
+        ss << "    {\"name\":\"" << c.name << "\",\"url\":\"" << c.url << "\"}";
+        ss << (i+1 < cfg.cameras.size() ? ",\n" : "\n");
     }
-    f << "  ]\n}\n";
-    f.close();
+    ss << "  ]\n}\n";
+    std::string json = ss.str();
+    if (json.size() > CFG_MAX - 2) {
+        std::cerr << "[cfg] ERROR: config too large (" << json.size() << " > " << (CFG_MAX-2) << ")" << std::endl;
+        return;
+    }
+    int fd = ::open(CFG_DEV, O_WRONLY);
+    if (fd < 0) { std::cerr << "[cfg] ERROR: cannot open " << CFG_DEV << std::endl; return; }
+    uint16_t len = (uint16_t)json.size();
+    ::lseek(fd, CFG_OFFSET, SEEK_SET);
+    ::write(fd, &len, 2);
+    ::write(fd, json.c_str(), len);
+    ::close(fd);
+    sync();
+    std::cout << "[cfg] saved " << len << " bytes to " << CFG_DEV << " @0x" << std::hex << CFG_OFFSET << std::dec << std::endl;
 }
 
 // ═══════════════════════════════════════════════════════════════

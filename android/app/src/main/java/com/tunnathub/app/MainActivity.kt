@@ -306,11 +306,11 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                     .apply { connectTimeout = 2000; readTimeout = 2000 }
                     .getInputStream().bufferedReader().readText()
                 AppLog.d("TunNatHub", "获取 V3s 配置: OK (${text.length} bytes)")
-                val camList = Regex("\"name\": \"([^\"]+)\"[^}]*\"url\": \"([^\"]+)\"").findAll(text).map {
+                val camList = Regex("\"name\":\\s*\"([^\"]+)\"[^}]*\"url\":\\s*\"([^\"]+)\"").findAll(text).map {
                     CamInfo(it.groupValues[1], it.groupValues[2])
                 }.toList()
                 if (camList.isNotEmpty()) { cameras = camList; if (rtspUrl.isEmpty()) rtspUrl = camList[0].url }
-                forwards = Regex("\"proto\": \"(\\w+)\"[^}]*\"port\": (\\d+)[^}]*\"dest\": \"([^\"]+)\"").findAll(text).map {
+                forwards = Regex("\"proto\":\\s*\"(\\w+)\"[^}]*\"port\":\\s*(\\d+)[^}]*\"dest\":\\s*\"([^\"]+)\"").findAll(text).map {
                     FwdInfo(it.groupValues[1], it.groupValues[2].toInt(), it.groupValues[3])
                 }.toList()
                 val lanMatch = Regex("\"lan_subnet\": \"(\\d+\\.\\d+\\.\\d+)\\.0/(\\d+)\"").find(text)
