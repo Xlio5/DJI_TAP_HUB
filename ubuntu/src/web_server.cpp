@@ -1029,6 +1029,12 @@ static void handleFirmwareUpload(int fd) {
     if (cmdline.find("mtdblock4") != std::string::npos) runningOnB = true;
     std::string inactiveDev = runningOnB ? "/dev/mtdblock3" : "/dev/mtdblock4";
     std::cout << "[fw] SLOT: " << (runningOnB ? "B->A" : "A->B") << " target=" << inactiveDev << std::endl;
+    // Erase inactive partition first (NOR flash requires explicit erase before write)
+    std::string mtdDev = runningOnB ? "/dev/mtd3" : "/dev/mtd4";
+    std::string eraseCmd = "flash_erase -q " + mtdDev + " 0 0 2>/dev/null || mtd_debug erase " + mtdDev + " 0 1048576 2>/dev/null || true";
+    std::cout << "[fw] ERASE: " << eraseCmd << std::endl;
+    system(eraseCmd.c_str());
+
     std::string flashCmd = "dd if=" + tmpPath + " of=" + inactiveDev + " bs=4096 2>&1";
     std::cout << "[fw] DD: " << flashCmd << std::endl;
     int rc = system(flashCmd.c_str());
