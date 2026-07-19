@@ -548,6 +548,9 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
       <div id="fw-result" style="margin-top:4px;font-size:0.85em"></div>
     </div>
     <div class="card"><h3>🌐 网口信息</h3><pre class="code-block" id="net-info"></pre></div>
+      <div class="grid2" style="margin-top:16px">
+        <div class="card"><h3>System</h3><pre class="code-block" id="sys-info">loading...</pre></div>
+        <div class="card"><h3>iptables</h3><pre class="code-block" id="ipt-info" style="max-height:200px"></pre></div></div>
   </div>
   <div class="info" style="margin-top:16px">
     <b>服务管理:</b> <code>systemctl restart tun_nat_hub</code> 或 <code>/etc/init.d/S99tun_nat_hub restart</code>
