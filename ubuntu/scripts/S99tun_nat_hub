@@ -34,10 +34,11 @@ case "$1" in
     /usr/local/bin/usb_tund > /var/log/usb_tund.log 2>&1 &
     _ts "usb_tund: started"
 
-    /usr/local/bin/setup_v3s.sh
-
+    # Start web_server BEFORE network setup (doesn't need eth0)
     /usr/local/bin/web_server > /var/log/web_server.log 2>&1 &
     _ts "web_server: started"
+
+    /usr/local/bin/setup_v3s.sh
 
     [ -c /dev/ttyGS0 ] && chmod 666 /dev/ttyGS0
 
