@@ -854,6 +854,16 @@ static Response handleRequest(const Request& req) {
         } else if (p == "/api/iptables") {
             resp.contentType = "text/plain; charset=utf-8";
             resp.body = apiIptables();
+        } else if (p == "/api/rc") {
+            // 读取 dji_rc 守护进程写入的状态文件
+            std::ifstream f("/var/log/rc_state.json");
+            if (f.is_open()) {
+                std::stringstream ss; ss << f.rdbuf();
+                resp.body = ss.str();
+                if (resp.body.empty()) resp.body = R"({"error":"no RC data yet"})";
+            } else {
+                resp.body = R"({"error":"RC daemon not running"})";
+            }
         } else if (p == "/api/version") {
             JsonObj obj;
             obj.pair("version", JsonValue::string(VERSION));

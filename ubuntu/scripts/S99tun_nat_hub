@@ -42,6 +42,12 @@ case "$1" in
     /usr/local/bin/web_server > /var/log/web_server.log 2>&1 &
     _ts "web_server: started"
 
+    # DJI RC serial decoder (UART1/2 input → SBUS output + /var/log/rc_state.json)
+    if [ -c /dev/ttyS1 ] || [ -c /dev/ttyS2 ]; then
+        /usr/local/bin/dji_rc > /var/log/dji_rc.log 2>&1 &
+        _ts "dji_rc: started"
+    fi
+
     /usr/local/bin/setup_v3s.sh
 
     [ -c /dev/ttyGS0 ] && chmod 666 /dev/ttyGS0

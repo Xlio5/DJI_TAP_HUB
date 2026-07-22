@@ -2,7 +2,7 @@
 # 构建: cmake -B build && cmake --build build
 
 cmake_minimum_required(VERSION 3.16)
-project(usb_tund VERSION 1.0.0 LANGUAGES CXX)
+project(usb_tund VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,4 +50,19 @@ target_link_libraries(web_server PRIVATE
 )
 
 install(TARGETS usb_tund web_server DESTINATION /usr/local/bin)
+
+# DJI RC 双路串口解码守护进程
+add_executable(dji_rc
+    src/dji_rc.cpp
+    src/duml.c
+    src/rc_decode.c
+    src/chmap.c
+    src/sbus.c
+)
+
+target_link_libraries(dji_rc PRIVATE
+    Threads::Threads
+)
+
+install(TARGETS dji_rc DESTINATION /usr/local/bin)
 install(FILES ${CMAKE_SOURCE_DIR}/../protocol/frame.h DESTINATION /usr/local/include/tun_nat_hub)
