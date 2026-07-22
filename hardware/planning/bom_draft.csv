@@ -1,0 +1,25 @@
+Category,Reference,Part,Preferred Spec,Notes
+SoC,U1,Allwinner V3s,eLQFP128,Follow Lichee Pi Zero reference design
+Crystal,Y1,Main crystal,24MHz,Use Lichee Pi Zero values
+Crystal,Y2,RTC crystal,32.768kHz,Use Lichee Pi Zero values
+Flash,U2,SPI NOR,32MB preferred / 16MB minimum,W25Q128/GD25Q128/MX25L128 class or larger
+Connector,J1,USB connector,USB-C USB2.0 wiring,Device/gadget connection to DJI RC
+Protection,D_USB,USB ESD diode,Low capacitance,Place near USB connector
+Connector,J2,RJ45 with magnetics,100M Ethernet,Follow Lichee Pi Zero Dock or equivalent
+Connector,J3,TF card socket,microSD,Keep for EVT recovery
+Connector,J4,UART0 header,1x4 2.54mm or compact equivalent,3V3/TX/RX/GND
+Connector,J5,UART1 header,1x4 2.54mm or compact equivalent,3V3/TX/RX/GND
+Connector,J6,UART2 header,1x6 2.54mm or compact equivalent,3V3/TX/RX/RTS/CTS/GND
+LED,D_PWR,Power LED,Single color,Power indication
+LED,D_SYS,System LED,Single color optional,Optional if RGB covers system status
+LED,D_RGB,RGB status LED,SK6812 Mini-E preferred,Use 3.3V-compatible variant if possible
+Button,SW1,RESET button,Tact switch,Board reset
+Button,SW2,RECOVERY/FEL button,Tact switch or pads,Recovery/FEL path
+Resistor,R_RGB,RGB data resistor,330R,Series resistor near RGB DIN
+Resistor,R_RGB_OPT,RGB data option,0R,GPIO isolation/reroute option
+Capacitor,C_RGB1,RGB decoupling,0.1uF,Close to RGB LED
+Capacitor,C_RGB2,RGB bulk,1uF-10uF,Near RGB LED or rail segment
+TestPoint,TP_PWR,Power test points,5V/3V3/VCPU/AVCC/GND,EVT bring-up
+TestPoint,TP_USB,USB test points,VBUS/D+/D-/GND,EVT bring-up
+TestPoint,TP_SPI,SPI test points,CS/SCK/MOSI/MISO,EVT bring-up and recovery
+TestPoint,TP_UART,UART test points,UART0/1/2 TX/RX,EVT bring-up
