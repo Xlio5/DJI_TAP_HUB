@@ -103,6 +103,8 @@ static int uart_open(const char *dev, int baud)
 
 // ── 处理一个DUML包 → 更新端口状态 ──────────────────────────────
 
+static void sbus_send_if_p20(DjiPort *p);  // forward: 定义在 SBUS 输出区域
+
 static void handle_pkt(DjiPort *p, const duml_pkt_t *pk)
 {
     rc_state_t st;
@@ -119,6 +121,7 @@ static void handle_pkt(DjiPort *p, const duml_pkt_t *pk)
         p->state  = st;
         p->good++;
         p->last_us = ts;
+        sbus_send_if_p20(p);  // P20 每帧立刻发 SBUS, P0 跳过
     } else {
         p->other++;
     }
@@ -272,42 +275,32 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
     }
 }
 
-// ── SBUS 输出线程: 独立 7ms 周期, 不受主循环 100ms 影响 ──────
+// ── SBUS 输出: P20 每解一帧就立刻发 ──────────────────────────────
 
-static void sbus_thread()
+static void sbus_send_if_p20(DjiPort *p)
 {
-    while (!g_stop.load(std::memory_order_relaxed)) {
-        struct timespec ts = {0, 7000000L};  // 7ms ≈ 140Hz
-        nanosleep(&ts, nullptr);
+    // 只在 P20(921600 摇杆路)新包到来时发 SBUS, 速率自然等于 DJI RC 发包速率
+    if (p != &g_p20) return;
+    if (g_p20.state.type == RC_NONE) return;
 
-        rc_state_t s20, s0;
-        int64_t l20, l0;
+    int64_t n = now_us();
 
-        g_mtx.lock();
-        s20 = g_p20.state; l20 = g_p20.last_us;
-        s0  = g_p0.state;  l0  = g_p0.last_us;
-        g_mtx.unlock();
+    // 失联保护: P20 超 500ms 无数据 → 不发
+    if ((n - g_p20.last_us) > 500000LL) return;
 
-        int64_t n = now_us();
+    int64_t age20 = n - g_p20.last_us;
+    int64_t age0  = (g_p0.state.type == RC_NONE) ? INT64_MAX : n - g_p0.last_us;
 
-        // 失联保护: P20 超 500ms 无数据 → 不发 SBUS
-        if (s20.type == RC_NONE || (n - l20) > 500000LL)
-            continue;
+    rc_state_t m;
+    rc_merge(&g_p20.state, age20, &g_p0.state, age0, 500000LL, &m);
 
-        int64_t age20 = n - l20;
-        int64_t age0  = (s0.type == RC_NONE) ? INT64_MAX : n - l0;
+    if (m.type != RC_NONE) {
+        uint16_t ch[CH_COUNT];
+        chmap_build(&m, ch);
 
-        rc_state_t m;
-        rc_merge(&s20, age20, &s0, age0, 500000LL, &m);
-
-        if (m.type != RC_NONE) {
-            uint16_t ch[CH_COUNT];
-            chmap_build(&m, ch);
-
-            uint8_t frame[SBUS_FRAME_LEN];
-            sbus_encode(ch, frame);
-            ::write(g_p20.fd, frame, SBUS_FRAME_LEN);  // ttyS1 TX
-        }
+        uint8_t frame[SBUS_FRAME_LEN];
+        sbus_encode(ch, frame);
+        ::write(g_p20.fd, frame, SBUS_FRAME_LEN);
     }
 }
 
@@ -348,11 +341,10 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    // 启动接收线程 + SBUS 发送线程
-    std::thread t1, t2, t3;
+    // 启动接收线程 (SBUS 在 P20 rx_thread 的 handle_pkt 里事件驱动发送)
+    std::thread t1, t2;
     if (g_p20.fd >= 0) t1 = std::thread(rx_thread, &g_p20);
     if (g_p0.fd  >= 0) t2 = std::thread(rx_thread, &g_p0);
-    if (g_p20.fd >= 0) t3 = std::thread(sbus_thread);  // 独立 7ms SBUS, 不受主循环影响
 
     // 主循环: 状态文件写入 + 控制台打印 (100ms, SBUS 走独立线程)
     std::printf("[dji_rc] Ctrl+C 停止\n\n");
@@ -395,7 +387,6 @@ int main(int argc, char **argv)
     g_stop.store(true);
     if (t1.joinable()) t1.join();
     if (t2.joinable()) t2.join();
-    if (t3.joinable()) t3.join();
     if (g_p20.fd >= 0) ::close(g_p20.fd);
     if (g_p0.fd  >= 0) ::close(g_p0.fd);
     return 0;
