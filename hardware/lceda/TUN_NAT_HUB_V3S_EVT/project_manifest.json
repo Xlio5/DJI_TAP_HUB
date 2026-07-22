@@ -1,0 +1,56 @@
+{
+  "tool": "JLCEDA Pro",
+  "created_at": "2026-07-22",
+  "project": {
+    "uuid": "ea44ac816ee348db98a34dc6493696a8",
+    "friendly_name": "TUN_NAT_HUB V3S EVT",
+    "description": "V3S USB gateway + Ethernet EVT hardware project",
+    "team_uuid": "91fe76a0d4664f79bb99a6d7f0118eba"
+  },
+  "schematic": {
+    "uuid": "13012ff4775d1edc",
+    "name": "TUN_NAT_HUB_V3S_EVT",
+    "pages": [
+      {
+        "page_no": 1,
+        "uuid": "0dff8fc9d51ab495",
+        "name": "01_V3S_MINIMUM_SYSTEM"
+      },
+      {
+        "page_no": 2,
+        "uuid": "9d64d4e6cd6bd110",
+        "name": "02_POWER"
+      },
+      {
+        "page_no": 3,
+        "uuid": "455c8587f83da07f",
+        "name": "03_USB_OTG_GATEWAY"
+      },
+      {
+        "page_no": 4,
+        "uuid": "6d0ac7c9ad1145f4",
+        "name": "04_BOOT_STORAGE"
+      },
+      {
+        "page_no": 5,
+        "uuid": "a232cc4c8b092ad8",
+        "name": "05_ETHERNET_EPHY_RJ45"
+      },
+      {
+        "page_no": 6,
+        "uuid": "4d3155dd0cfb2646",
+        "name": "06_UART_DEBUG_IO"
+      },
+      {
+        "page_no": 7,
+        "uuid": "3846417ff4bd635f",
+        "name": "07_RGB_STATUS_RECOVERY"
+      }
+    ]
+  },
+  "notes": [
+    "Created through Lceda Pro _EXTAPI_ROOT_ via Chrome DevTools Protocol.",
+    "Use hardware/eda-bridge/scripts/eval_lceda.mjs for follow-up automation.",
+    "The first schematic page names may be normalized by Lceda Pro display logic; page UUIDs are the stable identifiers."
+  ]
+}

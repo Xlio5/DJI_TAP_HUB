@@ -13,7 +13,10 @@
     "print-plan": "node src/lceda_adapter.js dsl/tun_nat_hub_v3s_evt.json",
     "probe-cdp": "node scripts/probe_cdp.mjs",
     "probe-extapi": "node scripts/probe_extapi.mjs",
-    "inject-lceda": "node scripts/inject_lceda_bridge.mjs"
+    "inject-lceda": "node scripts/inject_lceda_bridge.mjs",
+    "probe-api": "node scripts/probe_api_methods.mjs",
+    "eval-lceda": "node scripts/eval_lceda.mjs",
+    "create-v3s-project": "node scripts/create_v3s_project.mjs"
   },
   "engines": {
     "node": ">=18"
