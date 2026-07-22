@@ -272,17 +272,43 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
     }
 }
 
-// ── SBUS 输出 (从 ttyS1 TX 发送) ──────────────────────────────
+// ── SBUS 输出线程: 独立 7ms 周期, 不受主循环 100ms 影响 ──────
 
-static void sbus_output(const uint16_t ch[16])
+static void sbus_thread()
 {
-    static int sbus_fd = -1;
-    if (sbus_fd < 0)
-        sbus_fd = g_p20.fd;  // 复用 ttyS1 fd (RX+TX)
+    while (!g_stop.load(std::memory_order_relaxed)) {
+        struct timespec ts = {0, 7000000L};  // 7ms ≈ 140Hz
+        nanosleep(&ts, nullptr);
 
-    uint8_t frame[SBUS_FRAME_LEN];
-    sbus_encode(ch, frame);
-    ::write(sbus_fd, frame, SBUS_FRAME_LEN);
+        rc_state_t s20, s0;
+        int64_t l20, l0;
+
+        g_mtx.lock();
+        s20 = g_p20.state; l20 = g_p20.last_us;
+        s0  = g_p0.state;  l0  = g_p0.last_us;
+        g_mtx.unlock();
+
+        int64_t n = now_us();
+
+        // 失联保护: P20 超 500ms 无数据 → 不发 SBUS
+        if (s20.type == RC_NONE || (n - l20) > 500000LL)
+            continue;
+
+        int64_t age20 = n - l20;
+        int64_t age0  = (s0.type == RC_NONE) ? INT64_MAX : n - l0;
+
+        rc_state_t m;
+        rc_merge(&s20, age20, &s0, age0, 500000LL, &m);
+
+        if (m.type != RC_NONE) {
+            uint16_t ch[CH_COUNT];
+            chmap_build(&m, ch);
+
+            uint8_t frame[SBUS_FRAME_LEN];
+            sbus_encode(ch, frame);
+            ::write(g_p20.fd, frame, SBUS_FRAME_LEN);  // ttyS1 TX
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -322,12 +348,13 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    // 启动接收线程
-    std::thread t1, t2;
+    // 启动接收线程 + SBUS 发送线程
+    std::thread t1, t2, t3;
     if (g_p20.fd >= 0) t1 = std::thread(rx_thread, &g_p20);
     if (g_p0.fd  >= 0) t2 = std::thread(rx_thread, &g_p0);
+    if (g_p20.fd >= 0) t3 = std::thread(sbus_thread);  // 独立 7ms SBUS, 不受主循环影响
 
-    // 主循环: 快照 + SBUS + 状态文件
+    // 主循环: 状态文件写入 + 控制台打印 (100ms, SBUS 走独立线程)
     std::printf("[dji_rc] Ctrl+C 停止\n\n");
     while (!g_stop.load(std::memory_order_relaxed)) {
         struct timespec ts = {0, interval_ms * 1000000L};
@@ -350,11 +377,6 @@ int main(int argc, char **argv)
         rc_merge(&s20, age20, &s0, age0, 500000LL, &m);  // 500ms stale
 
         if (m.type != RC_NONE) {
-            // 通道映射 + SBUS
-            uint16_t ch[CH_COUNT];
-            chmap_build(&m, ch);
-            sbus_output(ch);
-
             // 状态文件 (供 web_server /api/rc)
             write_state_file(m, g20, g0, rx20, rx0, now_us());
         }
@@ -373,6 +395,7 @@ int main(int argc, char **argv)
     g_stop.store(true);
     if (t1.joinable()) t1.join();
     if (t2.joinable()) t2.join();
+    if (t3.joinable()) t3.join();
     if (g_p20.fd >= 0) ::close(g_p20.fd);
     if (g_p0.fd  >= 0) ::close(g_p0.fd);
     return 0;
