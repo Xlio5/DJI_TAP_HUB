@@ -65,7 +65,7 @@ static int64_t now_us() {
 
 static int uart_open(const char *dev, int baud)
 {
-    int fd = ::open(dev, O_RDWR | O_NOCTTY | O_NONBLOCK);
+    int fd = ::open(dev, O_RDWR | O_NOCTTY);  // blocking: VMIN/VTIME handles timeout
     if (fd < 0) {
         std::fprintf(stderr, "[dji_rc] 无法打开 %s: %s\n", dev, std::strerror(errno));
         return -1;
@@ -140,6 +140,9 @@ static void rx_thread(DjiPort *p)
             g_mtx.lock();
             p->rx_bytes += n;
             g_mtx.unlock();
+        } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
+            std::fprintf(stderr, "[dji_rc] %s read error: %s\n", p->tag, std::strerror(errno));
+            break;  // exit thread on hardware error
         }
 
         int off = 0;
@@ -240,7 +243,7 @@ static bool selftest()
 // ── 写状态文件(std::string, 无fmt库依赖) ──────────────────────
 
 static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
-                             uint32_t rx1, uint32_t rx2)
+                             uint32_t rx1, uint32_t rx2, int64_t ts_us)
 {
     char buf[1024];
     int w = snprintf(buf, sizeof(buf),
@@ -249,17 +252,23 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
         "\"rth\":%d,\"c1\":%d,\"c2\":%d,\"c3\":%d,\"dial\":%d,"
         "\"up\":%d,\"down\":%d,\"left\":%d,\"right\":%d,\"aircraft\":%d,\"back\":%d,"
         "\"good1\":%u,\"good2\":%u,\"rx1\":%u,\"rx2\":%u,"
-        "\"type\":\"%s\"}\n",
+        "\"type\":\"%s\",\"ts_us\":%lld}\n",
         st.ch[0], st.ch[1], st.ch[2], st.ch[3], st.ch[4], st.ch[5],
         st.mode, st.btn, st.stop, st.focus, st.shot, st.rec,
         st.rth, st.c1, st.c2, st.c3, st.dial,
         st.up, st.down, st.left, st.right, st.aircraft, st.back,
-        g1, g2, rx1, rx2, rc_type_name(st.type));
+        g1, g2, rx1, rx2, rc_type_name(st.type),
+        (long long)ts_us);
 
-    int fd = ::open("/var/log/rc_state.json", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    // atomic write: tmp → rename
+    int fd = ::open("/var/log/rc_state.json.tmp", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) {
-        ::write(fd, buf, w);
+        ssize_t written = ::write(fd, buf, w);
         ::close(fd);
+        if (written == w)
+            ::rename("/var/log/rc_state.json.tmp", "/var/log/rc_state.json");
+        else
+            std::fprintf(stderr, "[dji_rc] state write: wrote %zd of %d\n", written, w);
     }
 }
 
@@ -347,7 +356,7 @@ int main(int argc, char **argv)
             sbus_output(ch);
 
             // 状态文件 (供 web_server /api/rc)
-            write_state_file(m, g20, g0, rx20, rx0);
+            write_state_file(m, g20, g0, rx20, rx0, now_us());
         }
 
         // 控制台打印

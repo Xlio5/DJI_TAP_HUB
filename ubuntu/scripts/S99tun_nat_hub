@@ -64,7 +64,7 @@ case "$1" in
     ;;
   stop)
     _ts "Stopping TUN_NAT_HUB..."
-    killall usb_tund web_server 2>/dev/null || true
+    killall usb_tund web_server dji_rc 2>/dev/null || true
     ;;
   restart)
     $0 stop; sleep 1; $0 start
