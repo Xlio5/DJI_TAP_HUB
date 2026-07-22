@@ -1,0 +1,15 @@
+{
+  "name": "tun-nat-hub-lceda-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Circuit DSL gateway for TUN_NAT_HUB V3s EVT Lceda Pro work.",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/gateway.js",
+    "check": "node src/gateway.js --check",
+    "print-plan": "node src/lceda_adapter.js dsl/tun_nat_hub_v3s_evt.json"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
