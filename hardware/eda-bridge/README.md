@@ -24,8 +24,28 @@ npm.cmd start
 Then open:
 
 ```text
-http://127.0.0.1:17321/health
-http://127.0.0.1:17321/api/projects/tun-nat-hub-v3s-evt
+http://127.0.0.1:8787/api/health
+http://127.0.0.1:8787/api/gateway/health
+http://127.0.0.1:8787/api/projects/tun-nat-hub-v3s-evt
+```
+
+On Windows, the most stable launcher is:
+
+```powershell
+.\start_bridge.cmd
+```
+
+or:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\start_bridge.ps1
+```
+
+Logs are written to:
+
+```text
+hardware/eda-bridge/logs/bridge.log
+hardware/eda-bridge/logs/server.log
 ```
 
 ## Directory Layout
@@ -34,6 +54,8 @@ http://127.0.0.1:17321/api/projects/tun-nat-hub-v3s-evt
 hardware/eda-bridge/
   README.md
   package.json
+  start_bridge.cmd
+  stop_bridge.cmd
   src/
     gateway.js
     circuit_dsl.js

@@ -1,4 +1,4 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-node src\gateway.js
+powershell.exe -ExecutionPolicy Bypass -File "%~dp0start_bridge.ps1"

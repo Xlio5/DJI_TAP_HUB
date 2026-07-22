@@ -20,7 +20,7 @@
       const response = await fetch(path);
       output.textContent = JSON.stringify(await response.json(), null, 2);
     }
-    document.getElementById("health").onclick = () => show("/health");
+    document.getElementById("health").onclick = () => show("/api/health");
     document.getElementById("plan").onclick = () => show("/api/projects/tun-nat-hub-v3s-evt/import-plan");
   </script>
 </body>

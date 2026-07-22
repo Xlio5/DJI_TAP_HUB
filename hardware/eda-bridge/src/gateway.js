@@ -6,7 +6,7 @@ const path = require("path");
 const { validateCircuitDsl } = require("./circuit_dsl");
 const { buildImportPlan } = require("./lceda_adapter");
 
-const PORT = Number(process.env.LCEDA_BRIDGE_PORT || 17321);
+const PORT = Number(process.env.LCEDA_BRIDGE_PORT || 8787);
 const ROOT = path.resolve(__dirname, "..");
 const DEFAULT_DSL = path.join(ROOT, "dsl", "tun_nat_hub_v3s_evt.json");
 
