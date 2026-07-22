@@ -231,6 +231,20 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
     var hbTx by remember { mutableStateOf(0L) }
     var hbRx by remember { mutableStateOf(0L) }
 
+    // ── RC 遥控器状态 ──
+    var rcConnected by remember { mutableStateOf(false) }
+    var rcChs by remember { mutableStateOf(listOf(0,0,0,0,0,0)) }
+    var rcMode by remember { mutableStateOf("?") }
+    var rcBtn by remember { mutableStateOf(0) }; var rcStop by remember { mutableStateOf(0) }
+    var rcFocus by remember { mutableStateOf(0) }; var rcShot by remember { mutableStateOf(0) }
+    var rcRec by remember { mutableStateOf(0) }; var rcRth by remember { mutableStateOf(0) }
+    var rcC1 by remember { mutableStateOf(0) }; var rcC2 by remember { mutableStateOf(0) }
+    var rcC3 by remember { mutableStateOf(0) }; var rcDial by remember { mutableStateOf(0) }
+    var rcUp by remember { mutableStateOf(0) }; var rcDown by remember { mutableStateOf(0) }
+    var rcLeft by remember { mutableStateOf(0) }; var rcRight by remember { mutableStateOf(0) }
+    var rcAircraft by remember { mutableStateOf(0) }; var rcBack by remember { mutableStateOf(0) }
+    var rcType by remember { mutableStateOf("") }; var rcAge by remember { mutableStateOf(-1L) }
+
     // ── 摄像头列表 ──
     data class CamInfo(val name: String, val url: String)
     var cameras by remember { mutableStateOf(listOf<CamInfo>()) }
@@ -325,6 +339,48 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                 }
             } catch (_: Exception) {}
         }
+    }
+
+    // ── RC 遥控器轮询 ──
+    LaunchedEffect(vpnRunning) {
+        if (!vpnRunning) return@LaunchedEffect
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val text = java.net.URL("http://10.0.0.1:8080/api/rc").openConnection()
+                    .apply { connectTimeout = 2000; readTimeout = 2000 }
+                    .getInputStream().bufferedReader().readText()
+                if (text.contains("\"error\"")) { rcConnected = false; return@withContext }
+                rcConnected = true
+                rcChs = listOf(
+                    Regex("\"ch1\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
+                    Regex("\"ch2\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
+                    Regex("\"ch3\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
+                    Regex("\"ch4\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
+                    Regex("\"ch5\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
+                    Regex("\"ch6\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0)
+                rcMode = Regex("\"mode\":\"([^\"]+)\"").find(text)?.groupValues?.get(1) ?: "?"
+                rcBtn = Regex("\"btn\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcStop = Regex("\"stop\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcFocus = Regex("\"focus\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcShot = Regex("\"shot\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcRec = Regex("\"rec\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcRth = Regex("\"rth\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcC1 = Regex("\"c1\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcC2 = Regex("\"c2\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcC3 = Regex("\"c3\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcDial = Regex("\"dial\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcUp = Regex("\"up\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcDown = Regex("\"down\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcLeft = Regex("\"left\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcRight = Regex("\"right\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcAircraft = Regex("\"aircraft\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcBack = Regex("\"back\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                rcType = Regex("\"type\":\"([^\"]+)\"").find(text)?.groupValues?.get(1) ?: ""
+                val ts = Regex("\"ts_us\":(\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull()
+                rcAge = if (ts != null) (System.nanoTime()/1000 - ts)/1000 else -1
+            } catch (_: Exception) { rcConnected = false }
+        }
+        kotlinx.coroutines.delay(500)
     }
 
     val receiver = remember {
@@ -623,6 +679,56 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                                 SectionHdr("UDP 端口转发说明")
                                 Text("端口转发配置后，QGC 等 App 无需额外设\n置。数据自动经 V3s 的 DNAT 规则转发到\nDJI RC 的对应端口。", fontSize = 10.sp, color = Color(0xFF64748B), lineHeight = 15.sp)
                                 Text("外部 App (QGC等) 的 UDP socket 会自动走\nVPN 隧道到达目标网段。", fontSize = 10.sp, color = Color(0xFF64748B), lineHeight = 15.sp, modifier = Modifier.padding(top = 4.dp))
+
+                                // ── RC 遥控器 ──
+                                Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
+                                SectionHdr("RC 遥控器")
+                                if (!rcConnected) {
+                                    Text("等待 dji_rc daemon...", fontSize = 10.sp, color = Color(0xFF64748B))
+                                } else {
+                                    // 6通道柱状图
+                                    rcChs.forEachIndexed { i, v ->
+                                        val max = 660f; val pct = (kotlin.math.abs(v) / max).coerceIn(0f, 1f)
+                                        val col = if (v >= 0) Color(0xFF38BDF8) else Color(0xFFF59E0B)
+                                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Text("CH${i+1}", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(24.dp))
+                                            Box(modifier = Modifier.weight(1f).height(10.dp).background(Color(0xFF1E293B), RoundedCornerShape(3.dp))) {
+                                                Box(modifier = Modifier.fillMaxWidth(pct).fillMaxHeight().background(col, RoundedCornerShape(3.dp)))
+                                            }
+                                            Text(if (v >= 0) "+$v" else "$v", fontSize = 10.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, color = if (v != 0) Color(0xFFE2E8F0) else Color(0xFF475569), modifier = Modifier.width(42.dp).padding(end = 4.dp))
+                                        }
+                                    }
+                                    // 按键状态
+                                    Spacer(Modifier.height(6.dp))
+                                    val btnFlags = mapOf(
+                                        "MODE" to (if (rcMode == "S") "S" else if (rcMode == "N") "N" else if (rcMode == "F") "F" else rcMode),
+                                        "BTN" to rcBtn, "STOP" to rcStop, "RTH" to rcRth,
+                                        "C1" to rcC1, "C2" to rcC2, "C3" to rcC3)
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        btnFlags.forEach { (k, v) ->
+                                            val on = when (v) { is Int -> v > 0; is String -> v != "?"; else -> false }
+                                            Surface(color = if (on) Color(0xFF166534) else Color(0xFF1E293B), shape = RoundedCornerShape(3.dp)) {
+                                                Text("$k${
+                                                    when {
+                                                        k == "MODE" && v is String -> ":$v"
+                                                        v is Int && v > 0 -> "·"
+                                                        else -> ""
+                                                    }}", fontSize = 8.sp, color = if (on) Color(0xFF22C55E) else Color(0xFF475569), modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                                            }
+                                        }
+                                    }
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        mapOf("FOCUS" to rcFocus, "SHOT" to rcShot, "REC" to rcRec,
+                                              "DIAL" to rcDial, "UP" to rcUp, "DN" to rcDown,
+                                              "L" to rcLeft, "R" to rcRight, "AC" to rcAircraft, "BACK" to rcBack).forEach { (k, v) ->
+                                            Surface(color = if (v > 0) Color(0xFF166534) else Color(0xFF1E293B), shape = RoundedCornerShape(3.dp)) {
+                                                Text(if (k == "DIAL") "$k:$v" else if (v > 0) "$k·" else k, fontSize = 8.sp, color = if (v > 0) Color(0xFF22C55E) else Color(0xFF475569), modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                                            }
+                                        }
+                                    }
+                                    val avgStick = rcChs.map { kotlin.math.abs(it) }.average().toInt()
+                                    Text("avg|ch|=$avgStick  ${rcType}  age=${if (rcAge>=0) "${rcAge}ms" else "?"}", fontSize = 8.sp, color = Color(0xFF475569), modifier = Modifier.padding(top = 4.dp))
+                                }
 
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("解码器")

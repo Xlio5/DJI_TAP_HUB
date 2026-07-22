@@ -517,6 +517,14 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 .rules li{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--bd)}
 .warn{background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:6px;padding:10px 14px;font-size:0.85em;color:var(--red);margin-top:8px}
 .info{background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);border-radius:6px;padding:10px 14px;font-size:0.85em;color:var(--blue);margin-top:8px}
+.ch-row{display:flex;align-items:center;gap:8px;padding:3px 0}
+.ch-label{width:36px;font-family:monospace;text-align:right;color:var(--muted)}
+.ch-bar{flex:1;height:14px;background:var(--bg);border-radius:7px;overflow:hidden;position:relative}
+.ch-fill{height:100%;border-radius:7px;background:linear-gradient(90deg,#2563eb,#38bdf8);transition:width 0.3s}
+.ch-val{width:52px;font-family:monospace;font-size:0.82em;text-align:center}
+.rc-btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;font-size:0.82em}
+.rc-btn{background:var(--card);border:1px solid var(--bd);border-radius:4px;padding:2px 8px;color:var(--dim)}
+.rc-btn.on{color:#fff;border-color:var(--green);background:rgba(34,197,94,0.15)}
 @media(max-width:700px){.grid2{grid-template-columns:1fr}}
 </style>
 </head>
@@ -528,6 +536,10 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
   <div class="card" style="margin-bottom:16px">
     <h3>📊 实时状态</h3>
     <div id="status"></div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <h3>🎮 RC 遥控器</h3>
+    <div id="rc-state" style="font-size:0.85em"><span style="color:var(--dim)">等待 dji_rc daemon...</span></div>
   </div>
   <div class="grid2">
     <div class="card">
@@ -626,6 +638,46 @@ async function uploadFirmware(){
   else{r.innerHTML='<span style=\\"color:var(--red)\\">❌ 失败: '+(j.error||"未知错误")+'</span>'}
 }
 async function initVer(){try{let v=await(await fetch(A+"/version")).json();document.getElementById("hdr-ver").textContent="v"+v.version+" · g_serial · C++"}catch(e){}}
+async function refRc(){
+  try{
+    let rc=await j(A+"/rc");
+    if(rc.error){document.getElementById("rc-state").innerHTML='<span style=\"color:var(--dim)\">'+rc.error+'</span>';return}
+    let chs=[rc.ch1,rc.ch2,rc.ch3,rc.ch4,rc.ch5,rc.ch6];
+    let max=660,labels=["A","E","T","R","5","6"];
+    let chHtml='';
+    for(let i=0;i<6;i++){
+      let pct=Math.round(Math.abs(chs[i])/max*100);
+      let side=chs[i]>=0?'L':'R';
+      chHtml+='<div class=\"ch-row\"><span class=\"ch-label\">CH'+(i+1)+'</span>'
+        +'<span style=\"width:22px;font-size:0.7em;color:var(--dim);text-align:center\">'+side+'</span>'
+        +'<div class=\"ch-bar\"><div class=\"ch-fill\" style=\"width:'+pct+'%\"></div></div>'
+        +'<span class=\"ch-val\">'+(chs[i]>=0?'+':'')+chs[i]+'</span></div>';
+    }
+    let btns='';
+    let flagNames={mode:rc.mode,btn:rc.btn,stop:rc.stop,focus:rc.focus,shot:rc.shot,rec:rc.rec,
+                   rth:rc.rth,c1:rc.c1,c2:rc.c2,c3:rc.c3,dial:rc.dial,up:rc.up,down:rc.down,
+                   left:rc.left,right:rc.right,aircraft:rc.aircraft,back:rc.back};
+    for(let [k,v] of Object.entries(flagNames)){
+      let label=({mode:'MODE',btn:'BTN',stop:'STOP',focus:'FOCUS',shot:'SHOT',rec:'REC',
+                  rth:'RTH',c1:'C1',c2:'C2',c3:'C3',dial:'DIAL',up:'UP',down:'DN',
+                  left:'L',right:'R',aircraft:'AC',back:'BACK'})[k]||k;
+      let val=v;
+      if(k==='mode') val=({S:'Sport',N:'Normal',F:'Film'})[v]||v;
+      if(k==='dial') val=v;
+      btns+='<span class=\"rc-btn'+(v?' on':'')+'\">'+label+(k==='dial'?(': '+v):(k==='mode'&&val?(': '+val):(v?' ●':'')))+'</span>';
+    }
+    let age=rc.ts_us?Math.round((Date.now()*1000-rc.ts_us)/1000):-1;
+    let chBarSum=chs.map(Math.abs).reduce((a,b)=>a+b,0)/6;
+    document.getElementById("rc-state").innerHTML=chHtml
+      +'<div class=\"rc-btns\">'+btns+'</div>'
+      +'<div style=\"margin-top:6px;font-size:0.75em;color:var(--dim)\">'
+      +'avg|ch|='+Math.round(chBarSum)+' &nbsp; type='+(rc.type||'?')
+      +' &nbsp; g1='+(rc.good1||0)+' g2='+(rc.good2||0)
+      +(age>=0?' &nbsp; age='+age+'ms':'')
+      +'</div>';
+  }catch(e){}
+}
+refRc();setInterval(refRc,500);
 ref();setInterval(ref,3000);
 initVer();
 </script>
