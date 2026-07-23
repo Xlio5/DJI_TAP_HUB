@@ -1,3 +1,6 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
 /*
  * 通道映射 —— 把解码/融合后的 RC 状态映射成 16 个通道值(微秒,1000~2000)。
  * 纯 C,无 ESP-IDF 依赖,可主机单元测试。
@@ -26,3 +29,6 @@
 #define CH_MAX    2000
 
 void chmap_build(const rc_state_t *st, uint16_t out[CH_COUNT]);
+#ifdef __cplusplus
+}
+#endif

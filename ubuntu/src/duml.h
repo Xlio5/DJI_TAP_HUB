@@ -1,3 +1,6 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
 /*
  * DUML 协议解析层 —— 纯 C,无 ESP-IDF 依赖,可在主机上单元测试。
  *
@@ -38,3 +41,6 @@ int duml_parse(const uint8_t *buf, int buf_len, duml_pkt_t *out);
 
 uint8_t  duml_crc8(const uint8_t *p, int n, uint8_t seed);
 uint16_t duml_crc16(const uint8_t *p, int n, uint16_t seed);
+#ifdef __cplusplus
+}
+#endif

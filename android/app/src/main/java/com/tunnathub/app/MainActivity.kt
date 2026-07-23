@@ -243,7 +243,7 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
     var rcUp by remember { mutableStateOf(0) }; var rcDown by remember { mutableStateOf(0) }
     var rcLeft by remember { mutableStateOf(0) }; var rcRight by remember { mutableStateOf(0) }
     var rcAircraft by remember { mutableStateOf(0) }; var rcBack by remember { mutableStateOf(0) }
-    var rcType by remember { mutableStateOf("") }; var rcAge by remember { mutableStateOf(-1L) }
+    var rcType by remember { mutableStateOf("") }
 
     // ── 摄像头列表 ──
     data class CamInfo(val name: String, val url: String)
@@ -344,43 +344,43 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
     // ── RC 遥控器轮询 ──
     LaunchedEffect(vpnRunning) {
         if (!vpnRunning) return@LaunchedEffect
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                val text = java.net.URL("http://10.0.0.1:8080/api/rc").openConnection()
-                    .apply { connectTimeout = 2000; readTimeout = 2000 }
-                    .getInputStream().bufferedReader().readText()
-                if (text.contains("\"error\"")) { rcConnected = false; return@withContext }
-                rcConnected = true
-                rcChs = listOf(
-                    Regex("\"ch1\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
-                    Regex("\"ch2\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
-                    Regex("\"ch3\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
-                    Regex("\"ch4\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
-                    Regex("\"ch5\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
-                    Regex("\"ch6\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0)
-                rcMode = Regex("\"mode\":\"([^\"]+)\"").find(text)?.groupValues?.get(1) ?: "?"
-                rcBtn = Regex("\"btn\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcStop = Regex("\"stop\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcFocus = Regex("\"focus\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcShot = Regex("\"shot\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcRec = Regex("\"rec\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcRth = Regex("\"rth\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcC1 = Regex("\"c1\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcC2 = Regex("\"c2\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcC3 = Regex("\"c3\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcDial = Regex("\"dial\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcUp = Regex("\"up\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcDown = Regex("\"down\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcLeft = Regex("\"left\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcRight = Regex("\"right\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcAircraft = Regex("\"aircraft\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcBack = Regex("\"back\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                rcType = Regex("\"type\":\"([^\"]+)\"").find(text)?.groupValues?.get(1) ?: ""
-                val ts = Regex("\"ts_us\":(\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull()
-                rcAge = if (ts != null) (System.nanoTime()/1000 - ts)/1000 else -1
-            } catch (_: Exception) { rcConnected = false }
+        while (vpnRunning) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    val text = java.net.URL("http://10.0.0.1:8080/api/rc").openConnection()
+                        .apply { connectTimeout = 2000; readTimeout = 2000 }
+                        .getInputStream().bufferedReader().readText()
+                    if (text.contains("\"error\"")) { rcConnected = false; return@withContext }
+                    rcConnected = true
+                    rcChs = listOf(
+                        Regex("\"ch1\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
+                        Regex("\"ch2\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
+                        Regex("\"ch3\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
+                        Regex("\"ch4\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
+                        Regex("\"ch5\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
+                        Regex("\"ch6\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0)
+                    rcMode = Regex("\"mode\":\"([^\"]+)\"").find(text)?.groupValues?.get(1) ?: "?"
+                    rcBtn = Regex("\"btn\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcStop = Regex("\"stop\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcFocus = Regex("\"focus\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcShot = Regex("\"shot\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcRec = Regex("\"rec\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcRth = Regex("\"rth\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcC1 = Regex("\"c1\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcC2 = Regex("\"c2\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcC3 = Regex("\"c3\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcDial = Regex("\"dial\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcUp = Regex("\"up\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcDown = Regex("\"down\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcLeft = Regex("\"left\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcRight = Regex("\"right\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcAircraft = Regex("\"aircraft\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcBack = Regex("\"back\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    rcType = Regex("\"type\":\"([^\"]+)\"").find(text)?.groupValues?.get(1) ?: ""
+                } catch (_: Exception) { rcConnected = false }
+            }
+            kotlinx.coroutines.delay(500)
         }
-        kotlinx.coroutines.delay(500)
     }
 
     val receiver = remember {
@@ -727,7 +727,7 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                                         }
                                     }
                                     val avgStick = rcChs.map { kotlin.math.abs(it) }.average().toInt()
-                                    Text("avg|ch|=$avgStick  ${rcType}  age=${if (rcAge>=0) "${rcAge}ms" else "?"}", fontSize = 8.sp, color = Color(0xFF475569), modifier = Modifier.padding(top = 4.dp))
+                                    Text("avg|ch|=$avgStick  ${rcType}", fontSize = 8.sp, color = Color(0xFF475569), modifier = Modifier.padding(top = 4.dp))
                                 }
 
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))

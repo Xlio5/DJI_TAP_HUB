@@ -1,3 +1,6 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
 /*
  * SBUS 组帧 —— 把 16 个通道(微秒 1000~2000)编成标准 25 字节 SBUS 帧。
  * 纯 C,无 ESP-IDF 依赖,可主机单元测试。
@@ -21,3 +24,6 @@ uint16_t sbus_us_to_val(uint16_t us);
 
 /* 把 16 个微秒通道编成 25 字节 SBUS 帧(flags=0)。 */
 void sbus_encode(const uint16_t ch_us[16], uint8_t frame[SBUS_FRAME_LEN]);
+#ifdef __cplusplus
+}
+#endif

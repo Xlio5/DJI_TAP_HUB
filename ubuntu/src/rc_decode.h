@@ -1,3 +1,6 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
 /*
  * DJI 遥控器摇杆/按键解码层 —— 纯 C,无 ESP-IDF 依赖,可主机单元测试。
  *
@@ -64,3 +67,6 @@ int rc_state_to_kv(const rc_state_t *st, char *out, size_t n);
 void rc_merge(const rc_state_t *a, int64_t age_a_us,
               const rc_state_t *b, int64_t age_b_us,
               int64_t stale_us, rc_state_t *out);
+#ifdef __cplusplus
+}
+#endif

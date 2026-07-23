@@ -121,7 +121,6 @@ static void handle_pkt(DjiPort *p, const duml_pkt_t *pk)
         p->state  = st;
         p->good++;
         p->last_us = ts;
-        sbus_send_if_p20(p);  // P20 每帧立刻发 SBUS, P0 跳过
     } else {
         p->other++;
     }
@@ -158,6 +157,7 @@ static void rx_thread(DjiPort *p)
             g_mtx.lock();
             handle_pkt(p, &pk);
             g_mtx.unlock();
+            sbus_send_if_p20(p);  // SBUS write outside mutex: no blocking I/O in critical section
             off += pk.pkt_len;
         }
 
@@ -279,13 +279,10 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
 
 static void sbus_send_if_p20(DjiPort *p)
 {
-    // 只在 P20(921600 摇杆路)新包到来时发 SBUS, 速率自然等于 DJI RC 发包速率
     if (p != &g_p20) return;
     if (g_p20.state.type == RC_NONE) return;
 
     int64_t n = now_us();
-
-    // 失联保护: P20 超 500ms 无数据 → 不发
     if ((n - g_p20.last_us) > 500000LL) return;
 
     int64_t age20 = n - g_p20.last_us;
@@ -297,9 +294,9 @@ static void sbus_send_if_p20(DjiPort *p)
     if (m.type != RC_NONE) {
         uint16_t ch[CH_COUNT];
         chmap_build(&m, ch);
-
         uint8_t frame[SBUS_FRAME_LEN];
         sbus_encode(ch, frame);
+        // write() outside mutex — caller must NOT hold g_mtx
         ::write(g_p20.fd, frame, SBUS_FRAME_LEN);
     }
 }
@@ -371,6 +368,17 @@ int main(int argc, char **argv)
         if (m.type != RC_NONE) {
             // 状态文件 (供 web_server /api/rc)
             write_state_file(m, g20, g0, rx20, rx0, now_us());
+        } else if (rx20 > 0 || rx0 > 0) {
+            // UART有数据但RC掉线: 写空状态防旧数据残留
+            static const char no_rc[] = "{\"error\":\"no RC data\",\"rx1\":%u,\"rx2\":%u}\n";
+            char buf[128];
+            int w = snprintf(buf, sizeof(buf), no_rc, rx20, rx0);
+            int fd = ::open("/var/log/rc_state.json.tmp", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd >= 0) {
+                if (::write(fd, buf, w) == w)
+                    ::rename("/var/log/rc_state.json.tmp", "/var/log/rc_state.json");
+                ::close(fd);
+            }
         }
 
         // 控制台打印

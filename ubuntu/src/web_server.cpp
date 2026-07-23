@@ -643,7 +643,7 @@ async function refRc(){
     let rc=await j(A+"/rc");
     if(rc.error){document.getElementById("rc-state").innerHTML='<span style=\"color:var(--dim)\">'+rc.error+'</span>';return}
     let chs=[rc.ch1,rc.ch2,rc.ch3,rc.ch4,rc.ch5,rc.ch6];
-    let max=660,labels=["A","E","T","R","5","6"];
+    let max=660;
     let chHtml='';
     for(let i=0;i<6;i++){
       let pct=Math.round(Math.abs(chs[i])/max*100);
@@ -666,14 +666,12 @@ async function refRc(){
       if(k==='dial') val=v;
       btns+='<span class=\"rc-btn'+(v?' on':'')+'\">'+label+(k==='dial'?(': '+v):(k==='mode'&&val?(': '+val):(v?' ●':'')))+'</span>';
     }
-    let age=rc.ts_us?Math.round((Date.now()*1000-rc.ts_us)/1000):-1;
     let chBarSum=chs.map(Math.abs).reduce((a,b)=>a+b,0)/6;
     document.getElementById("rc-state").innerHTML=chHtml
       +'<div class=\"rc-btns\">'+btns+'</div>'
       +'<div style=\"margin-top:6px;font-size:0.75em;color:var(--dim)\">'
       +'avg|ch|='+Math.round(chBarSum)+' &nbsp; type='+(rc.type||'?')
       +' &nbsp; g1='+(rc.good1||0)+' g2='+(rc.good2||0)
-      +(age>=0?' &nbsp; age='+age+'ms':'')
       +'</div>';
   }catch(e){}
 }
