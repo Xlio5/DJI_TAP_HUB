@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -eo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 PROJECT=/mnt/c/my_project/TUN_NAT_HUB
 LINUX=/home/xlong/v3s/linux
@@ -50,6 +50,13 @@ chown -R xlong:xlong . 2>/dev/null || true
 
 echo "make clean..."
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- clean 2>&1 | tail -3 || true
+
+# 强制 U-Boot 交互串口和 Linux 控制台都使用 921600。
+sed -i 's/^CONFIG_BAUDRATE=.*/CONFIG_BAUDRATE=921600/' .config
+sed -i 's/console=ttyS0,115200/console=ttyS0,921600/g' .config
+sed -i 's/console=ttyS0,115200/console=ttyS0,921600/g' include/configs/sunxi-common.h
+echo "baudrate=$(grep '^CONFIG_BAUDRATE=' .config)"
+echo "bootcmd=$(grep '^CONFIG_BOOTCOMMAND=' .config)"
 
 # Update SPL preload
 sed -i "s|(size 0x[0-9a-fA-F]*)|(size $KHEX)|" arch/arm/mach-sunxi/spl_spi_sunxi.c
