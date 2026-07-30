@@ -20,6 +20,8 @@ cd $LINUX
 find . -name '*.o' -delete 2>/dev/null || true
 rm -f arch/arm/boot/zImage arch/arm/boot/dts/allwinner/*.dtb
 
+python3 $PROJECT/scripts/patch_v3s_uart921600_clock.py
+
 echo "make clean..."
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- clean 2>&1 | tail -3 || true
 
