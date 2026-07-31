@@ -48,6 +48,8 @@ cd $UBOOT
 find . -name '*.o' -delete 2>/dev/null || true
 rm -f spl/sunxi-spl.bin u-boot.bin u-boot.img
 
+python3 $PROJECT/scripts/patch_v3s_uart921600_clock.py
+
 chown -R xlong:xlong . 2>/dev/null || true
 
 echo "make clean..."

@@ -4,45 +4,6 @@ set -e
 
 _ts() { echo "[$(date +%H:%M:%S)] $*"; }
 
-setup_uart_clocks() {
-    if ! command -v devmem >/dev/null 2>&1; then
-        _ts "UART: devmem not available, skip clock fix"
-        return 0
-    fi
-
-    # APB2 = pll-periph0 / 27 ~= 22.222MHz.  This lets the V3s DW UART
-    # 2-bit DLF approximate 921600 baud within 0.5%.
-    devmem 0x01c20058 32 0x0200001a >/dev/null 2>&1 || true
-
-    # UART0 console @921600: divisor 1, DLF 2/4.
-    devmem 0x01c2800c 32 0x93 >/dev/null 2>&1 || true
-    devmem 0x01c28000 32 0x01 >/dev/null 2>&1 || true
-    devmem 0x01c28004 32 0x00 >/dev/null 2>&1 || true
-    devmem 0x01c280c0 32 0x02 >/dev/null 2>&1 || true
-    devmem 0x01c2800c 32 0x13 >/dev/null 2>&1 || true
-
-    # UART1 DJI-B @921600: divisor 1, DLF 2/4.
-    devmem 0x01c2840c 32 0x93 >/dev/null 2>&1 || true
-    devmem 0x01c28400 32 0x01 >/dev/null 2>&1 || true
-    devmem 0x01c28404 32 0x00 >/dev/null 2>&1 || true
-    devmem 0x01c284c0 32 0x02 >/dev/null 2>&1 || true
-    devmem 0x01c2840c 32 0x13 >/dev/null 2>&1 || true
-
-    # UART2 DJI-A @115200 on the same APB2 clock: divisor 12, DLF 0.
-    devmem 0x01c2880c 32 0x93 >/dev/null 2>&1 || true
-    devmem 0x01c28800 32 0x0c >/dev/null 2>&1 || true
-    devmem 0x01c28804 32 0x00 >/dev/null 2>&1 || true
-    devmem 0x01c288c0 32 0x00 >/dev/null 2>&1 || true
-    devmem 0x01c2880c 32 0x13 >/dev/null 2>&1 || true
-
-    _ts "UART: APB2=22.222MHz, ttyS0/ttyS1=921600, ttyS2=115200"
-}
-
-if [ "$1" = "uart-only" ]; then
-    setup_uart_clocks
-    exit 0
-fi
-
 TUN_NAME=tun_hub
 TUN_IP=10.0.0.1
 TUN_PREFIX=24
@@ -92,5 +53,4 @@ iptables -A FORWARD -i $LAN_IF -o $TUN_NAME -m state --state ESTABLISHED,RELATED
 _ts "NAT: $TUN_NAME <-> $LAN_IF (MASQUERADE)"
 
 _ts "USB: peripheral (DTB)"
-setup_uart_clocks
 _ts "=== Setup complete ==="

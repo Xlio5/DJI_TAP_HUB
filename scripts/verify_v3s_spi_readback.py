@@ -9,8 +9,8 @@ CHECKS = [
     ("SPL", 0x000000, 0x006000, Path("/tmp/v3s_verify/spl.bin")),
     ("ENV", 0x07E000, 0x002000, Path("/tmp/v3s_verify/env.bin")),
     ("DTB", 0x100000, 0x010000, Path("/tmp/v3s_verify/dtb_part.bin")),
-    ("KERNEL", 0x110000, 0x5A7A18, Path("/tmp/v3s_verify/zImage.bin")),
-    ("ROOTFS", 0x710000, 0x3F4000, Path("/tmp/v3s_verify/rootfs.bin")),
+    ("KERNEL", 0x110000, (PROJECT / "backup/zImage_new").stat().st_size, Path("/tmp/v3s_verify/zImage.bin")),
+    ("ROOTFS", 0x710000, (PROJECT / "backup/rootfs.squashfs").stat().st_size, Path("/tmp/v3s_verify/rootfs.bin")),
 ]
 
 
