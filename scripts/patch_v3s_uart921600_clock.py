@@ -30,8 +30,19 @@ def ensure_binding_exports() -> None:
 
 def ensure_dts_assigned_clock() -> None:
     text = DTS.read_text()
-    marker = "assigned-clock-rates = <22222222>;"
+    text = text.replace(
+        "/* APB2: 22.222MHz lets DW UART 2-bit DLF generate 921600 within 0.5%. */\n"
+        "\tassigned-clocks = <&ccu CLK_APB2>;\n"
+        "\tassigned-clock-parents = <&ccu CLK_PLL_PERIPH0>;\n"
+        "\tassigned-clock-rates = <22222222>;",
+        "/* APB2: 15MHz keeps 921600 on integer DLL=1 and avoids V3S DLF errors. */\n"
+        "\tassigned-clocks = <&ccu CLK_APB2>;\n"
+        "\tassigned-clock-parents = <&ccu CLK_PLL_PERIPH0>;\n"
+        "\tassigned-clock-rates = <15000000>;",
+    )
+    marker = "assigned-clock-rates = <15000000>;"
     if marker in text:
+        DTS.write_text(text)
         return
 
     compatible = (
@@ -42,10 +53,10 @@ def ensure_dts_assigned_clock() -> None:
         compatible
         +
         "\n"
-        "\t/* APB2: 22.222MHz lets DW UART 2-bit DLF generate 921600 within 0.5%. */\n"
+        "\t/* APB2: 15MHz keeps 921600 on integer DLL=1 and avoids V3S DLF errors. */\n"
         "\tassigned-clocks = <&ccu CLK_APB2>;\n"
         "\tassigned-clock-parents = <&ccu CLK_PLL_PERIPH0>;\n"
-        "\tassigned-clock-rates = <22222222>;\n"
+        "\tassigned-clock-rates = <15000000>;\n"
     )
     if compatible not in text:
         raise SystemExit("compatible block not found in dock DTS")
@@ -60,14 +71,20 @@ def ensure_stdout_path_baud() -> None:
 
 def ensure_ccu_apb2_default() -> None:
     text = CCU.read_text()
+    text = text.replace(
+        '/* pll-periph0 / 27 ~= 22.222MHz for accurate 921600 with 2-bit UART DLF. */\n'
+        '#define SUN8I_V3S_APB2_UART_921600_REG\t0x0200001a\n',
+        '/* pll-periph0 / 40 = 15MHz; 921600 uses integer DLL=1, DLF=0. */\n'
+        '#define SUN8I_V3S_APB2_UART_921600_REG\t0x02000027\n',
+    )
     marker = "SUN8I_V3S_APB2_UART_921600_REG"
     if marker not in text:
         text = text.replace(
             '#define SUN8I_V3S_PLL_AUDIO_REG\t0x008\n',
             '#define SUN8I_V3S_PLL_AUDIO_REG\t0x008\n'
             '#define SUN8I_V3S_APB2_REG\t\t0x058\n'
-            '/* pll-periph0 / 27 ~= 22.222MHz for accurate 921600 with 2-bit UART DLF. */\n'
-            '#define SUN8I_V3S_APB2_UART_921600_REG\t0x0200001a\n',
+            '/* pll-periph0 / 40 = 15MHz; 921600 uses integer DLL=1, DLF=0. */\n'
+            '#define SUN8I_V3S_APB2_UART_921600_REG\t0x02000027\n',
             1,
         )
 
@@ -87,6 +104,23 @@ def ensure_ccu_apb2_default() -> None:
 
 def ensure_uboot_apb2_default() -> None:
     text = UBOOT_CLOCK.read_text()
+    text = text.replace(
+        "\t\t/* Use PLL6/27 (~22.222MHz) so 921600 console is accurate. */",
+        "\t\t/* Use PLL6/40 (15MHz) so 921600 uses integer DLL=1. */",
+    )
+    text = text.replace("APB2_CLK_RATE_M(27),", "APB2_CLK_RATE_M(40),")
+    text = text.replace(
+        "\t\t/* Use PLL6/27 (~22.222MHz) so 921600 console is accurate. */\n"
+        "\t\twritel(APB2_CLK_SRC_PLL6|\n"
+        "\t\t       APB2_CLK_RATE_N_1|\n"
+        "\t\t       APB2_CLK_RATE_M(27),\n"
+        "\t\t       &ccm->apb2_div);\n",
+        "\t\t/* Use PLL6/40 (15MHz) so 921600 uses integer DLL=1. */\n"
+        "\t\twritel(APB2_CLK_SRC_PLL6|\n"
+        "\t\t       APB2_CLK_RATE_N_1|\n"
+        "\t\t       APB2_CLK_RATE_M(40),\n"
+        "\t\t       &ccm->apb2_div);\n",
+    )
     old = (
         "\t\twritel(APB2_CLK_SRC_OSC24M|\n"
         "\t\t       APB2_CLK_RATE_N_1|\n"
@@ -94,13 +128,14 @@ def ensure_uboot_apb2_default() -> None:
         "\t\t       &ccm->apb2_div);\n"
     )
     new = (
-        "\t\t/* Use PLL6/27 (~22.222MHz) so 921600 console is accurate. */\n"
+        "\t\t/* Use PLL6/40 (15MHz) so 921600 uses integer DLL=1. */\n"
         "\t\twritel(APB2_CLK_SRC_PLL6|\n"
         "\t\t       APB2_CLK_RATE_N_1|\n"
-        "\t\t       APB2_CLK_RATE_M(27),\n"
+        "\t\t       APB2_CLK_RATE_M(40),\n"
         "\t\t       &ccm->apb2_div);\n"
     )
     if new in text:
+        UBOOT_CLOCK.write_text(text)
         return
     if old not in text:
         raise SystemExit("U-Boot APB2 clock init block not found")
