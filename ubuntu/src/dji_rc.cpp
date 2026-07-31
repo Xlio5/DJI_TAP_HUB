@@ -56,6 +56,7 @@ static std::mutex g_mtx;
 static std::atomic<bool> g_stop{false};
 static int g_debug_fd = -1;
 static int64_t g_last_debug_us = 0;
+static int g_sbus_fd = -1;
 
 static void debug_log(const char *fmt, ...);
 
@@ -336,6 +337,7 @@ static void sbus_send_if_p20(DjiPort *p)
 
     int64_t n = now_us();
     if ((n - g_p20.last_us) > 500000LL) return;
+    if (g_sbus_fd < 0) return;
 
     int64_t age20 = n - g_p20.last_us;
     int64_t age0  = (g_p0.state.type == RC_NONE) ? INT64_MAX : n - g_p0.last_us;
@@ -349,13 +351,17 @@ static void sbus_send_if_p20(DjiPort *p)
         uint8_t frame[SBUS_FRAME_LEN];
         sbus_encode(ch, frame);
         // write() outside mutex — caller must NOT hold g_mtx
-        ssize_t written = ::write(g_p20.fd, frame, SBUS_FRAME_LEN);
+        ssize_t written = ::write(g_sbus_fd, frame, SBUS_FRAME_LEN);
         sbus_attempts++;
         if (written != SBUS_FRAME_LEN) {
             sbus_errors++;
+            std::printf("[dji_rc] sbus write fail written=%d errno=%d attempts=%u errors=%u\n",
+                        (int)written, errno, sbus_attempts, sbus_errors);
             debug_log("[dji_rc][dbg] sbus write fail written=%d errno=%d attempts=%u errors=%u",
                       (int)written, errno, sbus_attempts, sbus_errors);
         } else if (sbus_attempts <= 10 || (sbus_attempts % 50) == 0) {
+            std::printf("[dji_rc] sbus write ok attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u\n",
+                        sbus_attempts, ch[0], ch[1], ch[2], ch[3]);
             debug_log("[dji_rc][dbg] sbus write ok attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u",
                       sbus_attempts, ch[0], ch[1], ch[2], ch[3]);
         }
@@ -376,6 +382,8 @@ int main(int argc, char **argv)
     bool debug_uart0 = false;
     const char *debug_dev = "/dev/ttyS0";
     int debug_baud = 115200;
+    const char *sbus_dev = "/dev/ttyS2";
+    int sbus_baud = 115200;
 
     // 简易参数解析
     for (int i = 1; i < argc; i++) {
@@ -387,6 +395,8 @@ int main(int argc, char **argv)
         else if (std::strcmp(argv[i], "--debug-uart0") == 0) debug_uart0 = true;
         else if (std::strcmp(argv[i], "--debug-uart0-dev") == 0 && i + 1 < argc) debug_dev = argv[++i];
         else if (std::strcmp(argv[i], "--debug-uart0-baud") == 0 && i + 1 < argc) debug_baud = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--sbus-out") == 0 && i + 1 < argc) sbus_dev = argv[++i];
+        else if (std::strcmp(argv[i], "--sbus-baud") == 0 && i + 1 < argc) sbus_baud = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--selftest") == 0) { selftest(); return 0; }
     }
 
@@ -405,6 +415,13 @@ int main(int argc, char **argv)
     if (g_p20.fd < 0 && g_p0.fd < 0) {
         std::fprintf(stderr, "[dji_rc] 所有串口打开失败,退出\n");
         return 1;
+    }
+    g_sbus_fd = uart_open(sbus_dev, sbus_baud);
+    if (g_sbus_fd < 0) {
+        std::fprintf(stderr, "[dji_rc] SBUS output open failed: %s @%d\n", sbus_dev, sbus_baud);
+    } else {
+        std::printf("[dji_rc] SBUS output: %s @%d fd=%d\n", sbus_dev, sbus_baud, g_sbus_fd);
+        debug_log("[dji_rc][dbg] sbus output %s @%d fd=%d", sbus_dev, sbus_baud, g_sbus_fd);
     }
 
     // 启动接收线程 (SBUS 在 P20 rx_thread 的 handle_pkt 里事件驱动发送)
@@ -472,5 +489,6 @@ int main(int argc, char **argv)
     if (g_p20.fd >= 0) ::close(g_p20.fd);
     if (g_p0.fd  >= 0) ::close(g_p0.fd);
     if (g_debug_fd >= 0) ::close(g_debug_fd);
+    if (g_sbus_fd >= 0) ::close(g_sbus_fd);
     return 0;
 }
