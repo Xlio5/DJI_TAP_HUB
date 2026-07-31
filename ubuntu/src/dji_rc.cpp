@@ -10,7 +10,9 @@
  * 编译: arm-buildroot-linux-gnueabihf-g++ -std=c++17 -O2 -s -lpthread
  */
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
+#include <cstdarg>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -52,6 +54,10 @@ static DjiPort g_p20;      // ttyS1 @921600
 static DjiPort g_p0;       // ttyS2 @115200
 static std::mutex g_mtx;
 static std::atomic<bool> g_stop{false};
+static int g_debug_fd = -1;
+static int64_t g_last_debug_us = 0;
+
+static void debug_log(const char *fmt, ...);
 
 // ═══════════════════════════════════════════════════════════════════════
 // helpers
@@ -61,6 +67,49 @@ static int64_t now_us() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+static void debug_uart0_open(const char *dev, int baud)
+{
+    g_debug_fd = ::open(dev, O_WRONLY | O_NOCTTY | O_NONBLOCK);
+    if (g_debug_fd < 0) {
+        std::fprintf(stderr, "[dji_rc] debug uart open %s failed: %s\n",
+                     dev, std::strerror(errno));
+        return;
+    }
+
+    struct termios tty;
+    std::memset(&tty, 0, sizeof(tty));
+    if (tcgetattr(g_debug_fd, &tty) == 0) {
+        tty.c_iflag = IGNPAR;
+        tty.c_oflag = 0;
+        tty.c_cflag = CLOCAL | CREAD | CS8;
+        tty.c_lflag = 0;
+        tty.c_cc[VMIN] = 0;
+        tty.c_cc[VTIME] = 0;
+        speed_t spd = (baud == 921600) ? B921600 : B115200;
+        cfsetispeed(&tty, spd);
+        cfsetospeed(&tty, spd);
+        tcsetattr(g_debug_fd, TCSANOW, &tty);
+    }
+
+    debug_log("[dji_rc][dbg] uart0 debug enabled dev=%s baud=%d", dev, baud);
+}
+
+static void debug_log(const char *fmt, ...)
+{
+    if (g_debug_fd < 0) return;
+
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n <= 0) return;
+    if (n > (int)sizeof(buf) - 3) n = sizeof(buf) - 3;
+    buf[n++] = '\r';
+    buf[n++] = '\n';
+    ::write(g_debug_fd, buf, n);
 }
 
 static int uart_open(const char *dev, int baud)
@@ -279,6 +328,9 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
 
 static void sbus_send_if_p20(DjiPort *p)
 {
+    static uint32_t sbus_attempts = 0;
+    static uint32_t sbus_errors = 0;
+
     if (p != &g_p20) return;
     if (g_p20.state.type == RC_NONE) return;
 
@@ -297,7 +349,16 @@ static void sbus_send_if_p20(DjiPort *p)
         uint8_t frame[SBUS_FRAME_LEN];
         sbus_encode(ch, frame);
         // write() outside mutex — caller must NOT hold g_mtx
-        ::write(g_p20.fd, frame, SBUS_FRAME_LEN);
+        ssize_t written = ::write(g_p20.fd, frame, SBUS_FRAME_LEN);
+        sbus_attempts++;
+        if (written != SBUS_FRAME_LEN) {
+            sbus_errors++;
+            debug_log("[dji_rc][dbg] sbus write fail written=%d errno=%d attempts=%u errors=%u",
+                      (int)written, errno, sbus_attempts, sbus_errors);
+        } else if (sbus_attempts <= 10 || (sbus_attempts % 50) == 0) {
+            debug_log("[dji_rc][dbg] sbus write ok attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u",
+                      sbus_attempts, ch[0], ch[1], ch[2], ch[3]);
+        }
     }
 }
 
@@ -312,6 +373,9 @@ int main(int argc, char **argv)
     int baud1 = 921600;
     int baud2 = 115200;
     int interval_ms = 100;
+    bool debug_uart0 = false;
+    const char *debug_dev = "/dev/ttyS0";
+    int debug_baud = 115200;
 
     // 简易参数解析
     for (int i = 1; i < argc; i++) {
@@ -320,8 +384,13 @@ int main(int argc, char **argv)
         else if (std::strcmp(argv[i], "--baud1") == 0 && i + 1 < argc) baud1 = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--baud2") == 0 && i + 1 < argc) baud2 = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--interval") == 0 && i + 1 < argc) interval_ms = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--debug-uart0") == 0) debug_uart0 = true;
+        else if (std::strcmp(argv[i], "--debug-uart0-dev") == 0 && i + 1 < argc) debug_dev = argv[++i];
+        else if (std::strcmp(argv[i], "--debug-uart0-baud") == 0 && i + 1 < argc) debug_baud = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--selftest") == 0) { selftest(); return 0; }
     }
+
+    if (debug_uart0) debug_uart0_open(debug_dev, debug_baud);
 
     std::printf("\n=== DJI RC daemon (V3s) ===\n");
     std::printf("P20: %s @%d  |  P0: %s @%d  |  print every %dms\n\n",
@@ -390,6 +459,11 @@ int main(int argc, char **argv)
             rc_state_to_kv(&m, line, sizeof(line));
         }
         std::printf("[dji_rc] %s | g1=%u g2=%u rx1=%u rx2=%u\n", line, g20, g0, rx20, rx0);
+        if (debug_uart0 && (n - g_last_debug_us) >= 1000000LL) {
+            debug_log("[dji_rc][dbg] %s g1=%u g2=%u rx1=%u rx2=%u age1=%lld age2=%lld",
+                      line, g20, g0, rx20, rx0, (long long)age20, (long long)age0);
+            g_last_debug_us = n;
+        }
     }
 
     g_stop.store(true);
@@ -397,5 +471,6 @@ int main(int argc, char **argv)
     if (t2.joinable()) t2.join();
     if (g_p20.fd >= 0) ::close(g_p20.fd);
     if (g_p0.fd  >= 0) ::close(g_p0.fd);
+    if (g_debug_fd >= 0) ::close(g_debug_fd);
     return 0;
 }
