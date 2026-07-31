@@ -3,7 +3,7 @@
  *
  * ttyS1 @921600 ← DJI-B (RC Plus 2 摇杆)
  * ttyS2 @115200 ← DJI-A (旧版遥控器按键)
- * 解码 → 融合 → SBUS输出(ttyS1 TX) → 状态文件(/var/log/rc_state.json)
+ * 解码 → 融合 → SBUS输出(ttyS2 TX) → 状态文件(/var/log/rc_state.json)
  *
  * web_server 的 /api/rc 直接读 /var/log/rc_state.json
  *
@@ -476,7 +476,7 @@ int main(int argc, char **argv)
             rc_state_to_kv(&m, line, sizeof(line));
         }
         std::printf("[dji_rc] %s | g1=%u g2=%u rx1=%u rx2=%u\n", line, g20, g0, rx20, rx0);
-        if (debug_uart0 && (n - g_last_debug_us) >= 1000000LL) {
+        if (debug_uart0 && (n - g_last_debug_us) >= 5000000LL) {
             debug_log("[dji_rc][dbg] %s g1=%u g2=%u rx1=%u rx2=%u age1=%lld age2=%lld",
                       line, g20, g0, rx20, rx0, (long long)age20, (long long)age0);
             g_last_debug_us = n;

@@ -7,7 +7,7 @@ _ts() { echo "[$(date +%H:%M:%S)] $*"; }
 
 case "$1" in
   start)
-    _ts "Starting TUN_NAT_HUB v1.4.3..."
+    _ts "Starting TUN_NAT_HUB v1.4.4..."
 
     mount -t tmpfs tmpfs /var/log 2>/dev/null || true
 
@@ -44,7 +44,7 @@ case "$1" in
 
     # DJI RC serial decoder (UART1/2 input → SBUS output + /var/log/rc_state.json)
     if [ -c /dev/ttyS1 ] || [ -c /dev/ttyS2 ]; then
-        /usr/local/bin/dji_rc > /var/log/dji_rc.log 2>&1 &
+        /usr/local/bin/dji_rc --debug-uart0 --debug-uart0-baud 115200 --sbus-out /dev/ttyS2 --sbus-baud 115200 > /var/log/dji_rc.log 2>&1 &
         _ts "dji_rc: started"
     fi
 

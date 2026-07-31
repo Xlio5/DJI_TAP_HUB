@@ -7,7 +7,7 @@ UBOOT=/home/xlong/v3s/u-boot
 BUILDROOT=/home/xlong/v3s/buildroot-2024.02
 NPROC=$(nproc)
 
-exec > >(tee /tmp/rebuild_full.log) 2>&1
+exec > >(tee $PROJECT/backup/rebuild_full.log) 2>&1
 echo "============================================"
 echo "  FULL CLEAN REBUILD"
 echo "  $(date)"
@@ -80,9 +80,10 @@ cp u-boot.bin $PROJECT/backup/
 
 # Create combined image for SD card boot
 echo "Creating u-boot-sunxi-with-spl.bin..."
-cat spl/sunxi-spl.bin > /tmp/u-boot-sunxi-with-spl.bin
-cat u-boot.bin >> /tmp/u-boot-sunxi-with-spl.bin
-cp /tmp/u-boot-sunxi-with-spl.bin $PROJECT/backup/
+UBOOT_COMBINED=$PROJECT/backup/u-boot-sunxi-with-spl.tmp
+cat spl/sunxi-spl.bin > $UBOOT_COMBINED
+cat u-boot.bin >> $UBOOT_COMBINED
+mv $UBOOT_COMBINED $PROJECT/backup/u-boot-sunxi-with-spl.bin
 echo "Combined: $(stat -c%s $PROJECT/backup/u-boot-sunxi-with-spl.bin) bytes"
 
 # ======= BUILDROOT =======
@@ -105,13 +106,53 @@ make olddefconfig 2>&1 | tail -3
 make 2>&1 | tail -20
 echo "Buildroot exit: $?"
 
+TGT=output/target
+HOST=output/host/bin
+GCC=$HOST/arm-buildroot-linux-gnueabihf-gcc
+GPP=$HOST/arm-buildroot-linux-gnueabihf-g++
+
+mkdir -p $TGT/etc/init.d $TGT/usr/local/bin
+cp $PROJECT/ubuntu/scripts/S99tun_nat_hub $TGT/etc/init.d/
+cp $PROJECT/ubuntu/scripts/setup_v3s_fixed.sh $TGT/usr/local/bin/setup_v3s.sh
+chmod +x $TGT/etc/init.d/S99tun_nat_hub $TGT/usr/local/bin/setup_v3s.sh
+
+echo "Compiling current C++ web_server..."
+$GPP -std=c++17 -Os -s -static -Wall \
+  -o $TGT/usr/local/bin/web_server \
+  $PROJECT/ubuntu/src/web_server.cpp \
+  -lpthread
+chmod +x $TGT/usr/local/bin/web_server
+echo "web_server: $(stat -c%s $TGT/usr/local/bin/web_server) bytes"
+
+echo "Compiling current dji_rc..."
+DJI_TMP=$(mktemp -d)
+for f in duml rc_decode chmap sbus; do
+  $GCC -O2 -s -c -o $DJI_TMP/${f}.o $PROJECT/ubuntu/src/${f}.c
+done
+$GPP -std=c++17 -O2 -s -Wall \
+  -o $TGT/usr/local/bin/dji_rc \
+  $PROJECT/ubuntu/src/dji_rc.cpp \
+  $DJI_TMP/duml.o $DJI_TMP/rc_decode.o $DJI_TMP/chmap.o $DJI_TMP/sbus.o \
+  -lpthread
+rm -rf $DJI_TMP
+chmod +x $TGT/usr/local/bin/dji_rc
+echo "dji_rc: $(stat -c%s $TGT/usr/local/bin/dji_rc) bytes"
+
+cp $TGT/etc/init.d/S99tun_nat_hub $O/etc/init.d/
+cp $TGT/usr/local/bin/setup_v3s.sh $O/usr/local/bin/
+cp $TGT/usr/local/bin/web_server $O/usr/local/bin/
+cp $TGT/usr/local/bin/dji_rc $O/usr/local/bin/
+cp $TGT/usr/local/bin/usb_tund $O/usr/local/bin/ 2>/dev/null || true
+
+test -x $TGT/usr/local/bin/web_server
+test -x $TGT/usr/local/bin/dji_rc
+test -x $TGT/etc/init.d/S99tun_nat_hub
+
 ROOTFS=$BUILDROOT/output/images/rootfs.squashfs
 if [ -f "$ROOTFS" ]; then
   echo "rootfs: $(stat -c%s $ROOTFS) bytes"
 
-  # Copy fresh web_server + usb_tund into target
-  cp output/target/usr/local/bin/web_server $O/usr/local/bin/ 2>/dev/null || true
-  cp output/target/usr/local/bin/usb_tund $O/usr/local/bin/ 2>/dev/null || true
+  # Fresh web_server, dji_rc and startup scripts have already been compiled into target.
 
   # Rebuild rootfs with overlay
   rm -f output/images/rootfs.squashfs
@@ -126,6 +167,12 @@ else
 fi
 
 echo ""
+echo "=== [4/4] SPI IMAGE ==="
+cd $PROJECT
+python3 -B scripts/build_spi_final.py
+echo "spi_image: $(stat -c%s $PROJECT/backup/spi_image.bin) bytes"
+
+echo ""
 echo "============================================"
 echo "  REBUILD COMPLETE $(date)"
 echo "============================================"
@@ -134,3 +181,4 @@ echo "U-Boot:  $(stat -c%s $PROJECT/backup/u-boot.bin) bytes"
 echo "zImage:  $(stat -c%s $PROJECT/backup/zImage_new) bytes"
 echo "DTB:     $(stat -c%s $PROJECT/backup/sun8i-v3s-licheepi-zero-dock.dtb_new) bytes"
 echo "rootfs:  $(stat -c%s $PROJECT/backup/rootfs.squashfs) bytes"
+echo "SPI img: $(stat -c%s $PROJECT/backup/spi_image.bin) bytes"
