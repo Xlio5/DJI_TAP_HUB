@@ -128,7 +128,6 @@ class MainActivity : ComponentActivity() {
 
             TunNatHubApp(
                 usbFound = polledDevice != null,
-                vpnRunning = TunNatVpnService.isRunningState.value,
                 connectionState = pollState,
                 usbPollCount = pollCount,
                 onVpnTap = {
@@ -202,9 +201,12 @@ private enum class Tab { VIDEO, REMOTE, CONFIG }
 // ═══════════════════════════════════════════════════════
 
 @Composable
-fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String = "idle", usbPollCount: Int = 0, onVpnTap: () -> Unit, onReconnect: (() -> Unit)? = null) {
+fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCount: Int = 0, onVpnTap: () -> Unit, onReconnect: (() -> Unit)? = null) {
     val ctx = LocalContext.current
     val prefs = ctx.getSharedPreferences("tun_nat_hub", Context.MODE_PRIVATE)
+    // 响应式订阅 VPN 运行状态: isRunningState 变化时触发重组,
+    // 使下方 LaunchedEffect(vpnRunning) 在 VPN 启动后真正执行
+    val vpnRunning by TunNatVpnService.isRunningState
     var selectedTab by remember { mutableStateOf(Tab.VIDEO) }
 
     fun fmtSize(bytes: Long): String = when {
@@ -373,17 +375,18 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
     // ── RC 遥控器数据: 直接收 UDP rcmsg (不经 HTTP) ──
     LaunchedEffect(vpnRunning) {
         if (!vpnRunning) return@LaunchedEffect
-        // 先保护 UDP 端口, 确保内核投递入站包到用户空间
-        TunNatVpnService.protectPort(RcMsg.PORT)
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             var sock: java.net.DatagramSocket? = null
             try {
-                sock = java.net.DatagramSocket(null)
-                sock!!.reuseAddress = true
-                sock!!.bind(java.net.InetSocketAddress(RcMsg.PORT))
+                // 打开受保护的 UDP socket (绑定 10.0.0.2:65530), 内核才投递入站包
+                sock = TunNatVpnService.openProtectedPort(RcMsg.PORT)
+                if (sock == null) {
+                    rcConnected = false
+                    return@withContext
+                }
                 sock!!.soTimeout = 2000   // 避免 VPN 断开时永久阻塞
-                val buf = java.nio.ByteBuffer.allocate(256)
-                val pkt = java.net.DatagramPacket(buf.array(), buf.capacity())
+                val buf = ByteArray(256)
+                val pkt = java.net.DatagramPacket(buf, buf.size)
                 while (vpnRunning) {
                     try {
                         sock!!.receive(pkt)
@@ -414,7 +417,7 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
             } catch (_: Exception) {
                 rcConnected = false
             } finally {
-                try { sock?.close() } catch (_: Exception) {}
+                // 不关闭 socket: 它是 protectPort 持有的锚定 socket, 由 VPN 服务管理
             }
         }
     }

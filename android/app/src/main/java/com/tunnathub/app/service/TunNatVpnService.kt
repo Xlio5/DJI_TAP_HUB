@@ -69,8 +69,16 @@ class TunNatVpnService : VpnService() {
 
         /** 保护一个 UDP 端口：创建 socket + bind + protect，保持存活让内核路由包 */
         fun protectPort(port: Int): Boolean {
-            val inst = instance ?: return false
-            if (protectedPorts.containsKey(port)) return true // 已保护
+            return openProtectedPort(port) != null
+        }
+
+        /** 打开(或复用)一个受保护的 UDP socket 并返回它, 供调用方 receive()
+         * 绑定 TUN 地址(10.0.0.2) 的指定端口, 标记 protect 绕过 VPN 隧道,
+         * 让内核把从 TUN 接口入站的该端口 UDP 包投递到该 socket。
+         */
+        fun openProtectedPort(port: Int): java.net.DatagramSocket? {
+            val inst = instance ?: return null
+            protectedPorts[port]?.let { return it }   // 已存在则复用
             return try {
                 val socket = java.net.DatagramSocket(null)
                 socket.reuseAddress = true
@@ -79,10 +87,10 @@ class TunNatVpnService : VpnService() {
                 protectedPorts[port] = socket
                 protectedPortsState.value = protectedPorts.keys().toList().sorted()
                 AppLog.i(TAG, "UDP端口保护: $port")
-                true
+                socket
             } catch (e: Exception) {
                 AppLog.e(TAG, "UDP端口保护失败: $port — ${e.message}")
-                false
+                null
             }
         }
 
