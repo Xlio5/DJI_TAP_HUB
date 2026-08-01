@@ -370,33 +370,52 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
         }
     }
 
-    // ── RC 遥控器轮询 ──
+    // ── RC 遥控器数据: 直接收 UDP rcmsg (不经 HTTP) ──
     LaunchedEffect(vpnRunning) {
         if (!vpnRunning) return@LaunchedEffect
-        while (vpnRunning) {
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                try {
-                    val text = java.net.URL("http://10.0.0.1:8080/api/rc").openConnection()
-                        .apply { connectTimeout = 2000; readTimeout = 2000 }
-                        .getInputStream().bufferedReader().readText()
-                    if (text.contains("\"error\"")) { rcConnected = false; return@withContext }
-                    rcConnected = true
-                    val channels = (1..16).map { jsonInt(text, "ch$it", 1500) }
-                    rcChs = channels
-                    rcRawChs = (1..6).map { jsonInt(text, "raw_ch$it", channels.getOrElse(it - 1) { 1500 } - 1500) }
-                    rcMode = jsonString(text, "mode") ?: "?"
-                    rcBtn = jsonInt(text, "btn"); rcStop = jsonInt(text, "stop")
-                    rcFocus = jsonInt(text, "focus"); rcShot = jsonInt(text, "shot")
-                    rcRec = jsonInt(text, "rec"); rcRth = jsonInt(text, "rth")
-                    rcC1 = jsonInt(text, "c1"); rcC2 = jsonInt(text, "c2")
-                    rcC3 = jsonInt(text, "c3"); rcDial = jsonInt(text, "dial")
-                    rcUp = jsonInt(text, "up"); rcDown = jsonInt(text, "down")
-                    rcLeft = jsonInt(text, "left"); rcRight = jsonInt(text, "right")
-                    rcAircraft = jsonInt(text, "aircraft"); rcBack = jsonInt(text, "back")
-                    rcType = jsonString(text, "type") ?: ""
-                } catch (_: Exception) { rcConnected = false }
+        // 先保护 UDP 端口, 确保内核投递入站包到用户空间
+        TunNatVpnService.protectPort(RcMsg.PORT)
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            var sock: java.net.DatagramSocket? = null
+            try {
+                sock = java.net.DatagramSocket(null)
+                sock!!.reuseAddress = true
+                sock!!.bind(java.net.InetSocketAddress(RcMsg.PORT))
+                sock!!.soTimeout = 2000   // 避免 VPN 断开时永久阻塞
+                val buf = java.nio.ByteBuffer.allocate(256)
+                val pkt = java.net.DatagramPacket(buf.array(), buf.capacity())
+                while (vpnRunning) {
+                    try {
+                        sock!!.receive(pkt)
+                        val data = RcMsg.parse(pkt.data.copyOf(pkt.length))
+                        if (data != null) {
+                            rcConnected = true
+                            rcChs = data.chs
+                            rcRawChs = data.rawChs
+                            rcMode = data.mode
+                            rcBtn = data.btn; rcStop = data.stop
+                            rcFocus = data.focus; rcShot = data.shot
+                            rcRec = data.rec; rcRth = data.rth
+                            rcC1 = data.c1; rcC2 = data.c2
+                            rcC3 = data.c3; rcDial = data.dial
+                            rcUp = data.up; rcDown = data.down
+                            rcLeft = data.left; rcRight = data.right
+                            rcAircraft = data.aircraft; rcBack = data.back
+                            rcType = "RC"
+                        }
+                    } catch (_: java.net.SocketTimeoutException) {
+                        // 空闲超时, 继续等
+                    } catch (_: java.io.IOException) {
+                        // VPN 断开等: 结束
+                        rcConnected = false
+                        break
+                    }
+                }
+            } catch (_: Exception) {
+                rcConnected = false
+            } finally {
+                try { sock?.close() } catch (_: Exception) {}
             }
-            kotlinx.coroutines.delay(50)
         }
     }
 

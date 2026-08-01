@@ -25,6 +25,7 @@
 #include <string>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -445,27 +446,47 @@ struct Request {
     std::string method, path, body;
 };
 
-static Request parseRequest(const char* raw, int len) {
-    Request req;
-    std::string data(raw, len);
-    auto lineEnd = data.find("\r\n");
-    if (lineEnd == std::string::npos) return req;
-    std::string reqLine = data.substr(0, lineEnd);
-    std::istringstream rl(reqLine);
-    rl >> req.method >> req.path;
-
-    // find body
-    auto bodySep = data.find("\r\n\r\n");
-    if (bodySep != std::string::npos) {
-        req.body = data.substr(bodySep + 4);
+/* ── HTTP Keep-Alive: 从累积缓冲中切出一个完整请求 ──────────────────
+ * 返回值:  >0  找到完整请求，返回其总字节数（含头部+body），*req 已填充
+ *           0  缓冲中尚无完整请求，需要继续 recv
+ *          -1 连接应关闭（对端关闭 / 请求过大 / 无 \r\n\r\n）
+ */
+static int extractRequest(std::string& buf, Request* req) {
+    // 找请求头结束位置
+    auto hdrEnd = buf.find("\r\n\r\n");
+    if (hdrEnd == std::string::npos) {
+        // 头还没收全。若缓冲超限则放弃（防止内存膨胀）
+        if (buf.size() > 65536) return -1;
+        return 0;
     }
-    return req;
+    // 解析 Content-Length（可能无 body）
+    int contentLen = 0;
+    size_t clPos = buf.find("Content-Length:");
+    if (clPos != std::string::npos && clPos < hdrEnd) {
+        contentLen = std::atoi(buf.c_str() + clPos + 15);
+        if (contentLen < 0 || contentLen > 8 * 1024 * 1024) return -1;
+    }
+    size_t total = hdrEnd + 4 + (size_t)contentLen;
+    if (buf.size() < total) return 0;   // body 未收全
+
+    Request r;
+    // 请求行: "GET /path HTTP/1.1"
+    auto lineEnd = buf.find("\r\n");
+    std::string reqLine = buf.substr(0, lineEnd);
+    std::istringstream rl(reqLine);
+    rl >> r.method >> r.path;
+    r.body = buf.substr(hdrEnd + 4, (size_t)contentLen);
+
+    buf.erase(0, total);   // 消费已处理字节，剩余留给下一个请求
+    *req = r;
+    return (int)total;
 }
 
 struct Response {
     int code = 200;
     std::string contentType = "application/json";
     std::string body;
+    bool keepAlive = true;   // 默认 keep-alive (HTTP/1.1), 仅 firmware upload 关闭
 
     void send(int fd) const {
         std::string hdr = "HTTP/1.1 " + std::to_string(code) + " OK\r\n"
@@ -473,13 +494,19 @@ struct Response {
             "Access-Control-Allow-Origin: *\r\n"
             "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
             "Access-Control-Allow-Headers: Content-Type\r\n"
-            "Connection: close\r\n"
+            "Connection: " + std::string(keepAlive ? "keep-alive" : "close") + "\r\n"
             "Content-Length: " + std::to_string(body.size()) + "\r\n"
             "\r\n";
         ::send(fd, hdr.c_str(), hdr.size(), MSG_NOSIGNAL);
         ::send(fd, body.c_str(), body.size(), MSG_NOSIGNAL);
     }
 };
+
+// 发送响应并标记关闭连接（firmware upload 用: 上传大 body 不适合 keep-alive）
+static void sendClose(Response& resp, int fd) {
+    resp.keepAlive = false;
+    resp.send(fd);
+}
 
 // HTML 面板（精简版，去掉大段文字和可视化，保留核心操作）
 static const char* HTML = R"html(<!DOCTYPE html>
@@ -1034,7 +1061,7 @@ static void handleFirmwareUpload(int fd) {
     if (reqLine.find("POST") == std::string::npos) {
         std::cout << "[fw] ERR: not POST" << std::endl;
         resp.code = 405; resp.body = R"({"ok":false,"error":"method not allowed"})";
-        resp.send(fd); return;
+        sendClose(resp, fd); return;
     }
     std::string headers;
     while (true) { std::string line = readLine(fd); if (line.empty()) break; headers += line + "\n"; }
@@ -1044,14 +1071,14 @@ static void handleFirmwareUpload(int fd) {
     if (contentLen < 1024*1024 || contentLen > 8*1024*1024) {
         std::cout << "[fw] ERR: invalid size" << std::endl;
         resp.code = 400; resp.body = R"({"ok":false,"error":"invalid size"})";
-        resp.send(fd); return;
+        sendClose(resp, fd); return;
     }
     std::string tmpPath = "/var/log/new_rootfs.sq";
     int fwFd = ::open(tmpPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fwFd < 0) {
         std::cout << "[fw] ERR: cannot create tmp file" << std::endl;
         resp.body = R"({"ok":false,"error":"cannot create temp file"})";
-        resp.send(fd); return;
+        sendClose(resp, fd); return;
     }
     char buf[32768]; size_t remaining = contentLen, lastRpt = 0;
     while (remaining > 0) {
@@ -1068,7 +1095,7 @@ static void handleFirmwareUpload(int fd) {
     if (remaining > 0) {
         std::cout << "[fw] ERR: upload incomplete" << std::endl;
         ::unlink(tmpPath.c_str()); resp.body = R"({"ok":false,"error":"upload incomplete"})";
-        resp.send(fd); return;
+        sendClose(resp, fd); return;
     }
     int vFd = ::open(tmpPath.c_str(), O_RDONLY);
     if (vFd >= 0) {
@@ -1079,7 +1106,7 @@ static void handleFirmwareUpload(int fd) {
             ::unlink(tmpPath.c_str());
             JsonObj obj; obj.pair("ok", JsonValue::boolean(false));
             obj.pair("error", JsonValue::string("bad squashfs magic"));
-            resp.body = obj.done(); resp.send(fd); return;
+            resp.body = obj.done(); sendClose(resp, fd); return;
         }
     }
     struct stat st;
@@ -1112,7 +1139,7 @@ static void handleFirmwareUpload(int fd) {
     if (rc != 0) {
         ::unlink(tmpPath.c_str()); JsonObj obj; obj.pair("ok", JsonValue::boolean(false));
         obj.pair("error", JsonValue::string("flash write failed"));
-        resp.body = obj.done(); resp.send(fd); return;
+        resp.body = obj.done(); sendClose(resp, fd); return;
     }
     std::string vfy = exec({"sh", "-c", ("dd if=" + inactiveDev + " bs=1 count=16 2>/dev/null | hexdump -C 2>/dev/null").c_str()});
     std::cout << "[fw] VFY: " << (vfy.find("hsqs") != std::string::npos ? "hsqs OK" : "hsqs MISSING!") << std::endl;
@@ -1143,7 +1170,7 @@ static void handleFirmwareUpload(int fd) {
     JsonObj obj; obj.pair("ok", JsonValue::boolean(true));
     obj.pair("size", JsonValue::number((int)contentLen));
     obj.pair("message", JsonValue::string("Flashed to " + inactiveDev + ". Reboot now to switch."));
-    resp.body = obj.done(); resp.send(fd);
+    resp.body = obj.done(); sendClose(resp, fd);
     std::cout << "[fw] === UPGRADE DONE ===" << std::endl;
     // 自动重启：清空页面缓存，2秒后 reboot
     sync();
@@ -1182,30 +1209,47 @@ int main() {
         int cli = accept(srv, nullptr, nullptr);
         if (cli < 0) { if (errno == EINTR) continue; break; }
 
-        // 每个请求一个线程
         // single-threaded (ARM static NPTL compat)
-            // Peek at request line to detect firmware upload
-            char peek[2048] = {};
-            int peekLen = ::recv(cli, peek, sizeof(peek)-1, MSG_PEEK);
-            if (peekLen > 0) {
-                peek[peekLen] = '\0';
-                std::string peekStr(peek);
-                if (peekStr.find("POST /api/firmware/upload") != std::string::npos) {
-                    handleFirmwareUpload(cli);
-                    close(cli);
-                    continue;
-                }
+        // Peek at request line to detect firmware upload (仅首请求, 大 body 不适合 keep-alive)
+        char peek[2048] = {};
+        int peekLen = ::recv(cli, peek, sizeof(peek)-1, MSG_PEEK);
+        if (peekLen > 0) {
+            peek[peekLen] = '\0';
+            std::string peekStr(peek);
+            if (peekStr.find("POST /api/firmware/upload") != std::string::npos) {
+                handleFirmwareUpload(cli);
+                close(cli);
+                continue;
             }
+        }
 
-            char buf[BUF_SZ];
-            int n = recv(cli, buf, sizeof(buf) - 1, 0);
-            if (n > 0) {
-                buf[n] = '\0';
-                Request req = parseRequest(buf, n);
+        // HTTP Keep-Alive: 单连接内循环处理多个请求, 空闲 5s 超时
+        struct timeval tv = {5, 0};
+        setsockopt(cli, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+        std::string buf;   // 累积接收, 跨请求保留
+        bool connOpen = true;
+        while (connOpen) {
+            Request req;
+            int r = extractRequest(buf, &req);
+            if (r < 0) { connOpen = false; break; }        // 异常: 关闭
+            if (r > 0) {
+                // 完整请求 → 处理
                 Response resp = handleRequest(req);
                 resp.send(cli);
+                continue;
             }
-            close(cli);
+            // 缓冲中无完整请求 → 继续 recv
+            char chunk[BUF_SZ];
+            int n = recv(cli, chunk, sizeof(chunk), 0);
+            if (n > 0) {
+                buf.append(chunk, n);
+            } else {
+                // n==0 对端关闭 / n<0 超时(EAGAIN)或错误 → 关闭连接
+                connOpen = false;
+            }
+        }
+        close(cli);
     }
 
     close(srv);
