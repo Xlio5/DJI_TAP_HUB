@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import subprocess
 
 
 PROJECT = Path("/mnt/c/my_project/TUN_NAT_HUB")
@@ -15,7 +16,15 @@ CHECKS = [
 
 
 image = IMAGE.read_bytes()
+Path("/tmp/v3s_verify").mkdir(parents=True, exist_ok=True)
+
 for name, offset, size, readback in CHECKS:
+    if readback.exists():
+        readback.unlink()
+    subprocess.run(
+        ["sunxi-fel", "spiflash-read", hex(offset), str(size), str(readback)],
+        check=True,
+    )
     expected = image[offset : offset + size]
     actual = readback.read_bytes()
     match = expected == actual
