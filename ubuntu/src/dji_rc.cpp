@@ -20,7 +20,10 @@
 #include <string>
 #include <thread>
 
+#include <arpa/inet.h>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -57,6 +60,26 @@ static std::atomic<bool> g_stop{false};
 static int g_debug_fd = -1;
 static int64_t g_last_debug_us = 0;
 static int g_sbus_fd = -1;
+
+static constexpr uint32_t RCMSG_MAGIC = 0x314D4352u;  // "RCM1", little-endian on wire
+static constexpr int RCMSG_PORT = 65530;
+static constexpr const char *RCMSG_HOST = "10.0.0.2";
+
+#pragma pack(push, 1)
+struct RcMsg {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t size;
+    uint32_t seq;
+    uint64_t ts_us;
+    uint16_t ch[CH_COUNT];
+    int16_t raw_ch[6];
+    uint32_t buttons;
+    uint8_t mode;
+    uint8_t dial;
+    uint16_t flags;
+};
+#pragma pack(pop)
 
 static void debug_log(const char *fmt, ...);
 
@@ -149,6 +172,78 @@ static int uart_open(const char *dev, int baud)
 
     std::printf("[dji_rc] %s @%d 已打开 fd=%d\n", dev, baud, fd);
     return fd;
+}
+
+static int rcmsg_open(const char *host, int port, sockaddr_in *dst)
+{
+    int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        std::fprintf(stderr, "[dji_rc] rcmsg socket failed: %s\n", std::strerror(errno));
+        return -1;
+    }
+
+    std::memset(dst, 0, sizeof(*dst));
+    dst->sin_family = AF_INET;
+    dst->sin_port = htons((uint16_t)port);
+    if (::inet_aton(host, &dst->sin_addr) == 0) {
+        std::fprintf(stderr, "[dji_rc] rcmsg bad host: %s\n", host);
+        ::close(fd);
+        return -1;
+    }
+
+    std::printf("[dji_rc] rcmsg UDP: %s:%d fd=%d\n", host, port, fd);
+    debug_log("[dji_rc][dbg] rcmsg UDP %s:%d fd=%d", host, port, fd);
+    return fd;
+}
+
+static uint32_t button_bits(const rc_state_t &st)
+{
+    uint32_t b = 0;
+    if (st.btn)      b |= 1u << 0;
+    if (st.stop)     b |= 1u << 1;
+    if (st.focus)    b |= 1u << 2;
+    if (st.shot)     b |= 1u << 3;
+    if (st.rec)      b |= 1u << 4;
+    if (st.rth)      b |= 1u << 5;
+    if (st.c1)       b |= 1u << 6;
+    if (st.c2)       b |= 1u << 7;
+    if (st.c3)       b |= 1u << 8;
+    if (st.up)       b |= 1u << 9;
+    if (st.down)     b |= 1u << 10;
+    if (st.left)     b |= 1u << 11;
+    if (st.right)    b |= 1u << 12;
+    if (st.aircraft) b |= 1u << 13;
+    if (st.back)     b |= 1u << 14;
+    return b;
+}
+
+static void send_rcmsg(int fd, const sockaddr_in &dst, const rc_state_t &st,
+                       bool valid, uint32_t seq, int64_t ts_us)
+{
+    if (fd < 0) return;
+
+    RcMsg msg{};
+    msg.magic = RCMSG_MAGIC;
+    msg.version = 1;
+    msg.size = sizeof(RcMsg);
+    msg.seq = seq;
+    msg.ts_us = (uint64_t)ts_us;
+    msg.mode = (uint8_t)(valid ? st.mode : '?');
+    msg.dial = valid ? st.dial : 0;
+    msg.flags = valid ? 1u : 0u;
+
+    rc_state_t neutral{};
+    neutral.mode = '?';
+    const rc_state_t &src = valid ? st : neutral;
+    chmap_build(&src, msg.ch);
+    for (int i = 0; i < 6; i++) msg.raw_ch[i] = src.ch[i];
+    msg.buttons = valid ? button_bits(st) : 0;
+
+    ssize_t n = ::sendto(fd, &msg, sizeof(msg), 0,
+                         (const sockaddr *)&dst, sizeof(dst));
+    if (n != (ssize_t)sizeof(msg)) {
+        std::fprintf(stderr, "[dji_rc] rcmsg send fail n=%d errno=%d\n", (int)n, errno);
+    }
 }
 
 // ── 处理一个DUML包 → 更新端口状态 ──────────────────────────────
@@ -393,6 +488,8 @@ int main(int argc, char **argv)
     int debug_baud = 115200;
     const char *sbus_dev = "/dev/ttyS2";
     int sbus_baud = 115200;
+    const char *rcmsg_host = RCMSG_HOST;
+    int rcmsg_port = RCMSG_PORT;
 
     // 简易参数解析
     for (int i = 1; i < argc; i++) {
@@ -406,6 +503,8 @@ int main(int argc, char **argv)
         else if (std::strcmp(argv[i], "--debug-uart0-baud") == 0 && i + 1 < argc) debug_baud = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--sbus-out") == 0 && i + 1 < argc) sbus_dev = argv[++i];
         else if (std::strcmp(argv[i], "--sbus-baud") == 0 && i + 1 < argc) sbus_baud = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--rcmsg-host") == 0 && i + 1 < argc) rcmsg_host = argv[++i];
+        else if (std::strcmp(argv[i], "--rcmsg-port") == 0 && i + 1 < argc) rcmsg_port = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--selftest") == 0) { selftest(); return 0; }
     }
 
@@ -432,6 +531,9 @@ int main(int argc, char **argv)
         std::printf("[dji_rc] SBUS output: %s @%d fd=%d\n", sbus_dev, sbus_baud, g_sbus_fd);
         debug_log("[dji_rc][dbg] sbus output %s @%d fd=%d", sbus_dev, sbus_baud, g_sbus_fd);
     }
+    sockaddr_in rcmsg_dst;
+    int rcmsg_fd = rcmsg_open(rcmsg_host, rcmsg_port, &rcmsg_dst);
+    uint32_t rcmsg_seq = 0;
 
     // 启动接收线程 (SBUS 在 P20 rx_thread 的 handle_pkt 里事件驱动发送)
     std::thread t1, t2;
@@ -463,6 +565,7 @@ int main(int argc, char **argv)
         if (m.type != RC_NONE) {
             // 状态文件 (供 web_server /api/rc)
             write_state_file(m, g20, g0, rx20, rx0, now_us());
+            send_rcmsg(rcmsg_fd, rcmsg_dst, m, true, ++rcmsg_seq, n);
         } else if (rx20 > 0 || rx0 > 0) {
             // UART有数据但RC掉线: 写空状态防旧数据残留
             static const char no_rc[] = "{\"error\":\"no RC data\",\"rx1\":%u,\"rx2\":%u}\n";
@@ -474,6 +577,7 @@ int main(int argc, char **argv)
                     ::rename("/var/log/rc_state.json.tmp", "/var/log/rc_state.json");
                 ::close(fd);
             }
+            send_rcmsg(rcmsg_fd, rcmsg_dst, m, false, ++rcmsg_seq, n);
         }
 
         // 控制台打印
@@ -499,5 +603,6 @@ int main(int argc, char **argv)
     if (g_p0.fd  >= 0) ::close(g_p0.fd);
     if (g_debug_fd >= 0) ::close(g_debug_fd);
     if (g_sbus_fd >= 0) ::close(g_sbus_fd);
+    if (rcmsg_fd >= 0) ::close(rcmsg_fd);
     return 0;
 }
