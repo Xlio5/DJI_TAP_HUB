@@ -33,7 +33,7 @@
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.4.4"   // 固件版本 — 改这里全局生效
+#define VERSION     "1.4.5"   // 固件版本 — 改这里全局生效
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
@@ -642,17 +642,25 @@ async function refRc(){
   try{
     let rc=await j(A+"/rc");
     if(rc.error){document.getElementById("rc-state").innerHTML='<span style=\"color:var(--dim)\">'+rc.error+'</span>';return}
-    let chs=[rc.ch1,rc.ch2,rc.ch3,rc.ch4,rc.ch5,rc.ch6];
-    let max=660;
+    let mapped=[];
+    for(let i=1;i<=16;i++) mapped.push(Number(rc['ch'+i]||1500));
     let chHtml='';
     for(let i=0;i<6;i++){
-      let pct=Math.round(Math.abs(chs[i])/max*100);
-      let side=chs[i]>=0?'L':'R';
+      let v=mapped[i];
+      let pct=Math.max(0,Math.min(100,Math.round((v-1000)/10)));
+      let raw=rc['raw_ch'+(i+1)];
       chHtml+='<div class=\"ch-row\"><span class=\"ch-label\">CH'+(i+1)+'</span>'
-        +'<span style=\"width:22px;font-size:0.7em;color:var(--dim);text-align:center\">'+side+'</span>'
+        +'<span style=\"width:42px;font-size:0.7em;color:var(--dim);text-align:center\">1500</span>'
         +'<div class=\"ch-bar\"><div class=\"ch-fill\" style=\"width:'+pct+'%\"></div></div>'
-        +'<span class=\"ch-val\">'+(chs[i]>=0?'+':'')+chs[i]+'</span></div>';
+        +'<span class=\"ch-val\">'+v+'</span>'
+        +'<span style=\"width:54px;font-size:0.72em;color:var(--dim);font-family:monospace;text-align:right\">'
+        +(raw===undefined?'':'raw '+(raw>=0?'+':'')+raw)+'</span></div>';
     }
+    const mapLabels=['MODE','REC','RTH','SHUT','AIR','DIAL','STOP','C1/C2','C3','DIR/BTN'];
+    let mapHtml='<div style=\"margin-top:10px;font-size:0.75em;color:var(--dim)\">SBUS CH7-CH16</div>'
+      +'<div class=\"rc-btns\" style=\"margin-top:4px\">';
+    for(let i=6;i<16;i++) mapHtml+='<span class=\"rc-btn on\">CH'+(i+1)+' '+mapLabels[i-6]+': '+mapped[i]+'</span>';
+    mapHtml+='</div>';
     let btns='';
     let flagNames={mode:rc.mode,btn:rc.btn,stop:rc.stop,focus:rc.focus,shot:rc.shot,rec:rc.rec,
                    rth:rc.rth,c1:rc.c1,c2:rc.c2,c3:rc.c3,dial:rc.dial,up:rc.up,down:rc.down,
@@ -666,11 +674,12 @@ async function refRc(){
       if(k==='dial') val=v;
       btns+='<span class=\"rc-btn'+(v?' on':'')+'\">'+label+(k==='dial'?(': '+v):(k==='mode'&&val?(': '+val):(v?' ●':'')))+'</span>';
     }
-    let chBarSum=chs.map(Math.abs).reduce((a,b)=>a+b,0)/6;
+    let chBarSum=mapped.slice(0,6).map(v=>Math.abs(v-1500)).reduce((a,b)=>a+b,0)/6;
     document.getElementById("rc-state").innerHTML=chHtml
+      +mapHtml
       +'<div class=\"rc-btns\">'+btns+'</div>'
       +'<div style=\"margin-top:6px;font-size:0.75em;color:var(--dim)\">'
-      +'avg|ch|='+Math.round(chBarSum)+' &nbsp; type='+(rc.type||'?')
+      +'avg|ch-1500|='+Math.round(chBarSum)+' &nbsp; type='+(rc.type||'?')
       +' &nbsp; g1='+(rc.good1||0)+' g2='+(rc.good2||0)
       +'</div>';
   }catch(e){}

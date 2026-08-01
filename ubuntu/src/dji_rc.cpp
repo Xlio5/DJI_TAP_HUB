@@ -298,14 +298,23 @@ static bool selftest()
 static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
                              uint32_t rx1, uint32_t rx2, int64_t ts_us)
 {
-    char buf[1024];
+    uint16_t ch[CH_COUNT];
+    chmap_build(&st, ch);
+
+    char buf[2048];
     int w = snprintf(buf, sizeof(buf),
-        "{\"ch1\":%d,\"ch2\":%d,\"ch3\":%d,\"ch4\":%d,\"ch5\":%d,\"ch6\":%d,"
+        "{\"ch1\":%u,\"ch2\":%u,\"ch3\":%u,\"ch4\":%u,\"ch5\":%u,\"ch6\":%u,"
+        "\"ch7\":%u,\"ch8\":%u,\"ch9\":%u,\"ch10\":%u,\"ch11\":%u,\"ch12\":%u,"
+        "\"ch13\":%u,\"ch14\":%u,\"ch15\":%u,\"ch16\":%u,"
+        "\"raw_ch1\":%d,\"raw_ch2\":%d,\"raw_ch3\":%d,\"raw_ch4\":%d,"
+        "\"raw_ch5\":%d,\"raw_ch6\":%d,"
         "\"mode\":\"%c\",\"btn\":%d,\"stop\":%d,\"focus\":%d,\"shot\":%d,\"rec\":%d,"
         "\"rth\":%d,\"c1\":%d,\"c2\":%d,\"c3\":%d,\"dial\":%d,"
         "\"up\":%d,\"down\":%d,\"left\":%d,\"right\":%d,\"aircraft\":%d,\"back\":%d,"
         "\"good1\":%u,\"good2\":%u,\"rx1\":%u,\"rx2\":%u,"
         "\"type\":\"%s\",\"ts_us\":%lld}\n",
+        ch[0], ch[1], ch[2], ch[3], ch[4], ch[5], ch[6], ch[7],
+        ch[8], ch[9], ch[10], ch[11], ch[12], ch[13], ch[14], ch[15],
         st.ch[0], st.ch[1], st.ch[2], st.ch[3], st.ch[4], st.ch[5],
         st.mode, st.btn, st.stop, st.focus, st.shot, st.rec,
         st.rth, st.c1, st.c2, st.c3, st.dial,
