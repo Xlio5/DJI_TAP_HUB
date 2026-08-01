@@ -15,7 +15,10 @@ class AndroidRcStatusContractTest(unittest.TestCase):
     def test_remote_view_uses_sbus_range_and_raw_channels(self):
         src = MAIN.read_text(encoding="utf-8")
         self.assertIn("RcPanelContent(", src)
-        self.assertIn("for (rowStart in 1..16 step 2)", src)
+        self.assertIn("真实输入 CH1-CH6", src)
+        self.assertIn("for (i in 1..6)", src)
+        self.assertIn("SBUS 输出映射", src)
+        self.assertIn("SbusMappingGrid(", src)
         self.assertIn("raw_ch", src)
         self.assertIn("1500", src)
         self.assertIn("1000f", src)
@@ -32,6 +35,10 @@ class AndroidRcStatusContractTest(unittest.TestCase):
         self.assertIn("\"N\"", src)
         self.assertIn("\"F\"", src)
         self.assertIn("ButtonStatusGrid(", src)
+        self.assertIn("DpadStatus(", src)
+        self.assertIn("C1/C2/C3", src)
+        self.assertIn("REC/RTH/STOP/BACK", src)
+        self.assertIn("FOCUS/SHOT/DIAL", src)
 
     def test_speed_polling_has_stats_fallback(self):
         src = MAIN.read_text(encoding="utf-8")

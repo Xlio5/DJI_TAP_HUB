@@ -467,6 +467,20 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
         }
 
         @Composable
+        fun StatusChip(label: String, value: String, active: Boolean, modifier: Modifier = Modifier) {
+            Surface(color = if (active) Color(0xFF14532D) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp), modifier = modifier) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(label, fontSize = 9.sp, color = Color(0xFF94A3B8), maxLines = 1)
+                    Text(value, fontSize = 10.sp, color = if (active) Color(0xFF22C55E) else Color(0xFFE2E8F0), fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, maxLines = 1)
+                }
+            }
+        }
+
+        @Composable
         fun ChannelBar(label: String, value: Int, raw: Int? = null, modifier: Modifier = Modifier) {
             val pct = sbusPct(value)
             val centered = kotlin.math.abs(value - 1500) <= 20
@@ -493,34 +507,96 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
 
         @Composable
         fun ModeSwitch(mode: String) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 listOf("S", "N", "F").forEach { pos ->
-                    SmallChip(pos, mode == pos)
+                    Surface(
+                        color = if (mode == pos) Color(0xFF0EA5E9) else Color(0xFF1E293B),
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Text(pos, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (mode == pos) Color.Black else Color(0xFF64748B), modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp))
+                    }
                 }
             }
         }
 
         @Composable
-        fun ButtonStatusGrid() {
-            val buttons = listOf(
-                "BTN" to rcBtn, "STOP" to rcStop, "RTH" to rcRth,
-                "C1" to rcC1, "C2" to rcC2, "C3" to rcC3,
-                "FOCUS" to rcFocus, "SHOT" to rcShot, "REC" to rcRec,
-                "DIAL" to rcDial, "BACK" to rcBack, "AIR" to rcAircraft,
-                "UP" to rcUp, "DOWN" to rcDown, "LEFT" to rcLeft, "RIGHT" to rcRight
+        fun SbusMappingGrid() {
+            val mapping = listOf(
+                Triple("CH7", "MODE", rcChs.getOrElse(6) { 1500 }.toString()),
+                Triple("CH8", "REC", rcChs.getOrElse(7) { 1000 }.toString()),
+                Triple("CH9", "RTH", rcChs.getOrElse(8) { 1000 }.toString()),
+                Triple("CH10", "FOCUS/SHOT", rcChs.getOrElse(9) { 1000 }.toString()),
+                Triple("CH11", "AIRCRAFT", rcChs.getOrElse(10) { 1000 }.toString()),
+                Triple("CH12", "DIAL", rcChs.getOrElse(11) { 1000 }.toString()),
+                Triple("CH13", "STOP", rcChs.getOrElse(12) { 1000 }.toString()),
+                Triple("CH14", "C1/C2", rcChs.getOrElse(13) { 1000 }.toString()),
+                Triple("CH15", "C3", rcChs.getOrElse(14) { 1000 }.toString()),
+                Triple("CH16", "BTN/D-PAD", rcChs.getOrElse(15) { 1000 }.toString())
             )
-            for (rowStart in buttons.indices step 4) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    buttons.drop(rowStart).take(4).forEach { (name, value) ->
-                        Box(modifier = Modifier.weight(1f)) {
-                            SmallChip(name, value != 0, value.takeIf { it != 0 }?.toString() ?: "")
-                        }
+            for (rowStart in mapping.indices step 2) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    mapping.drop(rowStart).take(2).forEach { (ch, name, value) ->
+                        StatusChip("$ch $name", value, value != "1000", modifier = Modifier.weight(1f))
                     }
-                    repeat(4 - buttons.drop(rowStart).take(4).size) {
-                        Spacer(modifier = Modifier.weight(1f))
-                    }
+                    if (rowStart + 1 >= mapping.size) Spacer(modifier = Modifier.weight(1f))
                 }
                 Spacer(Modifier.height(6.dp))
+            }
+        }
+
+        @Composable
+        fun ButtonStatusGrid() {
+            @Composable
+            fun Group(title: String, items: List<Pair<String, Int>>, modifier: Modifier = Modifier) {
+                Column(modifier = modifier) {
+                    Text(title, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF94A3B8))
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items.forEach { (name, value) ->
+                            Box(modifier = Modifier.weight(1f)) {
+                                StatusChip(name, value.takeIf { it != 0 }?.toString() ?: "OFF", value != 0)
+                            }
+                        }
+                    }
+                }
+            }
+            Group("C1/C2/C3", listOf("C1" to rcC1, "C2" to rcC2, "C3" to rcC3))
+            Spacer(Modifier.height(10.dp))
+            Group("REC/RTH/STOP/BACK", listOf("REC" to rcRec, "RTH" to rcRth, "STOP" to rcStop, "BACK" to rcBack))
+            Spacer(Modifier.height(10.dp))
+            Group("FOCUS/SHOT/DIAL", listOf("FOCUS" to rcFocus, "SHOT" to rcShot, "DIAL" to rcDial))
+            Spacer(Modifier.height(10.dp))
+            Group("BTN/AIRCRAFT", listOf("BTN" to rcBtn, "AIR" to rcAircraft))
+        }
+
+        @Composable
+        fun DpadStatus() {
+            @Composable
+            fun Pad(label: String, active: Boolean, modifier: Modifier = Modifier) {
+                Surface(color = if (active) Color(0xFF14532D) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp), modifier = modifier.height(34.dp)) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (active) Color(0xFF22C55E) else Color(0xFF64748B))
+                    }
+                }
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Spacer(Modifier.weight(1f))
+                    Pad("UP", rcUp != 0, Modifier.weight(1f))
+                    Spacer(Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Pad("LEFT", rcLeft != 0, Modifier.weight(1f))
+                    Pad("BTN", rcBtn != 0, Modifier.weight(1f))
+                    Pad("RIGHT", rcRight != 0, Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Spacer(Modifier.weight(1f))
+                    Pad("DOWN", rcDown != 0, Modifier.weight(1f))
+                    Spacer(Modifier.weight(1f))
+                }
             }
         }
 
@@ -534,27 +610,18 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
             }
             Spacer(Modifier.height(14.dp))
 
-            Text("通道 CH1-CH16 (1000 / 1500 / 2000)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+            Text("真实输入 CH1-CH6 (raw_ch / SBUS)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
             Spacer(Modifier.height(6.dp))
-            for (rowStart in 1..16 step 2) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ChannelBar(
-                        "CH$rowStart",
-                        rcChs.getOrElse(rowStart - 1) { 1500 },
-                        rcRawChs.getOrNull(rowStart - 1),
-                        modifier = Modifier.weight(1f)
-                    )
-                    val right = rowStart + 1
-                    ChannelBar(
-                        "CH$right",
-                        rcChs.getOrElse(right - 1) { 1500 },
-                        rcRawChs.getOrNull(right - 1),
-                        modifier = Modifier.weight(1f)
-                    )
-                }
+            for (i in 1..6) {
+                ChannelBar("CH$i", rcChs.getOrElse(i - 1) { 1500 }, rcRawChs.getOrNull(i - 1), modifier = Modifier.fillMaxWidth())
             }
 
             Spacer(Modifier.height(14.dp))
+            Text("SBUS 输出映射", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+            Spacer(Modifier.height(8.dp))
+            SbusMappingGrid()
+
+            Spacer(Modifier.height(8.dp))
             Text("三档开关", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
             Spacer(Modifier.height(8.dp))
             ModeSwitch(rcMode)
@@ -563,6 +630,11 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
             Text("按键 / 拨轮", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
             Spacer(Modifier.height(8.dp))
             ButtonStatusGrid()
+
+            Spacer(Modifier.height(10.dp))
+            Text("方向键", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+            Spacer(Modifier.height(8.dp))
+            DpadStatus()
         }
     }
 
