@@ -35,6 +35,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material3.*
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -194,7 +195,7 @@ class MainActivity : ComponentActivity() {
 // Tab 定义
 // ═══════════════════════════════════════════════════════
 
-private enum class Tab { VIDEO, CONFIG }
+private enum class Tab { VIDEO, REMOTE, CONFIG }
 
 // ═══════════════════════════════════════════════════════
 // 顶层：状态栏 + 导航 + 内容区
@@ -210,6 +211,17 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
         bytes > 1024 * 1024 -> " %.1fM".format(bytes / 1024f / 1024f)
         bytes > 1024 -> " %.0fK".format(bytes / 1024f)
         else -> " ${bytes}B"
+    }
+    fun jsonString(src: String, key: String): String? =
+        Regex("\"$key\":\\s*\"([^\"]+)\"").find(src)?.groupValues?.get(1)
+    fun jsonLong(src: String, key: String): Long? =
+        Regex("\"$key\":\\s*(\\d+)").find(src)?.groupValues?.get(1)?.toLongOrNull()
+    fun jsonInt(src: String, key: String, fallback: Int = 0): Int =
+        Regex("\"$key\":\\s*(-?\\d+)").find(src)?.groupValues?.get(1)?.toIntOrNull() ?: fallback
+    fun calcMbps(tx: Long, rx: Long, prevTx: Long, prevRx: Long, dtMs: Long): String {
+        if (dtMs <= 0 || (prevTx == 0L && prevRx == 0L)) return "0.0"
+        val bytes = (tx - prevTx).coerceAtLeast(0) + (rx - prevRx).coerceAtLeast(0)
+        return "%.1f".format(bytes * 8.0 / dtMs / 1000.0)
     }
 
     val savedUrl = prefs.getString("rtsp_url", "rtsp://192.168.88.100:554/stream1")
@@ -233,7 +245,8 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
 
     // ── RC 遥控器状态 ──
     var rcConnected by remember { mutableStateOf(false) }
-    var rcChs by remember { mutableStateOf(listOf(0,0,0,0,0,0)) }
+    var rcChs by remember { mutableStateOf(List(16) { 1500 }) }
+    var rcRawChs by remember { mutableStateOf(List(6) { 0 }) }
     var rcMode by remember { mutableStateOf("?") }
     var rcBtn by remember { mutableStateOf(0) }; var rcStop by remember { mutableStateOf(0) }
     var rcFocus by remember { mutableStateOf(0) }; var rcShot by remember { mutableStateOf(0) }
@@ -292,18 +305,34 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
     // ── 心跳轮询 ──
     LaunchedEffect(vpnRunning) {
         if (!vpnRunning) { hbCount = 0; return@LaunchedEffect }
+        var prevTx = hbTx
+        var prevRx = hbRx
+        var prevAt = System.currentTimeMillis()
         while (vpnRunning) {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 try {
                     val text = java.net.URL("http://10.0.0.1:8080/api/heartbeat").openConnection()
                         .apply { connectTimeout = 2000; readTimeout = 2000 }
                         .getInputStream().bufferedReader().readText()
+                    val statsText = try {
+                        java.net.URL("http://10.0.0.1:8080/api/stats").openConnection()
+                            .apply { connectTimeout = 1500; readTimeout = 1500 }
+                            .getInputStream().bufferedReader().readText()
+                    } catch (_: Exception) { "" }
                     hbDaemon = text.contains("\"daemon\":true")
                     hbTty = text.contains("\"tty_ready\":true")
                     hbTun = text.contains("\"tun_up\":true")
-                    hbBw = Regex("\"bandwidth_mbps\":\"([^\"]+)\"").find(text)?.groupValues?.get(1) ?: "0.0"
-                    hbTx = Regex("\"tx_bytes\":(\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-                    hbRx = Regex("\"rx_bytes\":(\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                    val tx = jsonLong(statsText, "tx_bytes") ?: jsonLong(text, "tx_bytes") ?: hbTx
+                    val rx = jsonLong(statsText, "rx_bytes") ?: jsonLong(text, "rx_bytes") ?: hbRx
+                    val apiBw = jsonString(text, "bandwidth_mbps") ?: jsonString(statsText, "bandwidth_mbps")
+                    val nowMs = System.currentTimeMillis()
+                    val fallbackBw = calcMbps(tx, rx, prevTx, prevRx, nowMs - prevAt)
+                    hbBw = apiBw?.takeIf { it.isNotBlank() && it != "0.0" } ?: fallbackBw
+                    hbTx = tx
+                    hbRx = rx
+                    prevTx = tx
+                    prevRx = rx
+                    prevAt = nowMs
                     hbCount++
                 } catch (_: Exception) { hbDaemon = false; hbTty = false; hbTun = false }
             }
@@ -352,31 +381,19 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                         .getInputStream().bufferedReader().readText()
                     if (text.contains("\"error\"")) { rcConnected = false; return@withContext }
                     rcConnected = true
-                    rcChs = listOf(
-                        Regex("\"ch1\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
-                        Regex("\"ch2\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
-                        Regex("\"ch3\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
-                        Regex("\"ch4\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
-                        Regex("\"ch5\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
-                        Regex("\"ch6\":(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0)
-                    rcMode = Regex("\"mode\":\"([^\"]+)\"").find(text)?.groupValues?.get(1) ?: "?"
-                    rcBtn = Regex("\"btn\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcStop = Regex("\"stop\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcFocus = Regex("\"focus\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcShot = Regex("\"shot\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcRec = Regex("\"rec\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcRth = Regex("\"rth\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcC1 = Regex("\"c1\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcC2 = Regex("\"c2\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcC3 = Regex("\"c3\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcDial = Regex("\"dial\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcUp = Regex("\"up\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcDown = Regex("\"down\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcLeft = Regex("\"left\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcRight = Regex("\"right\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcAircraft = Regex("\"aircraft\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcBack = Regex("\"back\":(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    rcType = Regex("\"type\":\"([^\"]+)\"").find(text)?.groupValues?.get(1) ?: ""
+                    val channels = (1..16).map { jsonInt(text, "ch$it", 1500) }
+                    rcChs = channels
+                    rcRawChs = (1..6).map { jsonInt(text, "raw_ch$it", channels.getOrElse(it - 1) { 1500 } - 1500) }
+                    rcMode = jsonString(text, "mode") ?: "?"
+                    rcBtn = jsonInt(text, "btn"); rcStop = jsonInt(text, "stop")
+                    rcFocus = jsonInt(text, "focus"); rcShot = jsonInt(text, "shot")
+                    rcRec = jsonInt(text, "rec"); rcRth = jsonInt(text, "rth")
+                    rcC1 = jsonInt(text, "c1"); rcC2 = jsonInt(text, "c2")
+                    rcC3 = jsonInt(text, "c3"); rcDial = jsonInt(text, "dial")
+                    rcUp = jsonInt(text, "up"); rcDown = jsonInt(text, "down")
+                    rcLeft = jsonInt(text, "left"); rcRight = jsonInt(text, "right")
+                    rcAircraft = jsonInt(text, "aircraft"); rcBack = jsonInt(text, "back")
+                    rcType = jsonString(text, "type") ?: ""
                 } catch (_: Exception) { rcConnected = false }
             }
             kotlinx.coroutines.delay(500)
@@ -430,6 +447,100 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                 playerRef = client; isPlaying = true; statusText = "连接中..."
                 playerHolder.set(client)
             } catch (e: Exception) { Log.e("TunNatHub", "播放失败", e); statusText = "播放失败" }
+        }
+    }
+
+    @Composable
+    fun RcPanelContent() {
+        fun sbusPct(v: Int): Float = ((v - 1000f) / (2000f - 1000f)).coerceIn(0f, 1f)
+
+        @Composable
+        fun SmallChip(label: String, active: Boolean, value: String = "") {
+            Surface(color = if (active) Color(0xFF14532D) else Color(0xFF1E293B), shape = RoundedCornerShape(4.dp)) {
+                Text(
+                    text = if (value.isNotEmpty()) "$label:$value" else label,
+                    fontSize = 9.sp,
+                    color = if (active) Color(0xFF22C55E) else Color(0xFF64748B),
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
+                )
+            }
+        }
+
+        @Composable
+        fun ChannelBar(label: String, value: Int, raw: Int? = null) {
+            val pct = sbusPct(value)
+            val centered = kotlin.math.abs(value - 1500) <= 20
+            val col = when {
+                centered -> Color(0xFF22C55E)
+                value > 1500 -> Color(0xFF38BDF8)
+                else -> Color(0xFFF59E0B)
+            }
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(label, fontSize = 10.sp, color = Color(0xFF94A3B8), modifier = Modifier.width(42.dp))
+                Box(modifier = Modifier.weight(1f).height(14.dp).background(Color(0xFF1E293B), RoundedCornerShape(4.dp))) {
+                    Box(modifier = Modifier.fillMaxWidth(pct).fillMaxHeight().background(col, RoundedCornerShape(4.dp)))
+                    Box(modifier = Modifier.align(Alignment.Center).width(2.dp).fillMaxHeight().background(Color(0xAAE2E8F0)))
+                }
+                Text(
+                    text = if (raw != null) "$value raw_ch${label.removePrefix("CH")}=$raw" else value.toString(),
+                    fontSize = 10.sp,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    color = Color(0xFFE2E8F0),
+                    modifier = Modifier.width(if (raw != null) 112.dp else 48.dp).padding(start = 6.dp)
+                )
+            }
+        }
+
+        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column {
+                    Text("RC 遥控", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+                    Text(if (rcConnected) "dji_rc online ${rcType}" else "等待 dji_rc 数据", fontSize = 11.sp, color = if (rcConnected) Color(0xFF22C55E) else Color(0xFF64748B))
+                }
+                SmallChip("MODE", rcMode != "?", rcMode)
+            }
+            Spacer(Modifier.height(14.dp))
+
+            Text("摇杆 CH1-CH6 (1000 / 1500 / 2000)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+            Spacer(Modifier.height(6.dp))
+            for (i in 1..6) {
+                ChannelBar("CH$i", rcChs.getOrElse(i - 1) { 1500 }, rcRawChs.getOrNull(i - 1))
+            }
+
+            Spacer(Modifier.height(14.dp))
+            Text("全部通道", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+            Spacer(Modifier.height(6.dp))
+            for (i in 1..16) {
+                ChannelBar("CH$i", rcChs.getOrElse(i - 1) { 1500 })
+            }
+
+            Spacer(Modifier.height(14.dp))
+            Text("按键 / 拨轮", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+            Spacer(Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SmallChip("BTN", rcBtn > 0, rcBtn.takeIf { it > 0 }?.toString() ?: "")
+                SmallChip("STOP", rcStop > 0)
+                SmallChip("RTH", rcRth > 0)
+                SmallChip("C1", rcC1 > 0)
+                SmallChip("C2", rcC2 > 0)
+                SmallChip("C3", rcC3 > 0)
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SmallChip("FOCUS", rcFocus > 0)
+                SmallChip("SHOT", rcShot > 0)
+                SmallChip("REC", rcRec > 0)
+                SmallChip("DIAL", rcDial != 0, rcDial.takeIf { it != 0 }?.toString() ?: "")
+                SmallChip("BACK", rcBack > 0)
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SmallChip("UP", rcUp > 0)
+                SmallChip("DOWN", rcDown > 0)
+                SmallChip("LEFT", rcLeft > 0)
+                SmallChip("RIGHT", rcRight > 0)
+                SmallChip("AIR", rcAircraft > 0)
+            }
         }
     }
 
@@ -515,6 +626,13 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                         }
                         Text("视频", fontSize = 9.sp, color = if (selectedTab == Tab.VIDEO) Color(0xFF38BDF8) else Color(0xFF475569))
                         Spacer(Modifier.height(12.dp))
+                        IconButton(onClick = { selectedTab = Tab.REMOTE }, modifier = Modifier.size(40.dp)) {
+                            Icon(Icons.Filled.SportsEsports, "遥控",
+                                tint = if (selectedTab == Tab.REMOTE) Color(0xFF38BDF8) else Color(0xFF475569),
+                                modifier = Modifier.size(22.dp))
+                        }
+                        Text("遥控", fontSize = 9.sp, color = if (selectedTab == Tab.REMOTE) Color(0xFF38BDF8) else Color(0xFF475569))
+                        Spacer(Modifier.height(12.dp))
                         IconButton(onClick = { selectedTab = Tab.CONFIG }, modifier = Modifier.size(40.dp)) {
                             Icon(Icons.Filled.Settings, "配置",
                                 tint = if (selectedTab == Tab.CONFIG) Color(0xFF38BDF8) else Color(0xFF475569),
@@ -581,6 +699,12 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    if (selectedTab == Tab.REMOTE) {
+                        Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0F172A)) {
+                            RcPanelContent()
                         }
                     }
 
@@ -683,52 +807,7 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                                 // ── RC 遥控器 ──
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("RC 遥控器")
-                                if (!rcConnected) {
-                                    Text("等待 dji_rc daemon...", fontSize = 10.sp, color = Color(0xFF64748B))
-                                } else {
-                                    // 6通道柱状图
-                                    rcChs.forEachIndexed { i, v ->
-                                        val max = 660f; val pct = (kotlin.math.abs(v) / max).coerceIn(0f, 1f)
-                                        val col = if (v >= 0) Color(0xFF38BDF8) else Color(0xFFF59E0B)
-                                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Text("CH${i+1}", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(24.dp))
-                                            Box(modifier = Modifier.weight(1f).height(10.dp).background(Color(0xFF1E293B), RoundedCornerShape(3.dp))) {
-                                                Box(modifier = Modifier.fillMaxWidth(pct).fillMaxHeight().background(col, RoundedCornerShape(3.dp)))
-                                            }
-                                            Text(if (v >= 0) "+$v" else "$v", fontSize = 10.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, color = if (v != 0) Color(0xFFE2E8F0) else Color(0xFF475569), modifier = Modifier.width(42.dp).padding(end = 4.dp))
-                                        }
-                                    }
-                                    // 按键状态
-                                    Spacer(Modifier.height(6.dp))
-                                    val btnFlags = mapOf(
-                                        "MODE" to (if (rcMode == "S") "S" else if (rcMode == "N") "N" else if (rcMode == "F") "F" else rcMode),
-                                        "BTN" to rcBtn, "STOP" to rcStop, "RTH" to rcRth,
-                                        "C1" to rcC1, "C2" to rcC2, "C3" to rcC3)
-                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        btnFlags.forEach { (k, v) ->
-                                            val on = when (v) { is Int -> v > 0; is String -> v != "?"; else -> false }
-                                            Surface(color = if (on) Color(0xFF166534) else Color(0xFF1E293B), shape = RoundedCornerShape(3.dp)) {
-                                                Text("$k${
-                                                    when {
-                                                        k == "MODE" && v is String -> ":$v"
-                                                        v is Int && v > 0 -> "·"
-                                                        else -> ""
-                                                    }}", fontSize = 8.sp, color = if (on) Color(0xFF22C55E) else Color(0xFF475569), modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
-                                            }
-                                        }
-                                    }
-                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        mapOf("FOCUS" to rcFocus, "SHOT" to rcShot, "REC" to rcRec,
-                                              "DIAL" to rcDial, "UP" to rcUp, "DN" to rcDown,
-                                              "L" to rcLeft, "R" to rcRight, "AC" to rcAircraft, "BACK" to rcBack).forEach { (k, v) ->
-                                            Surface(color = if (v > 0) Color(0xFF166534) else Color(0xFF1E293B), shape = RoundedCornerShape(3.dp)) {
-                                                Text(if (k == "DIAL") "$k:$v" else if (v > 0) "$k·" else k, fontSize = 8.sp, color = if (v > 0) Color(0xFF22C55E) else Color(0xFF475569), modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
-                                            }
-                                        }
-                                    }
-                                    val avgStick = rcChs.map { kotlin.math.abs(it) }.average().toInt()
-                                    Text("avg|ch|=$avgStick  ${rcType}", fontSize = 8.sp, color = Color(0xFF475569), modifier = Modifier.padding(top = 4.dp))
-                                }
+                                Text("已移到左侧栏“遥控”页，显示 CH1-CH16、raw_ch1-raw_ch6、C1/C2/BACK 等按键。", fontSize = 10.sp, color = Color(0xFF64748B), lineHeight = 15.sp)
 
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("解码器")
