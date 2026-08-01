@@ -520,27 +520,18 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
         }
 
         @Composable
-        fun SbusMappingGrid() {
-            val mapping = listOf(
-                Triple("CH7", "MODE", rcChs.getOrElse(6) { 1500 }.toString()),
-                Triple("CH8", "REC", rcChs.getOrElse(7) { 1000 }.toString()),
-                Triple("CH9", "RTH", rcChs.getOrElse(8) { 1000 }.toString()),
-                Triple("CH10", "FOCUS/SHOT", rcChs.getOrElse(9) { 1000 }.toString()),
-                Triple("CH11", "AIRCRAFT", rcChs.getOrElse(10) { 1000 }.toString()),
-                Triple("CH12", "DIAL", rcChs.getOrElse(11) { 1000 }.toString()),
-                Triple("CH13", "STOP", rcChs.getOrElse(12) { 1000 }.toString()),
-                Triple("CH14", "C1/C2", rcChs.getOrElse(13) { 1000 }.toString()),
-                Triple("CH15", "C3", rcChs.getOrElse(14) { 1000 }.toString()),
-                Triple("CH16", "BTN/D-PAD", rcChs.getOrElse(15) { 1000 }.toString())
-            )
-            for (rowStart in mapping.indices step 2) {
+        fun SbusChannelGrid() {
+            val channels = (1..16).map { ch ->
+                Triple("CH$ch", rcChs.getOrElse(ch - 1) { if (ch <= 6) 1500 else 1000 }, rcRawChs.getOrNull(ch - 1))
+            }
+            for (rowStart in channels.indices step 2) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    mapping.drop(rowStart).take(2).forEach { (ch, name, value) ->
-                        StatusChip("$ch $name", value, value != "1000", modifier = Modifier.weight(1f))
+                    channels.drop(rowStart).take(2).forEach { (label, value, raw) ->
+                        ChannelBar(label, value, raw, modifier = Modifier.weight(1f))
                     }
-                    if (rowStart + 1 >= mapping.size) Spacer(modifier = Modifier.weight(1f))
+                    if (rowStart + 1 >= channels.size) Spacer(modifier = Modifier.weight(1f))
                 }
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(4.dp))
             }
         }
 
@@ -610,16 +601,9 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
             }
             Spacer(Modifier.height(14.dp))
 
-            Text("真实输入 CH1-CH6 (raw_ch / SBUS)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
-            Spacer(Modifier.height(6.dp))
-            for (i in 1..6) {
-                ChannelBar("CH$i", rcChs.getOrElse(i - 1) { 1500 }, rcRawChs.getOrNull(i - 1), modifier = Modifier.fillMaxWidth())
-            }
-
-            Spacer(Modifier.height(14.dp))
-            Text("SBUS 输出映射", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+            Text("SBUS CH1-CH16", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
             Spacer(Modifier.height(8.dp))
-            SbusMappingGrid()
+            SbusChannelGrid()
 
             Spacer(Modifier.height(8.dp))
             Text("三档开关", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
