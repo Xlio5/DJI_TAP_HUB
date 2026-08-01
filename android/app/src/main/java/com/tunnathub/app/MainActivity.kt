@@ -396,7 +396,7 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                     rcType = jsonString(text, "type") ?: ""
                 } catch (_: Exception) { rcConnected = false }
             }
-            kotlinx.coroutines.delay(500)
+            kotlinx.coroutines.delay(50)
         }
     }
 
@@ -467,7 +467,7 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
         }
 
         @Composable
-        fun ChannelBar(label: String, value: Int, raw: Int? = null) {
+        fun ChannelBar(label: String, value: Int, raw: Int? = null, modifier: Modifier = Modifier) {
             val pct = sbusPct(value)
             val centered = kotlin.math.abs(value - 1500) <= 20
             val col = when {
@@ -475,19 +475,52 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                 value > 1500 -> Color(0xFF38BDF8)
                 else -> Color(0xFFF59E0B)
             }
-            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(label, fontSize = 10.sp, color = Color(0xFF94A3B8), modifier = Modifier.width(42.dp))
+            Row(modifier = modifier.padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(label, fontSize = 10.sp, color = Color(0xFF94A3B8), modifier = Modifier.width(34.dp))
                 Box(modifier = Modifier.weight(1f).height(14.dp).background(Color(0xFF1E293B), RoundedCornerShape(4.dp))) {
                     Box(modifier = Modifier.fillMaxWidth(pct).fillMaxHeight().background(col, RoundedCornerShape(4.dp)))
                     Box(modifier = Modifier.align(Alignment.Center).width(2.dp).fillMaxHeight().background(Color(0xAAE2E8F0)))
                 }
                 Text(
-                    text = if (raw != null) "$value raw_ch${label.removePrefix("CH")}=$raw" else value.toString(),
+                    text = if (raw != null) "$value/$raw" else value.toString(),
                     fontSize = 10.sp,
                     fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                     color = Color(0xFFE2E8F0),
-                    modifier = Modifier.width(if (raw != null) 112.dp else 48.dp).padding(start = 6.dp)
+                    modifier = Modifier.width(if (raw != null) 72.dp else 46.dp).padding(start = 6.dp)
                 )
+            }
+        }
+
+        @Composable
+        fun ModeSwitch(mode: String) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                listOf("S", "N", "F").forEach { pos ->
+                    SmallChip(pos, mode == pos)
+                }
+            }
+        }
+
+        @Composable
+        fun ButtonStatusGrid() {
+            val buttons = listOf(
+                "BTN" to rcBtn, "STOP" to rcStop, "RTH" to rcRth,
+                "C1" to rcC1, "C2" to rcC2, "C3" to rcC3,
+                "FOCUS" to rcFocus, "SHOT" to rcShot, "REC" to rcRec,
+                "DIAL" to rcDial, "BACK" to rcBack, "AIR" to rcAircraft,
+                "UP" to rcUp, "DOWN" to rcDown, "LEFT" to rcLeft, "RIGHT" to rcRight
+            )
+            for (rowStart in buttons.indices step 4) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    buttons.drop(rowStart).take(4).forEach { (name, value) ->
+                        Box(modifier = Modifier.weight(1f)) {
+                            SmallChip(name, value != 0, value.takeIf { it != 0 }?.toString() ?: "")
+                        }
+                    }
+                    repeat(4 - buttons.drop(rowStart).take(4).size) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
             }
         }
 
@@ -497,50 +530,39 @@ fun TunNatHubApp(usbFound: Boolean, vpnRunning: Boolean, connectionState: String
                     Text("RC 遥控", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
                     Text(if (rcConnected) "dji_rc online ${rcType}" else "等待 dji_rc 数据", fontSize = 11.sp, color = if (rcConnected) Color(0xFF22C55E) else Color(0xFF64748B))
                 }
-                SmallChip("MODE", rcMode != "?", rcMode)
+                ModeSwitch(rcMode)
             }
             Spacer(Modifier.height(14.dp))
 
-            Text("摇杆 CH1-CH6 (1000 / 1500 / 2000)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+            Text("通道 CH1-CH16 (1000 / 1500 / 2000)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
             Spacer(Modifier.height(6.dp))
-            for (i in 1..6) {
-                ChannelBar("CH$i", rcChs.getOrElse(i - 1) { 1500 }, rcRawChs.getOrNull(i - 1))
+            for (rowStart in 1..16 step 2) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ChannelBar(
+                        "CH$rowStart",
+                        rcChs.getOrElse(rowStart - 1) { 1500 },
+                        rcRawChs.getOrNull(rowStart - 1),
+                        modifier = Modifier.weight(1f)
+                    )
+                    val right = rowStart + 1
+                    ChannelBar(
+                        "CH$right",
+                        rcChs.getOrElse(right - 1) { 1500 },
+                        rcRawChs.getOrNull(right - 1),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
 
             Spacer(Modifier.height(14.dp))
-            Text("全部通道", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
-            Spacer(Modifier.height(6.dp))
-            for (i in 1..16) {
-                ChannelBar("CH$i", rcChs.getOrElse(i - 1) { 1500 })
-            }
+            Text("三档开关", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+            Spacer(Modifier.height(8.dp))
+            ModeSwitch(rcMode)
 
             Spacer(Modifier.height(14.dp))
             Text("按键 / 拨轮", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
             Spacer(Modifier.height(8.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                SmallChip("BTN", rcBtn > 0, rcBtn.takeIf { it > 0 }?.toString() ?: "")
-                SmallChip("STOP", rcStop > 0)
-                SmallChip("RTH", rcRth > 0)
-                SmallChip("C1", rcC1 > 0)
-                SmallChip("C2", rcC2 > 0)
-                SmallChip("C3", rcC3 > 0)
-            }
-            Spacer(Modifier.height(6.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                SmallChip("FOCUS", rcFocus > 0)
-                SmallChip("SHOT", rcShot > 0)
-                SmallChip("REC", rcRec > 0)
-                SmallChip("DIAL", rcDial != 0, rcDial.takeIf { it != 0 }?.toString() ?: "")
-                SmallChip("BACK", rcBack > 0)
-            }
-            Spacer(Modifier.height(6.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                SmallChip("UP", rcUp > 0)
-                SmallChip("DOWN", rcDown > 0)
-                SmallChip("LEFT", rcLeft > 0)
-                SmallChip("RIGHT", rcRight > 0)
-                SmallChip("AIR", rcAircraft > 0)
-            }
+            ButtonStatusGrid()
         }
     }
 
