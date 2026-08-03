@@ -32,6 +32,10 @@
 #include <unistd.h>
 #include <vector>
 
+extern "C" {
+#include "rc_map.h"
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
@@ -181,7 +185,19 @@ struct Config {
     std::string tunSubnet = "10.0.0.0/24";
     std::vector<ForwardRule> forwards;
     std::vector<Camera> cameras;
+
+    // ── RC 输出 (SBUS/CRSF @UART0) ──
+    std::string rcOutMode = "sbus";       // "sbus" | "crsf"
+    std::string rcOutDevice = "/dev/ttyS0";
+    std::string rcOutBaud = "auto";       // "auto" | 具体波特率
+    std::string rcOutPreset = "default";  // "default" | "aetr" | "taer" | "custom"
+    std::string rcOutMap = "";            // 逗号分隔 source: "ch1,ch2,...,dir"
+    int         rcOutCrsfMs = 10;         // CRSF 发送周期 (ms, 预留)
+    bool        rcOutCrsfTelem = true;    // CRSF 接收回传
 };
+
+/* 前置声明: apiConfig 会调用它 */
+static std::string apiRcOutput(const Config& cfg);
 
 // 极简 JSON 字符串提取
 // 提取 JSON 值 (支持字符串 "..."、数字、bool)
@@ -342,6 +358,30 @@ static Config loadConfig() {
         }
     }
 
+    // parse rc_output (SBUS/CRSF 输出配置)
+    auto roPos = json.find("\"rc_output\"");
+    if (roPos != std::string::npos) {
+        auto roStart = json.find("{", roPos);
+        auto roEnd = json.find("}", roStart);
+        if (roStart != std::string::npos && roEnd != std::string::npos) {
+            std::string ro = json.substr(roStart, roEnd - roStart + 1);
+            auto mv = jsonStr(ro, "mode");
+            if (!mv.empty()) cfg.rcOutMode = mv;
+            mv = jsonStr(ro, "device");
+            if (!mv.empty()) cfg.rcOutDevice = mv;
+            mv = jsonStr(ro, "baud");
+            if (!mv.empty()) cfg.rcOutBaud = mv;
+            mv = jsonStr(ro, "map_preset");
+            if (!mv.empty()) cfg.rcOutPreset = mv;
+            mv = jsonStr(ro, "map");
+            if (!mv.empty()) cfg.rcOutMap = mv;
+            cfg.rcOutCrsfMs = jsonInt(ro, "crsf_period_ms");
+            if (cfg.rcOutCrsfMs < 5) cfg.rcOutCrsfMs = 10;
+            auto tb = jsonStr(ro, "crsf_telem");
+            if (!tb.empty()) cfg.rcOutCrsfTelem = (tb == "true");
+        }
+    }
+
     // 自动检测 LAN 网段变化
     auto detected = detectLanSubnet();
     if (!detected.empty() && detected != cfg.lanSubnet) {
@@ -372,7 +412,16 @@ static void saveConfig(const Config& cfg) {
         ss << "    {\"name\":\"" << c.name << "\",\"url\":\"" << c.url << "\"}";
         ss << (i+1 < cfg.cameras.size() ? ",\n" : "\n");
     }
-    ss << "  ]\n}\n";
+    ss << "  ],\n";
+    ss << "  \"rc_output\": {\n";
+    ss << "    \"mode\": \"" << cfg.rcOutMode << "\",\n";
+    ss << "    \"device\": \"" << cfg.rcOutDevice << "\",\n";
+    ss << "    \"baud\": \"" << cfg.rcOutBaud << "\",\n";
+    ss << "    \"map_preset\": \"" << cfg.rcOutPreset << "\",\n";
+    ss << "    \"map\": \"" << cfg.rcOutMap << "\",\n";
+    ss << "    \"crsf_period_ms\": " << cfg.rcOutCrsfMs << ",\n";
+    ss << "    \"crsf_telem\": " << (cfg.rcOutCrsfTelem ? "true" : "false") << "\n";
+    ss << "  }\n}\n";
     std::string json = ss.str();
     if (json.size() > CFG_MAX - 2) {
         std::cerr << "[cfg] ERROR: config too large (" << json.size() << " > " << (CFG_MAX-2) << ")" << std::endl;
@@ -893,6 +942,9 @@ static std::string apiConfig() {
     cArr += "]";
     obj.body += ",\"cameras\":" + cArr;
 
+    // rc_output (SBUS/CRSF 输出配置)
+    obj.body += ",\"rc_output\":" + apiRcOutput(cfg);
+
     // first flag is still set if no pairs added yet... handle the hard-coded additions
     return obj.done();
 }
@@ -910,6 +962,41 @@ static std::string apiIptables() {
 // ═══════════════════════════════════════════════════════════════
 // HTTP 请求分发
 // ═══════════════════════════════════════════════════════════════
+
+/* 默认通道映射字符串: "ch1,ch2,...,dir" */
+static std::string default_map_str() {
+    uint8_t map[CH_COUNT];
+    rc_map_default(map);
+    std::string s;
+    for (int i = 0; i < CH_COUNT; i++) {
+        if (i) s += ",";
+        s += rc_src_name((rc_src_t)map[i]);
+    }
+    return s;
+}
+
+/* GET /api/rc/output — 返回当前 RC 输出配置 (SBUS/CRSF + 通道映射) */
+static std::string apiRcOutput(const Config& cfg) {
+    JsonObj obj;
+    obj.pair("mode", JsonValue::string(cfg.rcOutMode));
+    obj.pair("device", JsonValue::string(cfg.rcOutDevice));
+    obj.pair("baud", JsonValue::string(cfg.rcOutBaud));
+    obj.pair("map_preset", JsonValue::string(cfg.rcOutPreset));
+    std::string mapStr = cfg.rcOutMap.empty() ? default_map_str() : cfg.rcOutMap;
+    obj.pair("map", JsonValue::string(mapStr));
+    obj.pair("crsf_period_ms", JsonValue::number(cfg.rcOutCrsfMs));
+    obj.pair("crsf_telem", JsonValue::boolean(cfg.rcOutCrsfTelem));
+    obj.pair("baud_sbus", JsonValue::number(100000));
+    obj.pair("baud_crsf", JsonValue::number(420000));
+    /* 可用 source 列表 (供 app 下拉) */
+    std::string srcs;
+    for (int i = 1; i < SRC_COUNT; i++) {
+        if (i > 1) srcs += ",";
+        srcs += rc_src_name((rc_src_t)i);
+    }
+    obj.pair("sources", JsonValue::string(srcs));
+    return obj.done();
+}
 
 static Response handleRequest(const Request& req) {
     Response resp;
@@ -953,6 +1040,19 @@ static Response handleRequest(const Request& req) {
             } else {
                 resp.body = R"({"error":"RC daemon not running"})";
             }
+        } else if (p == "/api/rc/output") {
+            Config c = loadConfig();
+            resp.body = apiRcOutput(c);
+        } else if (p == "/api/rc/telemetry") {
+            // 读取 dji_rc 写入的回传数据文件
+            std::ifstream f("/var/log/rc_telem.json");
+            if (f.is_open()) {
+                std::stringstream ss; ss << f.rdbuf();
+                resp.body = ss.str();
+                if (resp.body.empty()) resp.body = R"({"error":"no telemetry yet"})";
+            } else {
+                resp.body = "{\"error\":\"no telemetry (CRSF mode only)\"}";
+            }
         } else if (p == "/api/version") {
             JsonObj obj;
             obj.pair("version", JsonValue::string(VERSION));
@@ -993,6 +1093,25 @@ static Response handleRequest(const Request& req) {
             saveConfig(cfg);
             JsonObj obj;
             obj.pair("ok", JsonValue::boolean(true));
+            resp.body = obj.done();
+        } else if (p == "/api/rc/output") {
+            /* 保存 RC 输出配置; dji_rc 每 2s 检测变化后自动重启生效 */
+            auto mv = jsonStr(req.body, "mode");
+            if (mv == "sbus" || mv == "crsf") cfg.rcOutMode = mv;
+            auto bd = jsonStr(req.body, "baud");
+            if (!bd.empty()) cfg.rcOutBaud = bd;
+            auto ps = jsonStr(req.body, "map_preset");
+            if (!ps.empty()) cfg.rcOutPreset = ps;
+            auto mp = jsonStr(req.body, "map");
+            if (!mp.empty()) cfg.rcOutMap = mp;
+            auto tb = jsonStr(req.body, "crsf_telem");
+            if (tb == "true" || tb == "false") cfg.rcOutCrsfTelem = (tb == "true");
+            int per = jsonInt(req.body, "crsf_period_ms");
+            if (per >= 5 && per <= 100) cfg.rcOutCrsfMs = per;
+            saveConfig(cfg);
+            JsonObj obj;
+            obj.pair("ok", JsonValue::boolean(true));
+            obj.pair("mode", JsonValue::string(cfg.rcOutMode));
             resp.body = obj.done();
         } else if (p == "/api/camera/add") {
             Camera c;

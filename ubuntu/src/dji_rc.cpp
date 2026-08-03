@@ -23,6 +23,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <termios.h>
 #include <unistd.h>
@@ -32,7 +33,15 @@ extern "C" {
 #include "rc_decode.h"
 #include "chmap.h"
 #include "sbus.h"
+#include "crsf.h"
+#include "rc_map.h"
 }
+
+// 自定义波特率 (termios2 BOTHER): 标准 termios 表没有 100000/400000/420000。
+// 用宏把内核 <asm/termbits.h> 的 struct termios 重命名, 避免与 glibc <termios.h> 冲突。
+#define termios asm_termios
+#include <asm/termbits.h>
+#undef termios
 
 // ═══════════════════════════════════════════════════════════════════════
 // 端口状态
@@ -59,11 +68,25 @@ static std::mutex g_mtx;
 static std::atomic<bool> g_stop{false};
 static int g_debug_fd = -1;
 static int64_t g_last_debug_us = 0;
-static int g_sbus_fd = -1;
 
+// ── 输出 (SBUS/CRSF @UART0) ──
+static int g_out_fd = -1;
+static char g_out_mode = 's';           // 's' = SBUS, 'c' = CRSF
+static int  g_out_baud = 100000;        // 实际波特率 (SBUS=100000, CRSF=420000)
+static bool g_crsf_telem = true;        // CRSF 是否接收回传
+static bool g_ch_map_valid = false;     // 通道映射已从配置加载
+static uint8_t g_ch_map[CH_COUNT];      // 通道映射表
+static crsf_telem_t g_telem;            // 最近回传数据 (CRSF 回传线程写)
+
+// ── rcmsg (RC 数据 UDP) ──
 static constexpr uint32_t RCMSG_MAGIC = 0x314D4352u;  // "RCM1", little-endian on wire
 static constexpr int RCMSG_PORT = 65530;
 static constexpr const char *RCMSG_HOST = "10.0.0.2";
+
+// ── tlm (回传数据 UDP) ──
+static constexpr uint32_t TLM_MAGIC = 0x314D4C54u;    // "TLM1", little-endian on wire
+static constexpr int TLM_PORT = 65531;
+static int g_tlm_fd = -1;
 
 #pragma pack(push, 1)
 struct RcMsg {
@@ -171,6 +194,47 @@ static int uart_open(const char *dev, int baud)
     tcsetattr(fd, TCSANOW, &tty);
 
     std::printf("[dji_rc] %s @%d 已打开 fd=%d\n", dev, baud, fd);
+    return fd;
+}
+
+/* 打开 UART0 作为协议输出口 (SBUS/CRSF), 支持任意波特率 + 8E2/8N1。
+ * even2: true=偶校验+2停止位(SBUS 100k 8E2), false=8N1(CRSF)。
+ * 波特率用 termios2 BOTHER 设任意值(100000/420000 等非标准)。
+ */
+static int uart_open_out(const char *dev, int baud, bool even2)
+{
+    int fd = ::open(dev, O_RDWR | O_NOCTTY | O_NONBLOCK);
+    if (fd < 0) {
+        std::fprintf(stderr, "[dji_rc] 输出口打开失败 %s: %s\n", dev, std::strerror(errno));
+        return -1;
+    }
+
+    struct termios2 t2;
+    std::memset(&t2, 0, sizeof(t2));
+    if (ioctl(fd, TCGETS2, &t2) < 0) {
+        std::fprintf(stderr, "[dji_rc] TCGETS2 失败 %s: %s\n", dev, std::strerror(errno));
+        ::close(fd);
+        return -1;
+    }
+    t2.c_iflag = IGNPAR;
+    t2.c_oflag = 0;
+    t2.c_lflag = 0;
+    t2.c_cflag = CLOCAL | CREAD | CS8;
+    t2.c_cflag &= ~(CBAUD | PARENB | PARODD | CSTOPB | CRTSCTS);
+    t2.c_cflag |= BOTHER | CS8;
+    if (even2) t2.c_cflag |= PARENB | CSTOPB;   /* 8E2: 偶校验 + 2 停止位 */
+    t2.c_ispeed = baud;
+    t2.c_ospeed = baud;
+    t2.c_cc[VMIN]  = 0;
+    t2.c_cc[VTIME] = 0;
+    if (ioctl(fd, TCSETS2, &t2) < 0) {
+        std::fprintf(stderr, "[dji_rc] TCSETS2 失败 %s @%d: %s\n", dev, baud, std::strerror(errno));
+        ::close(fd);
+        return -1;
+    }
+
+    std::printf("[dji_rc] 输出 %s @%d %s fd=%d\n", dev, baud, even2 ? "8E2" : "8N1", fd);
+    debug_log("[dji_rc][dbg] out %s @%d %s fd=%d", dev, baud, even2 ? "8E2" : "8N1", fd);
     return fd;
 }
 
@@ -429,19 +493,56 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
     }
 }
 
-// ── SBUS 输出: P20 每解一帧就立刻发 ──────────────────────────────
+// ── 协议输出: P20 每解一帧就立刻发 (SBUS/CRSF 由 g_out_mode 决定) ──────
 
+static void out_send(const rc_state_t &m)
+{
+    static uint32_t out_attempts = 0;
+    static uint32_t out_errors = 0;
+    if (g_out_fd < 0) return;
+
+    uint16_t ch[CH_COUNT];
+    rc_map_build(&m, g_ch_map_valid ? g_ch_map : NULL, ch);
+
+    int n = 0;
+    if (g_out_mode == 'c') {
+        uint8_t frame[CRSF_FRAME_MAX];
+        n = crsf_pack_channels(ch, frame);
+        if (n > 0) {
+            ssize_t w = ::write(g_out_fd, frame, (size_t)n);
+            out_attempts++;
+            if (w != n) { out_errors++; }
+        }
+    } else {
+        uint8_t frame[SBUS_FRAME_LEN];
+        sbus_encode(ch, frame);
+        ssize_t w = ::write(g_out_fd, frame, SBUS_FRAME_LEN);
+        out_attempts++;
+        if (w != SBUS_FRAME_LEN) { out_errors++; }
+    }
+
+    if (out_errors && out_attempts <= 10) {
+        std::printf("[dji_rc] out write fail attempts=%u errors=%u errno=%d\n",
+                    out_attempts, out_errors, errno);
+        debug_log("[dji_rc][dbg] out write fail attempts=%u errors=%u errno=%d",
+                  out_attempts, out_errors, errno);
+    } else if ((out_attempts <= 10 || (out_attempts % 100) == 0) && out_errors == 0) {
+        std::printf("[dji_rc] out ok mode=%c attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u\n",
+                    g_out_mode, out_attempts, ch[0], ch[1], ch[2], ch[3]);
+        debug_log("[dji_rc][dbg] out ok mode=%c attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u",
+                  g_out_mode, out_attempts, ch[0], ch[1], ch[2], ch[3]);
+    }
+}
+
+/* P20 解到帧时的事件驱动发送 (forward 声明在 rx_thread 上方) */
 static void sbus_send_if_p20(DjiPort *p)
 {
-    static uint32_t sbus_attempts = 0;
-    static uint32_t sbus_errors = 0;
-
     if (p != &g_p20) return;
     if (g_p20.state.type == RC_NONE) return;
 
     int64_t n = now_us();
     if ((n - g_p20.last_us) > 500000LL) return;
-    if (g_sbus_fd < 0) return;
+    if (g_out_fd < 0) return;
 
     int64_t age20 = n - g_p20.last_us;
     int64_t age0  = (g_p0.state.type == RC_NONE) ? INT64_MAX : n - g_p0.last_us;
@@ -449,27 +550,201 @@ static void sbus_send_if_p20(DjiPort *p)
     rc_state_t m;
     rc_merge(&g_p20.state, age20, &g_p0.state, age0, 500000LL, &m);
 
-    if (m.type != RC_NONE) {
-        uint16_t ch[CH_COUNT];
-        chmap_build(&m, ch);
-        uint8_t frame[SBUS_FRAME_LEN];
-        sbus_encode(ch, frame);
-        // write() outside mutex — caller must NOT hold g_mtx
-        ssize_t written = ::write(g_sbus_fd, frame, SBUS_FRAME_LEN);
-        sbus_attempts++;
-        if (written != SBUS_FRAME_LEN) {
-            sbus_errors++;
-            std::printf("[dji_rc] sbus write fail written=%d errno=%d attempts=%u errors=%u\n",
-                        (int)written, errno, sbus_attempts, sbus_errors);
-            debug_log("[dji_rc][dbg] sbus write fail written=%d errno=%d attempts=%u errors=%u",
-                      (int)written, errno, sbus_attempts, sbus_errors);
-        } else if (sbus_attempts <= 10 || (sbus_attempts % 50) == 0) {
-            std::printf("[dji_rc] sbus write ok attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u\n",
-                        sbus_attempts, ch[0], ch[1], ch[2], ch[3]);
-            debug_log("[dji_rc][dbg] sbus write ok attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u",
-                      sbus_attempts, ch[0], ch[1], ch[2], ch[3]);
+    if (m.type != RC_NONE) out_send(m);   // write() outside mutex
+}
+
+// ── CRSF 回传接收线程: 读 UART0 上行帧 (GPS/BATT/ATT/VARIO/LINK) ──
+
+static void crsf_rx_thread()
+{
+    crsf_rx_t rx;
+    crsf_rx_init(&rx);
+
+    while (!g_stop.load(std::memory_order_relaxed)) {
+        uint8_t buf[64];
+        ssize_t n = ::read(g_out_fd, buf, sizeof(buf));
+        if (n > 0) {
+            crsf_telem_t telem = g_telem;
+            for (ssize_t i = 0; i < n; i++) {
+                int r = crsf_rx_byte(&rx, buf[i]);
+                if (r > 0 && crsf_parse_frame(rx.buf, (uint8_t)r, &telem))
+                    telem.last_rx_us = now_us();
+            }
+            g_mtx.lock();
+            g_telem = telem;
+            g_mtx.unlock();
+        } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
+            if (g_stop.load(std::memory_order_relaxed)) break;
+            ::usleep(20000);   /* 硬件错误, 短暂等待后重试 */
+        } else {
+            ::usleep(2000);    /* 无数据, 2ms 轮询 (O_NONBLOCK) */
         }
     }
+}
+
+// ── 回传数据 UDP 发送 (TLM1) ──────────────────────────────────────
+
+#pragma pack(push, 1)
+struct TlmMsg {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t size;
+    uint64_t ts_us;
+    int8_t   up_rssi1, up_rssi2, up_snr;
+    uint8_t  up_quality;
+    int8_t   dn_rssi1, dn_rssi2, dn_snr;
+    uint8_t  dn_quality;
+    uint8_t  has_gps;
+    int32_t  lat_degE7, lon_degE7;
+    uint16_t gps_speed_kmh10, gps_heading_deg10;
+    int32_t  gps_alt_mm;
+    uint8_t  gps_sats;
+    uint8_t  has_batt;
+    uint16_t batt_voltage_mV10, batt_current_mA10;
+    uint32_t batt_capacity_mAh;
+    uint8_t  batt_remaining_pct;
+    uint8_t  has_att;
+    int16_t  att_pitch_deg100, att_roll_deg100, att_yaw_deg100;
+    uint8_t  has_vario;
+    int32_t  vario_cms;
+    uint8_t  has_fmode;
+    char     flight_mode[24];
+};
+#pragma pack(pop)
+
+static void send_tlm(int fd, const sockaddr_in &dst, const crsf_telem_t &t)
+{
+    if (fd < 0) return;
+    TlmMsg msg{};
+    msg.magic = TLM_MAGIC;
+    msg.version = 1;
+    msg.size = sizeof(TlmMsg);
+    msg.ts_us = (uint64_t)t.last_rx_us;
+    msg.up_rssi1 = t.up_rssi1; msg.up_rssi2 = t.up_rssi2; msg.up_snr = t.up_snr;
+    msg.up_quality = t.up_quality;
+    msg.dn_rssi1 = t.dn_rssi1; msg.dn_rssi2 = t.dn_rssi2; msg.dn_snr = t.dn_snr;
+    msg.dn_quality = t.dn_quality;
+    msg.has_gps = t.has_gps; msg.lat_degE7 = t.lat_degE7; msg.lon_degE7 = t.lon_degE7;
+    msg.gps_speed_kmh10 = t.gps_speed_kmh10; msg.gps_heading_deg10 = t.gps_heading_deg10;
+    msg.gps_alt_mm = t.gps_alt_mm; msg.gps_sats = t.gps_sats;
+    msg.has_batt = t.has_batt; msg.batt_voltage_mV10 = t.batt_voltage_mV10;
+    msg.batt_current_mA10 = t.batt_current_mA10; msg.batt_capacity_mAh = t.batt_capacity_mAh;
+    msg.batt_remaining_pct = t.batt_remaining_pct;
+    msg.has_att = t.has_att; msg.att_pitch_deg100 = t.att_pitch_deg100;
+    msg.att_roll_deg100 = t.att_roll_deg100; msg.att_yaw_deg100 = t.att_yaw_deg100;
+    msg.has_vario = t.has_vario; msg.vario_cms = t.vario_cms;
+    msg.has_fmode = t.has_fmode; memcpy(msg.flight_mode, t.flight_mode, sizeof(msg.flight_mode));
+
+    ::sendto(fd, &msg, sizeof(msg), 0, (const sockaddr *)&dst, sizeof(dst));
+}
+
+/* 回传数据写状态文件 (供 web_server /api/rc/telemetry) */
+static void write_telem_file(const crsf_telem_t &t)
+{
+    char buf[512];
+    int w = snprintf(buf, sizeof(buf),
+        "{\"ts_us\":%lld,\"link\":{\"up_rssi\":%d,\"up_snr\":%d,\"up_quality\":%d,"
+        "\"dn_rssi\":%d,\"dn_snr\":%d,\"dn_quality\":%d},"
+        "\"gps\":{\"has\":%d,\"lat\":%lld,\"lon\":%lld,\"speed_kmh10\":%u,"
+        "\"heading_deg10\":%u,\"alt_mm\":%lld,\"sats\":%u},"
+        "\"batt\":{\"has\":%d,\"voltage_mv10\":%u,\"current_ma10\":%u,"
+        "\"capacity_mah\":%u,\"remaining_pct\":%u},"
+        "\"att\":{\"has\":%d,\"pitch_deg100\":%d,\"roll_deg100\":%d,\"yaw_deg100\":%d},"
+        "\"vario_cms\":%lld,\"flight_mode\":\"%s\"}\n",
+        (long long)t.last_rx_us, t.up_rssi1, t.up_snr, t.up_quality,
+        t.dn_rssi1, t.dn_snr, t.dn_quality,
+        t.has_gps ? 1 : 0, (long long)t.lat_degE7, (long long)t.lon_degE7,
+        t.gps_speed_kmh10, t.gps_heading_deg10, (long long)t.gps_alt_mm, t.gps_sats,
+        t.has_batt ? 1 : 0, t.batt_voltage_mV10, t.batt_current_mA10,
+        t.batt_capacity_mAh, t.batt_remaining_pct,
+        t.has_att ? 1 : 0, t.att_pitch_deg100, t.att_roll_deg100, t.att_yaw_deg100,
+        (long long)t.vario_cms, t.flight_mode);
+    int fd = ::open("/var/log/rc_telem.json.tmp", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) {
+        if (::write(fd, buf, w) == w)
+            ::rename("/var/log/rc_telem.json.tmp", "/var/log/rc_telem.json");
+        ::close(fd);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 输出配置 (从 SPI flash config 读取, 与 web_server 共用存储)
+// ═══════════════════════════════════════════════════════════════════════
+
+static std::string cfg_json_str(const std::string &json, const std::string &key) {
+    auto pos = json.find("\"" + key + "\"");
+    if (pos == std::string::npos) return "";
+    auto colon = json.find(":", pos + key.size() + 2);
+    if (colon == std::string::npos) return "";
+    size_t s = colon + 1;
+    while (s < json.size() && (json[s] == ' ' || json[s] == '\t' || json[s] == '\n')) s++;
+    if (s < json.size() && json[s] == '\"') {
+        auto e = json.find("\"", s + 1);
+        if (e == std::string::npos) return "";
+        return json.substr(s + 1, e - s - 1);
+    }
+    auto e = json.find_first_of(",}\n\r \t]", s + 1);
+    if (e == std::string::npos) e = json.size();
+    auto v = json.substr(s, e - s);
+    while (!v.empty() && v.back() == ' ') v.pop_back();
+    return v;
+}
+
+/* 从 SPI flash config (/dev/mtdblock0 @0xFD000) 读 rc_output 配置。
+ * 返回 false 表示无 rc_output 段 (保持命令行默认)。成功则写 mode/baud 并
+ * 可能更新 g_ch_map / g_ch_map_valid。 */
+static bool load_rc_output_cfg(char &mode, int &baud)
+{
+    bool found = false;
+    int fd = ::open("/dev/mtdblock0", O_RDONLY);
+    if (fd < 0) return false;
+    uint16_t len = 0;
+    ::lseek(fd, 0xFD000, SEEK_SET);
+    if (::read(fd, &len, 2) != 2 || len == 0 || len > 0x3000) { ::close(fd); return false; }
+    std::string json((size_t)len, '\0');
+    ssize_t got = ::read(fd, &json[0], len);
+    ::close(fd);
+    if (got != (ssize_t)len) return false;
+
+    auto rp = json.find("\"rc_output\"");
+    if (rp == std::string::npos) return false;
+    auto rs = json.find("{", rp);
+    auto re = json.find("}", rs);
+    if (rs == std::string::npos || re == std::string::npos) return false;
+    std::string obj = json.substr(rs, re - rs + 1);
+
+    auto modeS = cfg_json_str(obj, "mode");
+    if (modeS == "crsf") { mode = 'c'; found = true; }
+    else if (modeS == "sbus") { mode = 's'; found = true; }
+
+    auto baudS = cfg_json_str(obj, "baud");
+    if (baudS == "auto" || baudS.empty()) baud = (mode == 'c') ? 420000 : 100000;
+    else { int b = std::atoi(baudS.c_str()); if (b >= 9600 && b <= 4000000) baud = b; }
+
+    auto presetS = cfg_json_str(obj, "map_preset");
+    auto preset = rc_preset_parse(presetS.c_str());
+    if (preset != MAP_CUSTOM) {
+        rc_map_apply_preset(preset, g_ch_map);
+        g_ch_map_valid = true;
+    } else {
+        /* map: 逗号分隔 source 名, 如 "ch1,ch2,ch3,ch4,ch5,ch6,mode,rec,..." */
+        std::string mapS = cfg_json_str(obj, "map");
+        if (!mapS.empty()) {
+            int idx = 0; size_t pos = 0;
+            while (idx < CH_COUNT) {
+                auto comma = mapS.find(",", pos);
+                std::string tok = mapS.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+                while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t')) tok.erase(0, 1);
+                while (!tok.empty() && (tok.back() == ' ' || tok.back() == '\t')) tok.pop_back();
+                if (!tok.empty()) g_ch_map[idx] = (uint8_t)rc_src_parse(tok.c_str());
+                idx++;
+                if (comma == std::string::npos) break;
+                pos = comma + 1;
+            }
+            if (idx >= CH_COUNT) g_ch_map_valid = true;
+        }
+    }
+    return found;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -486,8 +761,10 @@ int main(int argc, char **argv)
     bool debug_uart0 = false;
     const char *debug_dev = "/dev/ttyS0";
     int debug_baud = 115200;
-    const char *sbus_dev = "/dev/ttyS2";
-    int sbus_baud = 115200;
+    const char *out_dev = "/dev/ttyS0";      /* 协议输出口: 默认 UART0 */
+    char out_mode = 's';                     /* 's'=SBUS, 'c'=CRSF */
+    int  out_baud = 100000;                  /* 默认 SBUS 100k */
+    bool crsf_telem = true;                  /* CRSF 接收回传 */
     const char *rcmsg_host = RCMSG_HOST;
     int rcmsg_port = RCMSG_PORT;
 
@@ -501,12 +778,27 @@ int main(int argc, char **argv)
         else if (std::strcmp(argv[i], "--debug-uart0") == 0) debug_uart0 = true;
         else if (std::strcmp(argv[i], "--debug-uart0-dev") == 0 && i + 1 < argc) debug_dev = argv[++i];
         else if (std::strcmp(argv[i], "--debug-uart0-baud") == 0 && i + 1 < argc) debug_baud = std::atoi(argv[++i]);
-        else if (std::strcmp(argv[i], "--sbus-out") == 0 && i + 1 < argc) sbus_dev = argv[++i];
-        else if (std::strcmp(argv[i], "--sbus-baud") == 0 && i + 1 < argc) sbus_baud = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--out-mode") == 0 && i + 1 < argc) out_mode = argv[++i][0];
+        else if (std::strcmp(argv[i], "--out-dev") == 0 && i + 1 < argc) out_dev = argv[++i];
+        else if (std::strcmp(argv[i], "--out-baud") == 0 && i + 1 < argc) out_baud = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--crsf-telem") == 0 && i + 1 < argc) crsf_telem = std::atoi(argv[++i]) != 0;
+        else if (std::strcmp(argv[i], "--sbus-out") == 0 && i + 1 < argc) { out_dev = argv[++i]; out_mode = 's'; }
+        else if (std::strcmp(argv[i], "--sbus-baud") == 0 && i + 1 < argc) out_baud = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--rcmsg-host") == 0 && i + 1 < argc) rcmsg_host = argv[++i];
         else if (std::strcmp(argv[i], "--rcmsg-port") == 0 && i + 1 < argc) rcmsg_port = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--selftest") == 0) { selftest(); return 0; }
     }
+
+    // 输出配置: SPI flash config 优先 (web_server 保存的 rc_output)
+    char cfg_mode = out_mode; int cfg_baud = out_baud;
+    if (load_rc_output_cfg(cfg_mode, cfg_baud)) {
+        out_mode = cfg_mode; out_baud = cfg_baud;
+        std::printf("[dji_rc] 输出配置(SPI flash): mode=%c baud=%d\n", out_mode, out_baud);
+    }
+    g_out_mode = out_mode;
+    g_out_baud = out_baud;
+    g_crsf_telem = crsf_telem;
+    if (out_baud == 0) out_baud = (out_mode == 'c') ? 420000 : 100000;
 
     if (debug_uart0) debug_uart0_open(debug_dev, debug_baud);
 
@@ -524,23 +816,35 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "[dji_rc] 所有串口打开失败,退出\n");
         return 1;
     }
-    g_sbus_fd = uart_open(sbus_dev, sbus_baud);
-    if (g_sbus_fd < 0) {
-        std::fprintf(stderr, "[dji_rc] SBUS output open failed: %s @%d\n", sbus_dev, sbus_baud);
+    // 协议输出 (UART0, 可变波特率 + 8E2/8N1)
+    g_out_fd = uart_open_out(out_dev, out_baud, out_mode == 's');
+    if (g_out_fd < 0) {
+        std::fprintf(stderr, "[dji_rc] 输出口打开失败: %s @%d\n", out_dev, out_baud);
     } else {
-        std::printf("[dji_rc] SBUS output: %s @%d fd=%d\n", sbus_dev, sbus_baud, g_sbus_fd);
-        debug_log("[dji_rc][dbg] sbus output %s @%d fd=%d", sbus_dev, sbus_baud, g_sbus_fd);
+        std::printf("[dji_rc] 输出 %c: %s @%d fd=%d (通道映射 %s)\n",
+                    out_mode, out_dev, out_baud, g_out_fd,
+                    g_ch_map_valid ? "custom" : "default");
     }
     sockaddr_in rcmsg_dst;
     int rcmsg_fd = rcmsg_open(rcmsg_host, rcmsg_port, &rcmsg_dst);
     uint32_t rcmsg_seq = 0;
 
-    // 启动接收线程 (SBUS 在 P20 rx_thread 的 handle_pkt 里事件驱动发送)
-    std::thread t1, t2;
+    // 回传 UDP (CRSF 模式)
+    sockaddr_in tlm_dst;
+    int tlm_fd = -1;
+    if (out_mode == 'c' && g_crsf_telem) {
+        tlm_fd = rcmsg_open(rcmsg_host, TLM_PORT, &tlm_dst);
+        g_tlm_fd = tlm_fd;
+    }
+
+    // 启动接收线程 (协议输出在 P20 rx_thread 的 handle_pkt 里事件驱动)
+    std::thread t1, t2, t3;
     if (g_p20.fd >= 0) t1 = std::thread(rx_thread, &g_p20);
     if (g_p0.fd  >= 0) t2 = std::thread(rx_thread, &g_p0);
+    if (out_mode == 'c' && g_crsf_telem && g_out_fd >= 0)
+        t3 = std::thread(crsf_rx_thread);
 
-    // 主循环: 状态文件写入 + 控制台打印 (100ms, SBUS 走独立线程)
+    // 主循环: 状态文件写入 + 控制台打印 (SBUS/CRSF 输出走独立事件驱动)
     std::printf("[dji_rc] Ctrl+C 停止\n\n");
     while (!g_stop.load(std::memory_order_relaxed)) {
         struct timespec ts = {0, interval_ms * 1000000L};
@@ -580,6 +884,28 @@ int main(int argc, char **argv)
             send_rcmsg(rcmsg_fd, rcmsg_dst, m, false, ++rcmsg_seq, n);
         }
 
+        // CRSF 回传: 有回传数据时发 tlm UDP (65531) + 写状态文件
+        if (g_out_mode == 'c') {
+            crsf_telem_t telem;
+            g_mtx.lock(); telem = g_telem; g_mtx.unlock();
+            if (telem.last_rx_us > 0 && (n - (int64_t)telem.last_rx_us) < 1000000LL) {
+                if (tlm_fd >= 0) send_tlm(tlm_fd, tlm_dst, telem);
+                write_telem_file(telem);
+            }
+        }
+
+        // 每 2s 检测输出配置变化 (web_server 保存后 exec 重启自身生效)
+        static int64_t last_cfg_check = 0;
+        if (n - last_cfg_check > 2000000LL) {
+            last_cfg_check = n;
+            char cm; int cb;
+            if (load_rc_output_cfg(cm, cb) && (cm != g_out_mode || cb != g_out_baud)) {
+                std::printf("[dji_rc] 输出配置变化 mode=%c baud=%d → 重启\n", cm, cb);
+                std::fflush(stdout);
+                ::execv(argv[0], argv);   /* 重启自身; 失败则继续 */
+            }
+        }
+
         // 控制台打印
         char line[256];
         line[0] = '\0';
@@ -597,12 +923,14 @@ int main(int argc, char **argv)
     }
 
     g_stop.store(true);
+    if (t3.joinable()) t3.join();
     if (t1.joinable()) t1.join();
     if (t2.joinable()) t2.join();
     if (g_p20.fd >= 0) ::close(g_p20.fd);
     if (g_p0.fd  >= 0) ::close(g_p0.fd);
     if (g_debug_fd >= 0) ::close(g_debug_fd);
-    if (g_sbus_fd >= 0) ::close(g_sbus_fd);
+    if (g_out_fd >= 0) ::close(g_out_fd);
     if (rcmsg_fd >= 0) ::close(rcmsg_fd);
+    if (tlm_fd >= 0) ::close(tlm_fd);
     return 0;
 }

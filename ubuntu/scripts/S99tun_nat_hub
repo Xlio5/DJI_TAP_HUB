@@ -42,9 +42,10 @@ case "$1" in
     /usr/local/bin/web_server > /var/log/web_server.log 2>&1 &
     _ts "web_server: started"
 
-    # DJI RC serial decoder (UART1/2 input → SBUS output + /var/log/rc_state.json)
+    # DJI RC serial decoder (UART1/2 input → SBUS/CRSF output on UART0)
+    # 输出模式/波特率/通道映射由 SPI flash 配置 (web_server /api/rc/output) 决定
     if [ -c /dev/ttyS1 ] || [ -c /dev/ttyS2 ]; then
-        /usr/local/bin/dji_rc --interval 20 --debug-uart0 --debug-uart0-baud 115200 --sbus-out /dev/ttyS2 --sbus-baud 115200 --rcmsg-host 10.0.0.2 --rcmsg-port 65530 > /var/log/dji_rc.log 2>&1 &
+        /usr/local/bin/dji_rc --interval 20 --out-mode sbus --out-dev /dev/ttyS0 --out-baud auto --crsf-telem 1 --rcmsg-host 10.0.0.2 --rcmsg-port 65530 > /var/log/dji_rc.log 2>&1 &
         _ts "dji_rc: started"
     fi
 

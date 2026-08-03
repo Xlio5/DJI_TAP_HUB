@@ -909,6 +909,157 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 Text("端口转发配置后，QGC 等 App 无需额外设\n置。数据自动经 V3s 的 DNAT 规则转发到\nDJI RC 的对应端口。", fontSize = 10.sp, color = Color(0xFF64748B), lineHeight = 15.sp)
                                 Text("外部 App (QGC等) 的 UDP socket 会自动走\nVPN 隧道到达目标网段。", fontSize = 10.sp, color = Color(0xFF64748B), lineHeight = 15.sp, modifier = Modifier.padding(top = 4.dp))
 
+                                // ── RC 输出 (SBUS/CRSF @UART0) ──
+                                Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
+                                SectionHdr("RC 输出 (UART0)")
+                                Text("SBUS 100k 8E2 / CRSF 420k 8N1, 可自定义通道映射 (参考 EdgeTX)", fontSize = 9.sp, color = Color(0xFF64748B))
+                                Spacer(Modifier.height(8.dp))
+
+                                var roMode by remember { mutableStateOf("sbus") }
+                                var roBaud by remember { mutableStateOf("auto") }
+                                var roPreset by remember { mutableStateOf("default") }
+                                var roMap by remember { mutableStateOf("") }
+                                var roSources by remember { mutableStateOf(listOf<String>()) }
+                                var roMsg by remember { mutableStateOf("") }
+                                var roLoaded by remember { mutableStateOf(false) }
+
+                                // 加载当前配置
+                                LaunchedEffect(vpnRunning, roLoaded) {
+                                    if (!vpnRunning || roLoaded) return@LaunchedEffect
+                                    try {
+                                        val text = java.net.URL("http://10.0.0.1:8080/api/rc/output").openConnection()
+                                            .apply { connectTimeout = 2000; readTimeout = 2000 }
+                                            .getInputStream().bufferedReader().readText()
+                                        roMode = jsonString(text, "mode") ?: "sbus"
+                                        roBaud = jsonString(text, "baud") ?: "auto"
+                                        roPreset = jsonString(text, "map_preset") ?: "default"
+                                        roMap = jsonString(text, "map") ?: ""
+                                        roSources = (jsonString(text, "sources") ?: "").split(",").filter { it.isNotEmpty() }
+                                        roLoaded = true
+                                    } catch (_: Exception) {}
+                                }
+
+                                // 模式
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("模式", fontSize = 11.sp, color = Color(0xFF94A3B8), modifier = Modifier.width(44.dp))
+                                    listOf("sbus" to "SBUS", "crsf" to "CRSF").forEach { (v, label) ->
+                                        Surface(color = if (roMode == v) Color(0xFF0EA5E9) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp),
+                                            onClick = { roMode = v }) {
+                                            Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (roMode == v) Color.Black else Color(0xFF64748B), modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
+                                        }
+                                    }
+                                    Spacer(Modifier.weight(1f))
+                                    Text(if (roMode == "crsf") "含回传" else "单向", fontSize = 9.sp, color = if (roMode == "crsf") Color(0xFF22C55E) else Color(0xFF64748B))
+                                }
+
+                                // 预设
+                                Spacer(Modifier.height(8.dp))
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("预设", fontSize = 11.sp, color = Color(0xFF94A3B8), modifier = Modifier.width(44.dp))
+                                    listOf("default" to "默认", "aetr" to "AETR", "taer" to "TAER", "custom" to "自定义").forEach { (v, label) ->
+                                        Surface(color = if (roPreset == v) Color(0xFF0EA5E9) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp),
+                                            onClick = { roPreset = v }, modifier = Modifier.weight(1f)) {
+                                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth()) {
+                                                Text(label, fontSize = 10.sp, fontWeight = FontWeight.Medium, color = if (roPreset == v) Color.Black else Color(0xFF64748B), modifier = Modifier.padding(vertical = 6.dp))
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 波特率
+                                Spacer(Modifier.height(8.dp))
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("波特率", fontSize = 11.sp, color = Color(0xFF94A3B8), modifier = Modifier.width(44.dp))
+                                    Surface(color = if (roBaud == "auto") Color(0xFF0EA5E9) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp),
+                                        onClick = { roBaud = "auto" }) {
+                                        Text("自动", fontSize = 10.sp, color = if (roBaud == "auto") Color.Black else Color(0xFF64748B), modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp))
+                                    }
+                                    Surface(color = if (roBaud != "auto") Color(0xFF0EA5E9) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp),
+                                        onClick = { roBaud = if (roMode == "crsf") "420000" else "100000" }) {
+                                        Text("手动", fontSize = 10.sp, color = if (roBaud != "auto") Color.Black else Color(0xFF64748B), modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp))
+                                    }
+                                    if (roBaud != "auto") {
+                                        Box(modifier = Modifier.weight(1f).height(28.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).padding(horizontal = 8.dp), contentAlignment = Alignment.CenterStart) {
+                                            BasicTextField(value = roBaud, onValueChange = { roBaud = it }, singleLine = true,
+                                                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp, color = Color(0xFFE2E8F0)),
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+                                        }
+                                    } else {
+                                        Text(if (roMode == "crsf") "→ 420000" else "→ 100000", fontSize = 10.sp, color = Color(0xFF22C55E))
+                                    }
+                                }
+
+                                // 自定义通道映射
+                                if (roPreset == "custom") {
+                                    Spacer(Modifier.height(8.dp))
+                                    Text("通道映射 (CH1-CH16)", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+                                    val mapArr = remember(roMap) {
+                                        if (roMap.isEmpty()) List(16) { "ch${it + 1}" } else roMap.split(",").filter { it.isNotEmpty() }.take(16)
+                                    }
+                                    for (i in 0 until 16) {
+                                        var dOpen by remember { mutableStateOf(false) }
+                                        val cur = if (i < mapArr.size) mapArr[i] else "none"
+                                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Text("CH${i + 1}", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(32.dp))
+                                            Box(modifier = Modifier.weight(1f)) {
+                                                Row(modifier = Modifier.fillMaxWidth().height(26.dp).background(Color(0xFF0F172A), RoundedCornerShape(4.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(4.dp)).clickable { dOpen = !dOpen }.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                                                    Text(cur, fontSize = 9.sp, color = Color(0xFF38BDF8), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                    Text(if (dOpen) "▲" else "▼", fontSize = 8.sp, color = Color(0xFF64748B))
+                                                }
+                                                DropdownMenu(expanded = dOpen, onDismissRequest = { dOpen = false }, modifier = Modifier.background(Color(0xFF1E293B))) {
+                                                    (listOf("none") + roSources).forEach { s ->
+                                                        DropdownMenuItem(text = { Text(s, fontSize = 9.sp, color = Color(0xFFE2E8F0)) },
+                                                            onClick = {
+                                                                val nl = mapArr.toMutableList()
+                                                                while (nl.size < 16) nl.add("none")
+                                                                nl[i] = s
+                                                                roMap = nl.joinToString(",")
+                                                                dOpen = false
+                                                            },
+                                                            modifier = Modifier.background(if (s == cur) Color(0xFF334155) else Color(0xFF1E293B)))
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 保存
+                                Spacer(Modifier.height(10.dp))
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Button(onClick = {
+                                        roMsg = ""
+                                        val body = """{"mode":"$roMode","baud":"$roBaud","map_preset":"$roPreset","map":"$roMap"}"""
+                                        apiPost("/api/rc/output", body)
+                                        roMsg = if (roLoaded) "已保存, V3s 将自动应用" else "保存中..."
+                                    }, modifier = Modifier.height(32.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) { Text("保存并应用", fontSize = 11.sp) }
+                                    if (roMsg.isNotEmpty()) Text(roMsg, fontSize = 9.sp, color = Color(0xFF22C55E))
+                                }
+
+                                // 回传数据 (CRSF 模式)
+                                if (roMode == "crsf") {
+                                    Spacer(Modifier.height(10.dp))
+                                    Text("CRSF 回传数据", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+                                    var tlText by remember { mutableStateOf("等待回传...") }
+                                    LaunchedEffect(roMode, roLoaded) {
+                                        if (roMode != "crsf") return@LaunchedEffect
+                                        while (true) {
+                                            try {
+                                                val t = java.net.URL("http://10.0.0.1:8080/api/rc/telemetry").openConnection()
+                                                    .apply { connectTimeout = 1500; readTimeout = 1500 }
+                                                    .getInputStream().bufferedReader().readText()
+                                                val lat = jsonString(t, "lat") ?: "-"
+                                                val rem = jsonString(t, "remaining_pct") ?: "-"
+                                                val upQ = jsonString(t, "up_quality") ?: "-"
+                                                val dnQ = jsonString(t, "dn_quality") ?: "-"
+                                                tlText = "链路 上行${upQ}% 下行${dnQ}% · 电量 ${rem}% · GPS lat=$lat"
+                                            } catch (_: Exception) { tlText = "回传不可用" }
+                                            kotlinx.coroutines.delay(2000)
+                                        }
+                                    }
+                                    Text(tlText, fontSize = 9.sp, color = Color(0xFF64748B), lineHeight = 13.sp)
+                                }
+
                                 // ── RC 遥控器 ──
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("RC 遥控器")
