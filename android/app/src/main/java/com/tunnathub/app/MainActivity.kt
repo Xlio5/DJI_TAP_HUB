@@ -244,6 +244,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var hbBw by remember { mutableStateOf("0.0") }
     var hbTx by remember { mutableStateOf(0L) }
     var hbRx by remember { mutableStateOf(0L) }
+    var v3sVersion by remember { mutableStateOf("") }   // V3s 固件版本 (来自 /api/heartbeat)
 
     // ── RC 遥控器状态 ──
     var rcConnected by remember { mutableStateOf(false) }
@@ -324,6 +325,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     hbDaemon = text.contains("\"daemon\":true")
                     hbTty = text.contains("\"tty_ready\":true")
                     hbTun = text.contains("\"tun_up\":true")
+                    jsonString(text, "version")?.let { if (it.isNotEmpty()) v3sVersion = it }
                     val tx = jsonLong(statsText, "tx_bytes") ?: jsonLong(text, "tx_bytes") ?: hbTx
                     val rx = jsonLong(statsText, "rx_bytes") ?: jsonLong(text, "rx_bytes") ?: hbRx
                     val apiBw = jsonString(text, "bandwidth_mbps") ?: jsonString(statsText, "bandwidth_mbps")
@@ -741,6 +743,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         Text("配置", fontSize = 9.sp, color = if (selectedTab == Tab.CONFIG) Color(0xFF38BDF8) else Color(0xFF475569))
                         Spacer(Modifier.weight(1f))
                         Text("v${BuildConfig.VERSION_NAME}", fontSize = 9.sp, color = Color(0xFF475569))
+                        if (v3sVersion.isNotEmpty()) {
+                            Text("F$v3sVersion", fontSize = 9.sp, color = Color(0xFF475569))
+                        }
                         Spacer(Modifier.height(8.dp))
                     }
                 }
@@ -975,7 +980,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("关于")
                                 Text("TUN NAT Hub", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
-                                Text("版本: v${BuildConfig.VERSION_NAME}", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                Text("App 版本: v${BuildConfig.VERSION_NAME}", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                Text("V3s 固件: ${if (v3sVersion.isNotEmpty()) "v$v3sVersion" else "未连接 (需 VPN 隧道)"}", fontSize = 11.sp, color = if (v3sVersion.isNotEmpty()) Color(0xFF38BDF8) else Color(0xFFF59E0B))
                                 Text("设备: ${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.SDK_INT}", fontSize = 11.sp, color = Color(0xFF64748B))
                             }
                         }

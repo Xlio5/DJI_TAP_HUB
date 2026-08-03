@@ -21,6 +21,7 @@
 #include <fstream>
 #include <iostream>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sstream>
 #include <string>
 #include <sys/socket.h>
@@ -72,7 +73,9 @@ static int execRet(const std::vector<std::string>& args) {
     std::string cmd;
     for (auto& a : args) cmd += a + " ";
     cmd.pop_back();
-    cmd += " 2>/dev/null";
+    // 丢弃 stdout+stderr: 只关心退出码。否则 system() 会把子进程输出
+    // (如 `pidof usb_tund` 的 pid 数字) 直接泄漏到 web_server 日志。
+    cmd += " >/dev/null 2>&1";
     return system(cmd.c_str());
 }
 
@@ -1205,51 +1208,98 @@ int main() {
 
     std::cout << "[web_server] HTTP 面板: http://0.0.0.0:" << PORT << std::endl;
 
+    // ── 连接管理: poll 事件循环, 单线程多路复用 ──
+    // 根治: 单个连接阻塞 recv 不再会卡死整个服务器。
+    // 新连接/可读事件由 poll 驱动; 空闲连接按 lastActive 超时清理。
+    struct Conn {
+        int fd = -1;
+        std::string buf;           // 累积接收数据, 跨请求保留
+        bool firstHandled = false; // 首个请求是否已处理
+        int64_t lastActive_ms = 0;
+    };
+    auto now_ms = []() -> int64_t {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    };
+    const int64_t IDLE_TIMEOUT_MS = 10000;   // 空闲连接 10s 后回收
+
+    std::vector<Conn> conns;
+    std::vector<struct pollfd> pfds;
+
     while (true) {
-        int cli = accept(srv, nullptr, nullptr);
-        if (cli < 0) { if (errno == EINTR) continue; break; }
+        pfds.clear();
+        pfds.push_back({srv, POLLIN, 0});
+        for (auto& c : conns) pfds.push_back({c.fd, POLLIN, 0});
 
-        // single-threaded (ARM static NPTL compat)
-        // Peek at request line to detect firmware upload (仅首请求, 大 body 不适合 keep-alive)
-        char peek[2048] = {};
-        int peekLen = ::recv(cli, peek, sizeof(peek)-1, MSG_PEEK);
-        if (peekLen > 0) {
-            peek[peekLen] = '\0';
-            std::string peekStr(peek);
-            if (peekStr.find("POST /api/firmware/upload") != std::string::npos) {
-                handleFirmwareUpload(cli);
-                close(cli);
-                continue;
+        int rc = ::poll(pfds.data(), pfds.size(), 1000);   // 1s 心跳, 用于空闲回收
+        if (rc < 0) { if (errno == EINTR) continue; break; }
+
+        // 新连接
+        if (pfds[0].revents & POLLIN) {
+            int cli = ::accept(srv, nullptr, nullptr);
+            if (cli >= 0) {
+                if ((int)conns.size() < MAX_CLI) {
+                    Conn c; c.fd = cli; c.lastActive_ms = now_ms();
+                    conns.push_back(c);
+                } else {
+                    ::close(cli);   // 并发超限直接拒绝, 防止资源耗尽
+                }
             }
         }
 
-        // HTTP Keep-Alive: 单连接内循环处理多个请求, 空闲 5s 超时
-        struct timeval tv = {5, 0};
-        setsockopt(cli, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        // 处理活跃连接
+        for (size_t i = 1; i < pfds.size(); i++) {
+            Conn& c = conns[i - 1];
+            if (c.fd < 0) continue;
 
-        std::string buf;   // 累积接收, 跨请求保留
-        bool connOpen = true;
-        while (connOpen) {
-            Request req;
-            int r = extractRequest(buf, &req);
-            if (r < 0) { connOpen = false; break; }        // 异常: 关闭
-            if (r > 0) {
-                // 完整请求 → 处理
-                Response resp = handleRequest(req);
-                resp.send(cli);
+            if (pfds[i].revents & (POLLHUP | POLLERR)) {
+                ::close(c.fd); c.fd = -1;
                 continue;
             }
-            // 缓冲中无完整请求 → 继续 recv
+            if (!(pfds[i].revents & POLLIN)) continue;
+
+            c.lastActive_ms = now_ms();
+
+            // 首个请求: peek 检测固件上传 (poll 保证有数据才 peek, 不阻塞)
+            if (!c.firstHandled) {
+                char peek[2048] = {};
+                int peekLen = ::recv(c.fd, peek, sizeof(peek) - 1, MSG_PEEK);
+                if (peekLen > 0) {
+                    peek[peekLen] = '\0';
+                    if (std::strstr(peek, "POST /api/firmware/upload") != nullptr) {
+                        handleFirmwareUpload(c.fd);   // 阻塞收 body, 之后自动 reboot
+                        ::close(c.fd); c.fd = -1;
+                        continue;
+                    }
+                }
+            }
+
             char chunk[BUF_SZ];
-            int n = recv(cli, chunk, sizeof(chunk), 0);
-            if (n > 0) {
-                buf.append(chunk, n);
-            } else {
-                // n==0 对端关闭 / n<0 超时(EAGAIN)或错误 → 关闭连接
-                connOpen = false;
+            int n = ::recv(c.fd, chunk, sizeof(chunk), 0);
+            if (n <= 0) { ::close(c.fd); c.fd = -1; continue; }   // 对端关闭/错误
+            c.buf.append(chunk, n);
+
+            // 处理缓冲中所有完整请求 (Keep-Alive 复用连接)
+            while (c.fd >= 0) {
+                Request req;
+                int r = extractRequest(c.buf, &req);
+                if (r < 0) { ::close(c.fd); c.fd = -1; break; }    // 异常: 关闭
+                if (r == 0) break;                                 // 需要更多数据
+                Response resp = handleRequest(req);
+                resp.send(c.fd);
+                c.firstHandled = true;
             }
         }
-        close(cli);
+
+        // 清理: 已关闭 或 空闲超时的连接
+        for (auto it = conns.begin(); it != conns.end();) {
+            if (it->fd < 0 || (now_ms() - it->lastActive_ms) > IDLE_TIMEOUT_MS) {
+                if (it->fd >= 0) ::close(it->fd);
+                it = conns.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 
     close(srv);
