@@ -32,19 +32,19 @@ def main():
 
     print(f"SPL: {len(spl)}B  U-Boot: {len(uboot)}B  DTB: {len(dtb)}B  zImage: {len(zimage)}B  rootfs: {len(squashfs)}B")
 
-    # PB6 检测: 接地 → console=ttyS0 (debug); 上拉 → console=null (协议输出)
+    # PB6 检测: 接地 → console=ttyS0@115200 (debug); 上拉 → console=null (协议输出)
     # U-Boot gpio input <bank> <pin>: PB6 = bank 1, pin 6
     base_args = ("panic=5 sunxi_wdt.nowayout=1 "
                  "rootfstype=squashfs rootwait "
                  "mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),4576k(rootfs_a),-(rootfs_b) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0")
     # bootcmd: 检测 PB6, 设 console, 启动内核
     bootcmd = ("if gpio input 1 6; then "
-               "setenv bootargs console=ttyS0,921600 " + base_args + "; "
+               "setenv bootargs console=ttyS0,115200 " + base_args + "; "
                "else "
                "setenv bootargs console=null " + base_args + "; "
                "fi; bootz 0x41000000 - 0x42000000")
     # bootargs 默认值 (U-Boot 加载时用; bootcmd 会覆盖)
-    bootargs = "console=ttyS0,921600 " + base_args
+    bootargs = "console=ttyS0,115200 " + base_args
     env_str = "bootargs=" + bootargs + "\0" + "bootcmd=" + bootcmd + "\0"
     env_bytes = env_str.encode().ljust(0x1FFC, b'\0')
     env_bytes += struct.pack('<I', crc32(env_bytes))
