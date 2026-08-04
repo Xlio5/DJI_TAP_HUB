@@ -1104,6 +1104,7 @@ static Response handleRequest(const Request& req) {
             if (!ps.empty()) cfg.rcOutPreset = ps;
             auto mp = jsonStr(req.body, "map");
             if (!mp.empty()) cfg.rcOutMap = mp;
+            else if (ps != "custom") cfg.rcOutMap = "";   /* 预设非自定义时清空自定义 map */
             auto tb = jsonStr(req.body, "crsf_telem");
             if (tb == "true" || tb == "false") cfg.rcOutCrsfTelem = (tb == "true");
             int per = jsonInt(req.body, "crsf_period_ms");
