@@ -24,6 +24,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <termios.h>
 #include <unistd.h>
@@ -81,35 +82,32 @@ static crsf_telem_t g_telem;            // 最近回传数据 (CRSF 回传线程
 static bool g_pb6_debug = false;        // PB6 接地=true → UART0 作为 debug 串口, 不输出协议
 
 // PB6 输入检测: 接地(0) → debug 模式; 上拉(1,默认) → 协议输出
-// 通过 /sys/class/gpio (V3s PB bank = gpiochip, PB6 = offset 6)
-// 或 devmem 读 GPIO 寄存器。若无法检测则返回 false (正常协议输出模式)。
+// 用 mmap /dev/mem 读 GPIO 数据寄存器 (sun8i-v3s PB bank @0x01C20800,
+// 数据寄存器 @0x01C20810, PB6 = bit6, 0=接地 1=上拉)。
+// 失败时返回 false (协议输出) 保持默认安全。
 static bool pb6_grounded(void)
 {
-    /* 优先 sysfs: 导出 PB6 读值 */
-    int fd = ::open("/sys/class/gpio/export", O_WRONLY);
-    if (fd >= 0) {
-        if (::write(fd, "6", 1) < 0) { /* 已导出则忽略 */ }
-        ::close(fd);
-        char p[128];
-        snprintf(p, sizeof(p), "/sys/class/gpio/gpio6/direction");
-        fd = ::open(p, O_WRONLY);
-        if (fd >= 0) { ::write(fd, "in", 2); ::close(fd); }
-        snprintf(p, sizeof(p), "/sys/class/gpio/gpio6/value");
-        fd = ::open(p, O_RDONLY);
-        if (fd >= 0) {
-            char v = 0;
-            if (::read(fd, &v, 1) == 1) {
-                ::close(fd);
-                return v == '0';   /* 0 = 接地 = debug */
-            }
-            ::close(fd);
-        }
+    int memfd = ::open("/dev/mem", O_RDONLY | O_SYNC);
+    if (memfd < 0) {
+        std::fprintf(stderr, "[dji_rc] PB6 检测: 无法打开 /dev/mem (%s)\n", std::strerror(errno));
+        return false;
     }
-    /* 备选: 直接用 GPIO 寄存器 (sun8i-v3s, PB bank @0x01C20800, 每 bank 0x24)
-     * PB6 数据寄存器偏移 = 0x10 (DATA), 需先确认 pin mux 为 input。
-     * 此处若无法检测, 返回 false (协议输出) 保持默认安全。 */
-    std::fprintf(stderr, "[dji_rc] PB6 检测不可用, 默认协议输出模式\n");
-    return false;
+    /* 页对齐映射 GPIO 寄存器区 (0x01C20800, 映射 0x1000) */
+    const uintptr_t BASE = 0x01C20800u & ~0xFFFu;
+    size_t pg = (size_t)sysconf(_SC_PAGESIZE);
+    void *map = mmap(NULL, pg, PROT_READ, MAP_SHARED, memfd, (off_t)BASE);
+    ::close(memfd);
+    if (map == MAP_FAILED) {
+        std::fprintf(stderr, "[dji_rc] PB6 检测: mmap 失败 (%s)\n", std::strerror(errno));
+        return false;
+    }
+    /* 数据寄存器偏移 = 0x01C20810 - BASE */
+    volatile uint32_t *data = (volatile uint32_t *)((uint8_t *)map + (0x01C20810u - BASE));
+    uint32_t reg = *data;
+    bool grounded = ((reg >> 6) & 1u) == 0;   /* PB6 bit6: 0=接地 */
+    std::printf("[dji_rc] PB6 检测: 寄存器=0x%08X grounded=%d\n", reg, grounded ? 1 : 0);
+    munmap(map, pg);   /* 打印完成后才 munmap, 避免悬垂指针 */
+    return grounded;
 }
 
 // ── rcmsg (RC 数据 UDP) ──
