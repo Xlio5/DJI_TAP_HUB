@@ -67,6 +67,7 @@ static DjiPort g_p20;      // ttyS1 @921600
 static DjiPort g_p0;       // ttyS2 @115200
 static std::mutex g_mtx;
 static std::atomic<bool> g_stop{false};
+static std::atomic<bool> g_crsf_stop{false};   /* 独立控制 CRSF 回传线程 (t3), 不干扰 t1/t2 */
 static int g_debug_fd = -1;
 static int64_t g_last_debug_us = 0;
 
@@ -152,28 +153,30 @@ static void pb6_auto_switch(bool grounded, const char *out_dev, char out_mode,
     if (grounded) {
         /* 切到 debug: 停协议输出 + 启 getty */
         if (t3.joinable()) {
-            g_stop.store(true);
+            g_crsf_stop.store(true);
             int oldFd = g_out_fd;
             if (oldFd >= 0) { ::close(oldFd); g_out_fd = -1; }
             t3.join();
-            g_stop.store(false);
+            g_crsf_stop.store(false);
         }
         if (g_out_fd >= 0) { ::close(g_out_fd); g_out_fd = -1; }
         getty_start();
         out_pb6_debug = true;
     } else {
-        /* 切到协议: 杀 getty + 开协议输出 */
+        /* 切到协议: 杀 getty + 开协议输出 (等 getty 释放 ttyS0) */
         getty_stop();
+        ::usleep(200000);   /* 200ms, 等 getty 释放 ttyS0 */
         if (g_out_fd < 0) {
-            bool even2 = (out_mode == 's') && g_sbus_std;
+            bool even2 = (g_out_mode == 's') && g_sbus_std;   /* 用全局, 避免参数过期 */
             g_out_fd = uart_open_out(out_dev, out_baud, even2);
         }
         if (g_out_mode == 'c' && g_crsf_telem && g_out_fd >= 0 && !t3.joinable()) {
-            g_stop.store(false);
+            g_crsf_stop.store(false);
             t3 = std::thread(crsf_rx_thread);
         }
         out_pb6_debug = false;
     }
+    (void)out_mode;   /* 已改用全局 g_out_mode */
 }
 
 // ── rcmsg (RC 数据 UDP) ──
@@ -658,7 +661,7 @@ static void crsf_rx_thread()
     crsf_rx_t rx;
     crsf_rx_init(&rx);
 
-    while (!g_stop.load(std::memory_order_relaxed)) {
+    while (!g_crsf_stop.load(std::memory_order_relaxed)) {
         uint8_t buf[64];
         ssize_t n = ::read(g_out_fd, buf, sizeof(buf));
         if (n > 0) {
@@ -672,7 +675,7 @@ static void crsf_rx_thread()
             g_telem = telem;
             g_mtx.unlock();
         } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
-            if (g_stop.load(std::memory_order_relaxed)) break;
+            if (g_crsf_stop.load(std::memory_order_relaxed)) break;
             ::usleep(20000);   /* 硬件错误, 短暂等待后重试 */
         } else {
             ::usleep(2000);    /* 无数据, 2ms 轮询 (O_NONBLOCK) */
@@ -903,9 +906,9 @@ int main(int argc, char **argv)
                     out_mode, out_baud, g_sbus_std ? 1 : 0);
     }
     g_out_mode = out_mode;
-    g_out_baud = out_baud;
-    g_crsf_telem = crsf_telem;
     if (out_baud == 0) out_baud = (out_mode == 'c') ? 420000 : (g_sbus_std ? 100000 : 115200);
+    g_out_baud = out_baud;   /* 先修复零值再赋值 */
+    g_crsf_telem = crsf_telem;
 
     if (debug_uart0) debug_uart0_open(debug_dev, debug_baud);
 
@@ -1027,12 +1030,12 @@ int main(int argc, char **argv)
 
                 /* 先安全停掉旧回传线程 (CRSF->任何 或 任何->CRSF 切换) */
                 if (t3.joinable()) {
-                    g_stop.store(true);
+                    g_crsf_stop.store(true);
                     /* 关闭 fd 使阻塞的 read 立即返回 */
                     int oldFd = g_out_fd;
                     if (oldFd >= 0) { ::close(oldFd); g_out_fd = -1; }
                     t3.join();
-                    g_stop.store(false);
+                    g_crsf_stop.store(false);
                 }
                 /* 重开输出 fd: SBUS标准=8E2, SBUS非标=8N1, CRSF=8N1 */
                 bool even2 = (g_out_mode == 's') && g_sbus_std;
@@ -1043,7 +1046,7 @@ int main(int argc, char **argv)
 
                 /* CRSF 模式启动回传线程 */
                 if (g_out_mode == 'c' && g_crsf_telem && g_out_fd >= 0 && !t3.joinable()) {
-                    g_stop.store(false);
+                    g_crsf_stop.store(false);
                     t3 = std::thread(crsf_rx_thread);
                 }
                 (void)oldCrsf;
@@ -1075,13 +1078,15 @@ int main(int argc, char **argv)
     }
 
     g_stop.store(true);
+    g_crsf_stop.store(true);
+    /* 先关闭 fd 唤醒阻塞的 read, 再 join, 避免死锁 */
+    if (g_p20.fd >= 0) { ::close(g_p20.fd); g_p20.fd = -1; }
+    if (g_p0.fd  >= 0) { ::close(g_p0.fd);  g_p0.fd  = -1; }
+    if (g_out_fd >= 0) { ::close(g_out_fd); g_out_fd = -1; }
     if (t3.joinable()) t3.join();
     if (t1.joinable()) t1.join();
     if (t2.joinable()) t2.join();
-    if (g_p20.fd >= 0) ::close(g_p20.fd);
-    if (g_p0.fd  >= 0) ::close(g_p0.fd);
     if (g_debug_fd >= 0) ::close(g_debug_fd);
-    if (g_out_fd >= 0) ::close(g_out_fd);
     if (rcmsg_fd >= 0) ::close(rcmsg_fd);
     if (tlm_fd >= 0) ::close(tlm_fd);
     return 0;
