@@ -105,9 +105,75 @@ static bool pb6_grounded(void)
     volatile uint32_t *data = (volatile uint32_t *)((uint8_t *)map + (0x01C20810u - BASE));
     uint32_t reg = *data;
     bool grounded = ((reg >> 6) & 1u) == 0;   /* PB6 bit6: 0=接地 */
-    std::printf("[dji_rc] PB6 检测: 寄存器=0x%08X grounded=%d\n", reg, grounded ? 1 : 0);
-    munmap(map, pg);   /* 打印完成后才 munmap, 避免悬垂指针 */
+    munmap(map, pg);   /* 先 munmap, 不访问悬垂指针 */
     return grounded;
+}
+
+/* 启动/停止 ttyS0 getty (debug 串口登录终端) */
+static void getty_start(void)
+{
+    if (::system("pkill -f 'getty -L 115200 ttyS0' 2>/dev/null; "
+                 "setsid /sbin/getty -L 115200 ttyS0 vt100 >/dev/null 2>&1 &") != 0) {
+        std::fprintf(stderr, "[dji_rc] getty 启动命令失败\n");
+    }
+}
+
+static void getty_stop(void)
+{
+    ::system("pkill -f 'getty -L 115200 ttyS0' 2>/dev/null");
+}
+
+static int uart_open_out(const char *dev, int baud, bool even2);   /* forward */
+static void crsf_rx_thread();                                       /* forward */
+
+// ── PB6 运行中自动切换 (每 2s 检测, 连续 N 次相同才切换, 防抖) ──
+// 主循环调用。接地→debug(启 getty + 关协议), 上拉→协议(杀 getty + 开协议)。
+// 需要访问 main 局部变量 (out_dev/out_mode/out_baud/t3), 由 main 传入。
+static void pb6_auto_switch(bool grounded, const char *out_dev, char out_mode,
+                            int out_baud, bool &out_pb6_debug, std::thread &t3)
+{
+    static int same_count = 0;
+    static bool last = false;
+    const int NEED = 3;   /* 连续 3 次相同才切换 (6s 确认) */
+
+    if (grounded == last) {
+        same_count++;
+    } else {
+        same_count = 1;
+        last = grounded;
+    }
+    if (same_count < NEED) return;
+    if (grounded == out_pb6_debug) return;   /* 状态未变, 已确认 */
+
+    same_count = 0;
+    std::printf("[dji_rc] PB6 变化 → %s\n", grounded ? "debug 模式" : "协议模式");
+    std::fflush(stdout);
+
+    if (grounded) {
+        /* 切到 debug: 停协议输出 + 启 getty */
+        if (t3.joinable()) {
+            g_stop.store(true);
+            int oldFd = g_out_fd;
+            if (oldFd >= 0) { ::close(oldFd); g_out_fd = -1; }
+            t3.join();
+            g_stop.store(false);
+        }
+        if (g_out_fd >= 0) { ::close(g_out_fd); g_out_fd = -1; }
+        getty_start();
+        out_pb6_debug = true;
+    } else {
+        /* 切到协议: 杀 getty + 开协议输出 */
+        getty_stop();
+        if (g_out_fd < 0) {
+            bool even2 = (out_mode == 's') && g_sbus_std;
+            g_out_fd = uart_open_out(out_dev, out_baud, even2);
+        }
+        if (g_out_mode == 'c' && g_crsf_telem && g_out_fd >= 0 && !t3.joinable()) {
+            g_stop.store(false);
+            t3 = std::thread(crsf_rx_thread);
+        }
+        out_pb6_debug = false;
+    }
 }
 
 // ── rcmsg (RC 数据 UDP) ──
@@ -862,6 +928,7 @@ int main(int argc, char **argv)
     if (g_pb6_debug) {
         std::printf("[dji_rc] PB6 接地 → debug 模式, 跳过协议输出 (UART0 供 console/getty)\n");
         std::fflush(stdout);
+        getty_start();
     }
 
     // 协议输出 (UART0): SBUS 标准=100k 8E2, SBUS 非标=115200 8N1, CRSF=420k 8N1
@@ -981,6 +1048,14 @@ int main(int argc, char **argv)
                 }
                 (void)oldCrsf;
             }
+        }
+
+        // PB6 运行中自动切换 (每 2s 检测, 连续 3 次防抖)
+        static int64_t last_pb6 = 0;
+        if (n - last_pb6 > 2000000LL) {
+            last_pb6 = n;
+            bool gnd = pb6_grounded();
+            pb6_auto_switch(gnd, out_dev, out_mode, out_baud, g_pb6_debug, t3);
         }
 
         // 控制台打印
