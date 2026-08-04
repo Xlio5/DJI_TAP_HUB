@@ -5,6 +5,10 @@
 import subprocess, os, struct, hashlib, sys
 
 def wsl_cat(path):
+    # 在 WSL 里直接 cat; 在 Windows 里用 wsl 桥接
+    if os.path.exists("/home/xlong"):   # 正在 WSL 内
+        with open(path, "rb") as f:
+            return f.read()
     return subprocess.check_output(["wsl", "bash", "-c", f"cat {path}"])
 
 def crc32(data):

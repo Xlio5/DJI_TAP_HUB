@@ -894,15 +894,38 @@ int main(int argc, char **argv)
             }
         }
 
-        // 每 2s 检测输出配置变化 (web_server 保存后 exec 重启自身生效)
+        // 每 2s 检测输出配置变化 (web_server 保存后进程内热重配, 避免 execv 崩溃)
         static int64_t last_cfg_check = 0;
         if (n - last_cfg_check > 2000000LL) {
             last_cfg_check = n;
             char cm; int cb;
             if (load_rc_output_cfg(cm, cb) && (cm != g_out_mode || cb != g_out_baud)) {
-                std::printf("[dji_rc] 输出配置变化 mode=%c baud=%d → 重启\n", cm, cb);
+                std::printf("[dji_rc] 输出配置变化 mode=%c baud=%d → 热重配\n", cm, cb);
                 std::fflush(stdout);
-                ::execv(argv[0], argv);   /* 重启自身; 失败则继续 */
+                bool oldCrsf = (g_out_mode == 'c');
+                g_out_mode = cm; g_out_baud = cb;
+
+                /* 先安全停掉旧回传线程 (CRSF->任何 或 任何->CRSF 切换) */
+                if (t3.joinable()) {
+                    g_stop.store(true);
+                    /* 关闭 fd 使阻塞的 read 立即返回 */
+                    int oldFd = g_out_fd;
+                    if (oldFd >= 0) { ::close(oldFd); g_out_fd = -1; }
+                    t3.join();
+                    g_stop.store(false);
+                }
+                /* 重开输出 fd (SBUS: 8E2; CRSF: 8N1) */
+                if (g_out_fd < 0)
+                    g_out_fd = uart_open_out(out_dev, g_out_baud, g_out_mode == 's');
+                if (g_out_fd < 0)
+                    std::fprintf(stderr, "[dji_rc] 热重配输出打开失败\n");
+
+                /* CRSF 模式启动回传线程 */
+                if (g_out_mode == 'c' && g_crsf_telem && g_out_fd >= 0 && !t3.joinable()) {
+                    g_stop.store(false);
+                    t3 = std::thread(crsf_rx_thread);
+                }
+                (void)oldCrsf;
             }
         }
 
