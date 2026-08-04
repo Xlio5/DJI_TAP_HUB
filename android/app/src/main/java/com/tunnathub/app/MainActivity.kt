@@ -920,23 +920,28 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 var roPreset by remember { mutableStateOf("default") }
                                 var roMap by remember { mutableStateOf("") }
                                 var roSources by remember { mutableStateOf(listOf<String>()) }
+                                var roSbusStd by remember { mutableStateOf(true) }
                                 var roMsg by remember { mutableStateOf("") }
-                                var roLoaded by remember { mutableStateOf(false) }
+                                var roReload by remember { mutableStateOf(0) }   // 每次进入 +1 强制重载
 
-                                // 加载当前配置
-                                LaunchedEffect(vpnRunning, roLoaded) {
-                                    if (!vpnRunning || roLoaded) return@LaunchedEffect
+                                // 加载当前配置: 进入配置页时强制从 V3s 读取 (含已保存的 crsf/sbus 模式)
+                                LaunchedEffect(vpnRunning, roReload) {
+                                    if (!vpnRunning) return@LaunchedEffect
+                                    roMsg = "读取中..."
                                     try {
                                         val text = java.net.URL("http://10.0.0.1:8080/api/rc/output").openConnection()
-                                            .apply { connectTimeout = 2000; readTimeout = 2000 }
+                                            .apply { connectTimeout = 3000; readTimeout = 3000 }
                                             .getInputStream().bufferedReader().readText()
                                         roMode = jsonString(text, "mode") ?: "sbus"
                                         roBaud = jsonString(text, "baud") ?: "auto"
                                         roPreset = jsonString(text, "map_preset") ?: "default"
                                         roMap = jsonString(text, "map") ?: ""
+                                        roSbusStd = (jsonString(text, "sbus_std") ?: "true") == "true"
                                         roSources = (jsonString(text, "sources") ?: "").split(",").filter { it.isNotEmpty() }
-                                        roLoaded = true
-                                    } catch (_: Exception) {}
+                                        roMsg = if (roReload > 0) "已读取配置" else ""
+                                    } catch (_: Exception) {
+                                        roMsg = "读取失败, 点刷新重试"
+                                    }
                                 }
 
                                 // 模式
@@ -950,6 +955,23 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     }
                                     Spacer(Modifier.weight(1f))
                                     Text(if (roMode == "crsf") "含回传" else "单向", fontSize = 9.sp, color = if (roMode == "crsf") Color(0xFF22C55E) else Color(0xFF64748B))
+                                }
+
+                                // 标准 SBUS 开关 (仅 SBUS 模式)
+                                if (roMode == "sbus") {
+                                    Spacer(Modifier.height(8.dp))
+                                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text("标准 SBUS", fontSize = 11.sp, color = Color(0xFF94A3B8), modifier = Modifier.width(66.dp))
+                                        Surface(color = if (roSbusStd) Color(0xFF0EA5E9) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp),
+                                            onClick = { roSbusStd = true }) {
+                                            Text("100k 8E2", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (roSbusStd) Color.Black else Color(0xFF64748B), modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp))
+                                        }
+                                        Surface(color = if (!roSbusStd) Color(0xFF0EA5E9) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp),
+                                            onClick = { roSbusStd = false }) {
+                                            Text("115200 8N1", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (!roSbusStd) Color.Black else Color(0xFF64748B), modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp))
+                                        }
+                                        Text(if (roSbusStd) "标准" else "兼容", fontSize = 9.sp, color = if (roSbusStd) Color(0xFF22C55E) else Color(0xFFF59E0B))
+                                    }
                                 }
 
                                 // 预设
@@ -1024,16 +1046,18 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     }
                                 }
 
-                                // 保存
+                                // 保存 + 刷新
                                 Spacer(Modifier.height(10.dp))
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Button(onClick = {
                                         roMsg = ""
-                                        val body = """{"mode":"$roMode","baud":"$roBaud","map_preset":"$roPreset","map":"$roMap"}"""
+                                        val body = """{"mode":"$roMode","baud":"$roBaud","map_preset":"$roPreset","map":"$roMap","sbus_std":$roSbusStd}"""
                                         apiPost("/api/rc/output", body)
-                                        roMsg = if (roLoaded) "已保存, V3s 将自动应用" else "保存中..."
+                                        roMsg = "已保存, V3s 将自动应用"
                                     }, modifier = Modifier.height(32.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) { Text("保存并应用", fontSize = 11.sp) }
-                                    if (roMsg.isNotEmpty()) Text(roMsg, fontSize = 9.sp, color = Color(0xFF22C55E))
+                                    Button(onClick = { roReload++ },
+                                        modifier = Modifier.height(32.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) { Text("刷新", fontSize = 11.sp) }
+                                    if (roMsg.isNotEmpty()) Text(roMsg, fontSize = 9.sp, color = Color(0xFF94A3B8), modifier = Modifier.weight(1f))
                                 }
 
                                 // 回传数据 (CRSF 模式)
@@ -1041,7 +1065,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     Spacer(Modifier.height(10.dp))
                                     Text("CRSF 回传数据", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
                                     var tlText by remember { mutableStateOf("等待回传...") }
-                                    LaunchedEffect(roMode, roLoaded) {
+                                    LaunchedEffect(roMode, roReload) {
                                         if (roMode != "crsf") return@LaunchedEffect
                                         while (true) {
                                             try {

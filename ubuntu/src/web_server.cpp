@@ -194,6 +194,7 @@ struct Config {
     std::string rcOutMap = "";            // 逗号分隔 source: "ch1,ch2,...,dir"
     int         rcOutCrsfMs = 10;         // CRSF 发送周期 (ms, 预留)
     bool        rcOutCrsfTelem = true;    // CRSF 接收回传
+    bool        rcOutSbusStd = true;      // SBUS 标准模式: true=100k 8E2, false=115200 8N1
 };
 
 /* 前置声明: apiConfig 会调用它 */
@@ -379,6 +380,8 @@ static Config loadConfig() {
             if (cfg.rcOutCrsfMs < 5) cfg.rcOutCrsfMs = 10;
             auto tb = jsonStr(ro, "crsf_telem");
             if (!tb.empty()) cfg.rcOutCrsfTelem = (tb == "true");
+            auto ss = jsonStr(ro, "sbus_std");
+            if (!ss.empty()) cfg.rcOutSbusStd = (ss == "true");
         }
     }
 
@@ -420,7 +423,8 @@ static void saveConfig(const Config& cfg) {
     ss << "    \"map_preset\": \"" << cfg.rcOutPreset << "\",\n";
     ss << "    \"map\": \"" << cfg.rcOutMap << "\",\n";
     ss << "    \"crsf_period_ms\": " << cfg.rcOutCrsfMs << ",\n";
-    ss << "    \"crsf_telem\": " << (cfg.rcOutCrsfTelem ? "true" : "false") << "\n";
+    ss << "    \"crsf_telem\": " << (cfg.rcOutCrsfTelem ? "true" : "false") << ",\n";
+    ss << "    \"sbus_std\": " << (cfg.rcOutSbusStd ? "true" : "false") << "\n";
     ss << "  }\n}\n";
     std::string json = ss.str();
     if (json.size() > CFG_MAX - 2) {
@@ -986,7 +990,9 @@ static std::string apiRcOutput(const Config& cfg) {
     obj.pair("map", JsonValue::string(mapStr));
     obj.pair("crsf_period_ms", JsonValue::number(cfg.rcOutCrsfMs));
     obj.pair("crsf_telem", JsonValue::boolean(cfg.rcOutCrsfTelem));
+    obj.pair("sbus_std", JsonValue::boolean(cfg.rcOutSbusStd));
     obj.pair("baud_sbus", JsonValue::number(100000));
+    obj.pair("baud_sbus_nostd", JsonValue::number(115200));
     obj.pair("baud_crsf", JsonValue::number(420000));
     /* 可用 source 列表 (供 app 下拉) */
     std::string srcs;
@@ -1107,6 +1113,8 @@ static Response handleRequest(const Request& req) {
             else if (ps != "custom") cfg.rcOutMap = "";   /* 预设非自定义时清空自定义 map */
             auto tb = jsonStr(req.body, "crsf_telem");
             if (tb == "true" || tb == "false") cfg.rcOutCrsfTelem = (tb == "true");
+            auto ss = jsonStr(req.body, "sbus_std");
+            if (ss == "true" || ss == "false") cfg.rcOutSbusStd = (ss == "true");
             int per = jsonInt(req.body, "crsf_period_ms");
             if (per >= 5 && per <= 100) cfg.rcOutCrsfMs = per;
             saveConfig(cfg);

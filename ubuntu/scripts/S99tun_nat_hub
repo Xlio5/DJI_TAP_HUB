@@ -42,10 +42,39 @@ case "$1" in
     /usr/local/bin/web_server > /var/log/web_server.log 2>&1 &
     _ts "web_server: started"
 
+    # PB6 输入检测: 接地(0) → UART0 作为 debug 串口; 上拉(1,默认) → SBUS/CRSF 输出
+    # 检测: sysfs gpio6 或 devmem 读 PB bank 寄存器
+    PB6_DEBUG=0
+    if [ -r /sys/class/gpio/gpio6/value ]; then
+        [ "$(cat /sys/class/gpio/gpio6/value)" = "0" ] && PB6_DEBUG=1
+    elif [ -e /dev/mem ]; then
+        # sun8i-v3s PB bank @0x01C20800, 数据寄存器偏移 0x10, PB6 = bit6
+        # 读 DATA 寄存器 bit6: 0=接地, 1=上拉
+        PBVAL=$(devmem 0x01C20810 2>/dev/null | sed 's/0x//')
+        if [ -n "$PBVAL" ]; then
+            # 解析最后一位 (hex) 的 bit6
+            HX=$(echo $PBVAL | tail -c 2)
+            B6=$(echo $((0x$HX & 0x40)) )
+            [ "$B6" = "0" ] && PB6_DEBUG=1
+        fi
+    fi
+    _ts "PB6 debug 检测: $PB6_DEBUG (1=debug串口模式)"
+
     # DJI RC serial decoder (UART1/2 input → SBUS/CRSF output on UART0)
     # 输出模式/波特率/通道映射由 SPI flash 配置 (web_server /api/rc/output) 决定
+    # PB6 接地时 UART0 留给 debug, 不启动协议输出
     if [ -c /dev/ttyS1 ] || [ -c /dev/ttyS2 ]; then
-        /usr/local/bin/dji_rc --interval 20 --out-mode sbus --out-dev /dev/ttyS0 --out-baud auto --crsf-telem 1 --rcmsg-host 10.0.0.2 --rcmsg-port 65530 > /var/log/dji_rc.log 2>&1 &
+        if [ "$PB6_DEBUG" = "1" ]; then
+            # debug 模式: 不输出协议, UART0 供 console + getty 登录终端
+            /usr/local/bin/dji_rc --interval 20 --out-dev /dev/null --out-baud auto --crsf-telem 0 --rcmsg-host 10.0.0.2 --rcmsg-port 65530 > /var/log/dji_rc.log 2>&1 &
+            # 启动 getty 到 ttyS0 (BusyBox): 提供可交互的登录 shell
+            if [ -x /sbin/getty ] && [ -c /dev/ttyS0 ]; then
+                setsid /sbin/getty -L 115200 ttyS0 vt100 > /dev/null 2>&1 &
+                _ts "ttyS0 getty: started (debug 模式)"
+            fi
+        else
+            /usr/local/bin/dji_rc --interval 20 --out-mode sbus --out-dev /dev/ttyS0 --out-baud auto --crsf-telem 1 --rcmsg-host 10.0.0.2 --rcmsg-port 65530 > /var/log/dji_rc.log 2>&1 &
+        fi
         _ts "dji_rc: started"
     fi
 

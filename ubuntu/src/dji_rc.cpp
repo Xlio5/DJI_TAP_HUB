@@ -72,11 +72,45 @@ static int64_t g_last_debug_us = 0;
 // ── 输出 (SBUS/CRSF @UART0) ──
 static int g_out_fd = -1;
 static char g_out_mode = 's';           // 's' = SBUS, 'c' = CRSF
-static int  g_out_baud = 100000;        // 实际波特率 (SBUS=100000, CRSF=420000)
+static int  g_out_baud = 100000;        // 实际波特率 (SBUS标准=100000, SBUS非标=115200, CRSF=420000)
+static bool g_sbus_std = true;          // SBUS 标准模式: true=100k 8E2, false=115200 8N1
 static bool g_crsf_telem = true;        // CRSF 是否接收回传
 static bool g_ch_map_valid = false;     // 通道映射已从配置加载
 static uint8_t g_ch_map[CH_COUNT];      // 通道映射表
 static crsf_telem_t g_telem;            // 最近回传数据 (CRSF 回传线程写)
+static bool g_pb6_debug = false;        // PB6 接地=true → UART0 作为 debug 串口, 不输出协议
+
+// PB6 输入检测: 接地(0) → debug 模式; 上拉(1,默认) → 协议输出
+// 通过 /sys/class/gpio (V3s PB bank = gpiochip, PB6 = offset 6)
+// 或 devmem 读 GPIO 寄存器。若无法检测则返回 false (正常协议输出模式)。
+static bool pb6_grounded(void)
+{
+    /* 优先 sysfs: 导出 PB6 读值 */
+    int fd = ::open("/sys/class/gpio/export", O_WRONLY);
+    if (fd >= 0) {
+        if (::write(fd, "6", 1) < 0) { /* 已导出则忽略 */ }
+        ::close(fd);
+        char p[128];
+        snprintf(p, sizeof(p), "/sys/class/gpio/gpio6/direction");
+        fd = ::open(p, O_WRONLY);
+        if (fd >= 0) { ::write(fd, "in", 2); ::close(fd); }
+        snprintf(p, sizeof(p), "/sys/class/gpio/gpio6/value");
+        fd = ::open(p, O_RDONLY);
+        if (fd >= 0) {
+            char v = 0;
+            if (::read(fd, &v, 1) == 1) {
+                ::close(fd);
+                return v == '0';   /* 0 = 接地 = debug */
+            }
+            ::close(fd);
+        }
+    }
+    /* 备选: 直接用 GPIO 寄存器 (sun8i-v3s, PB bank @0x01C20800, 每 bank 0x24)
+     * PB6 数据寄存器偏移 = 0x10 (DATA), 需先确认 pin mux 为 input。
+     * 此处若无法检测, 返回 false (协议输出) 保持默认安全。 */
+    std::fprintf(stderr, "[dji_rc] PB6 检测不可用, 默认协议输出模式\n");
+    return false;
+}
 
 // ── rcmsg (RC 数据 UDP) ──
 static constexpr uint32_t RCMSG_MAGIC = 0x314D4352u;  // "RCM1", little-endian on wire
@@ -691,9 +725,9 @@ static std::string cfg_json_str(const std::string &json, const std::string &key)
 }
 
 /* 从 SPI flash config (/dev/mtdblock0 @0xFD000) 读 rc_output 配置。
- * 返回 false 表示无 rc_output 段 (保持命令行默认)。成功则写 mode/baud 并
+ * 返回 false 表示无 rc_output 段 (保持命令行默认)。成功则写 mode/baud/sbus_std 并
  * 可能更新 g_ch_map / g_ch_map_valid。 */
-static bool load_rc_output_cfg(char &mode, int &baud)
+static bool load_rc_output_cfg(char &mode, int &baud, bool &sbus_std)
 {
     bool found = false;
     int fd = ::open("/dev/mtdblock0", O_RDONLY);
@@ -717,9 +751,17 @@ static bool load_rc_output_cfg(char &mode, int &baud)
     if (modeS == "crsf") { mode = 'c'; found = true; }
     else if (modeS == "sbus") { mode = 's'; found = true; }
 
+    auto stdS = cfg_json_str(obj, "sbus_std");
+    if (stdS == "false") sbus_std = false;
+    else if (stdS == "true") sbus_std = true;
+
     auto baudS = cfg_json_str(obj, "baud");
-    if (baudS == "auto" || baudS.empty()) baud = (mode == 'c') ? 420000 : 100000;
-    else { int b = std::atoi(baudS.c_str()); if (b >= 9600 && b <= 4000000) baud = b; }
+    /* 标准 SBUS: 100k 8E2; 非标准: 115200 8N1; CRSF: 420k 8N1 */
+    if (baudS == "auto" || baudS.empty()) {
+        if (mode == 'c') baud = 420000;
+        else if (sbus_std) baud = 100000;
+        else baud = 115200;
+    } else { int b = std::atoi(baudS.c_str()); if (b >= 9600 && b <= 4000000) baud = b; }
 
     auto presetS = cfg_json_str(obj, "map_preset");
     auto preset = rc_preset_parse(presetS.c_str());
@@ -790,15 +832,16 @@ int main(int argc, char **argv)
     }
 
     // 输出配置: SPI flash config 优先 (web_server 保存的 rc_output)
-    char cfg_mode = out_mode; int cfg_baud = out_baud;
-    if (load_rc_output_cfg(cfg_mode, cfg_baud)) {
-        out_mode = cfg_mode; out_baud = cfg_baud;
-        std::printf("[dji_rc] 输出配置(SPI flash): mode=%c baud=%d\n", out_mode, out_baud);
+    char cfg_mode = out_mode; int cfg_baud = out_baud; bool cfg_std = g_sbus_std;
+    if (load_rc_output_cfg(cfg_mode, cfg_baud, cfg_std)) {
+        out_mode = cfg_mode; out_baud = cfg_baud; g_sbus_std = cfg_std;
+        std::printf("[dji_rc] 输出配置(SPI flash): mode=%c baud=%d sbus_std=%d\n",
+                    out_mode, out_baud, g_sbus_std ? 1 : 0);
     }
     g_out_mode = out_mode;
     g_out_baud = out_baud;
     g_crsf_telem = crsf_telem;
-    if (out_baud == 0) out_baud = (out_mode == 'c') ? 420000 : 100000;
+    if (out_baud == 0) out_baud = (out_mode == 'c') ? 420000 : (g_sbus_std ? 100000 : 115200);
 
     if (debug_uart0) debug_uart0_open(debug_dev, debug_baud);
 
@@ -816,14 +859,24 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "[dji_rc] 所有串口打开失败,退出\n");
         return 1;
     }
-    // 协议输出 (UART0, 可变波特率 + 8E2/8N1)
-    g_out_fd = uart_open_out(out_dev, out_baud, out_mode == 's');
-    if (g_out_fd < 0) {
-        std::fprintf(stderr, "[dji_rc] 输出口打开失败: %s @%d\n", out_dev, out_baud);
-    } else {
-        std::printf("[dji_rc] 输出 %c: %s @%d fd=%d (通道映射 %s)\n",
-                    out_mode, out_dev, out_baud, g_out_fd,
-                    g_ch_map_valid ? "custom" : "default");
+    // PB6 检测: 接地 → UART0 留给 debug 串口, 不输出协议
+    g_pb6_debug = pb6_grounded();
+    if (g_pb6_debug) {
+        std::printf("[dji_rc] PB6 接地 → debug 模式, 跳过协议输出 (UART0 供 console/getty)\n");
+        std::fflush(stdout);
+    }
+
+    // 协议输出 (UART0): SBUS 标准=100k 8E2, SBUS 非标=115200 8N1, CRSF=420k 8N1
+    bool out_even2 = (out_mode == 's') && g_sbus_std;
+    if (!g_pb6_debug) {
+        g_out_fd = uart_open_out(out_dev, out_baud, out_even2);
+        if (g_out_fd < 0) {
+            std::fprintf(stderr, "[dji_rc] 输出口打开失败: %s @%d\n", out_dev, out_baud);
+        } else {
+            std::printf("[dji_rc] 输出 %c: %s @%d %s fd=%d (通道映射 %s)\n",
+                        out_mode, out_dev, out_baud, out_even2 ? "8E2" : "8N1", g_out_fd,
+                        g_ch_map_valid ? "custom" : "default");
+        }
     }
     sockaddr_in rcmsg_dst;
     int rcmsg_fd = rcmsg_open(rcmsg_host, rcmsg_port, &rcmsg_dst);
@@ -898,12 +951,14 @@ int main(int argc, char **argv)
         static int64_t last_cfg_check = 0;
         if (n - last_cfg_check > 2000000LL) {
             last_cfg_check = n;
-            char cm; int cb;
-            if (load_rc_output_cfg(cm, cb) && (cm != g_out_mode || cb != g_out_baud)) {
-                std::printf("[dji_rc] 输出配置变化 mode=%c baud=%d → 热重配\n", cm, cb);
+            char cm; int cb; bool cs;
+            if (load_rc_output_cfg(cm, cb, cs) &&
+                (cm != g_out_mode || cb != g_out_baud || cs != g_sbus_std)) {
+                std::printf("[dji_rc] 输出配置变化 mode=%c baud=%d sbus_std=%d → 热重配\n",
+                            cm, cb, cs ? 1 : 0);
                 std::fflush(stdout);
                 bool oldCrsf = (g_out_mode == 'c');
-                g_out_mode = cm; g_out_baud = cb;
+                g_out_mode = cm; g_out_baud = cb; g_sbus_std = cs;
 
                 /* 先安全停掉旧回传线程 (CRSF->任何 或 任何->CRSF 切换) */
                 if (t3.joinable()) {
@@ -914,9 +969,10 @@ int main(int argc, char **argv)
                     t3.join();
                     g_stop.store(false);
                 }
-                /* 重开输出 fd (SBUS: 8E2; CRSF: 8N1) */
+                /* 重开输出 fd: SBUS标准=8E2, SBUS非标=8N1, CRSF=8N1 */
+                bool even2 = (g_out_mode == 's') && g_sbus_std;
                 if (g_out_fd < 0)
-                    g_out_fd = uart_open_out(out_dev, g_out_baud, g_out_mode == 's');
+                    g_out_fd = uart_open_out(out_dev, g_out_baud, even2);
                 if (g_out_fd < 0)
                     std::fprintf(stderr, "[dji_rc] 热重配输出打开失败\n");
 
