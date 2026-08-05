@@ -86,11 +86,12 @@ PB = bank 1 → bank offset 0x24
 - App v1.3.0：RC 输出配置界面 + SBUS 标准开关 + 配置读取修复
 - SBUS 标准选项：默认 100k 8E2，可切 115200 8N1
 
-### PB6 检测（启动时正确，运行中切换待修）
-- dji_rc pb6_grounded()：mmap /dev/mem 读寄存器（页内偏移 0x800 已修复）
-- S99：简化，PB6 由 dji_rc 统一处理
-- U-Boot bootcmd：PB6 检测 console（115200/119000 待处理）
-- DTB：bias-pull-up（辅助）
+### PB6 检测 + 运行中自动切换（完整，已修复验证）
+- dji_rc pb6_grounded()：mmap /dev/mem 读寄存器，**每次检测重新 open+mmap+munmap**（页内偏移 0x800）
+- 运行中自动切换：每 2s poll，连续 3 次防抖，接地↔上拉实时切换
+- U-Boot bootcmd：PB6 检测（接地→console=115200 debug / 上拉→console=null）
+- inittab ttyS0 getty 已禁用（UART0 由 dji_rc 统一管理）
+- getty_stop 用 `fuser -k /dev/ttyS0` 杀干净残留进程（含 login shell）
 
 ### 审查修复（已提交）
 - g_crsf_stop 独立原子量（避免 t1/t2 误退）
@@ -99,6 +100,11 @@ PB = bank 1 → bank offset 0x24
 
 ### getty 修复（已提交）
 - busybox 无 pkill → 用 killall
+- getty_stop 增强：`fuser -k /dev/ttyS0` 杀所有占用 ttyS0 进程（含 getty 派生的 login shell）
+
+### UDP 阻塞修复（v150，本次核心）
+- send_rcmsg/send_tlm 阻塞 sendto 卡死主循环（sock_alloc_send_pskb）
+- 修复：socket 设 O_NONBLOCK + sendto MSG_DONTWAIT，EAGAIN 忽略
 
 ## 八、重要决策及其理由
 
@@ -109,6 +115,9 @@ PB = bank 1 → bank offset 0x24
 | mmap 读寄存器 | 内核无 sysfs gpio，devmem 受限 |
 | 页内偏移 0x800 | 0x01C20000 是 clock 区不是 pinctrl |
 | dji_rc 统一管理 getty | 避免 S99 重复启动 |
+| **每次检测重新 mmap** | 运行中同映射读到旧值，重映射读实时值 |
+| **inittab getty 禁用** | 系统级 getty respawn 抢 UART0，杀不掉 |
+| **UDP sendto 非阻塞** | 目标不可达时阻塞 sendto 卡死主循环，PB6 poll 失效 |
 
 ## 九、被否定的方案
 
@@ -123,16 +132,19 @@ PB = bank 1 → bank offset 0x24
 
 - ✅ SBUS/CRSF 输出、通道映射、回传、App 配置：完成验证
 - ✅ PB6 启动检测：正确
-- ✅ **PB6 运行中自动切换：已修复并验证**（提交 `475c94e`）
-- ⚠️ U-Boot 波特率 921600：未处理
+- ✅ **PB6 运行中自动切换：完整修复验证**（提交 `475c94e` + `1c0a9a2` + `4ba484b`）
+- ✅ **主循环不再卡死**（UDP 阻塞修复，v150）
+- ✅ **U-Boot bootcmd 115200**：已改 PB6 检测版
+- ⚠️ OTA A/B 槽切换：不可用（见 docs/ota_ab_slot_issue.md）
 
 ## 十一、尚未完成的任务
 
-1. ✅ **【已完成】修复 PB6 运行中切换**（提交 `475c94e`）
-   - 根因：代码误落在复盘已否定的 pread 实现（pread 读回全 0）
-   - 修复：pb6_grounded() 恢复 mmap，每次检测重新 open+mmap+munmap
-   - 真机验证：接地/断开均实时切换，进程无崩溃
-2. U-Boot CONFIG_BOOTCOMMAND 改 115200（解决 U-Boot 乱码 + 内核 921600）
+1. ✅ **【已完成】修复 PB6 运行中切换**
+   - 根因1：代码误落在已否定 pread（pread 读回全 0）→ 恢复 mmap 每次重映射（`475c94e`）
+   - 根因2：inittab getty respawn + login shell 占 ttyS0 → 禁用 getty + fuser -k（`1c0a9a2`）
+   - 根因3：UDP sendto 阻塞卡死主循环 → 非阻塞 socket（`4ba484b`）
+   - 真机验证：运行中接地/断开多次往返切换正常
+2. **OTA A/B 槽切换**（docs/ota_ab_slot_issue.md）：bootcmd 硬编码 A 槽，SPL 无 0xFC000 逻辑
 3. 安装 App v1.3.0 到 DJI RC（需 adb 在线）
 4. CRSF 模式实测（切 CRSF 输出 + 回传）
 
@@ -149,8 +161,7 @@ PB = bank 1 → bank offset 0x24
 
 ## 十三、新会话接下来先做什么
 
-1. **处理 U-Boot CONFIG_BOOTCOMMAND 115200**（当前唯一剩余固件问题）
-   - 解决 U-Boot 阶段波特率 921600 乱码 + 内核 console 波特率不一致
+1. **处理 OTA A/B 槽切换**（docs/ota_ab_slot_issue.md）：bootcmd 加槽切换 或 SPL fallback
 2. 安装 App v1.3.0 到 DJI RC（需 adb 在线）
 3. CRSF 模式实测（切 CRSF 输出 + 回传）
 4. 全程保持"写后读回验证" + 每轮 git commit
@@ -164,13 +175,14 @@ PB = bank 1 → bank offset 0x24
 - `scripts/build_spi_image.py`：SPI 镜像构建（bootcmd PB6 检测）
 - `docs/pb6_detection_retrospective.md`：问题复盘
 - `docs/pb6_uart0_switch.md`：功能设计
-- 最新提交: `98b6131`（getty 修复）、`f78ce78`（mmap 偏移修复）
+- `docs/ota_ab_slot_issue.md`：OTA A/B 槽切换问题
+- 最新提交: `475c94e`（PB6 mmap 修复）、`1c0a9a2`（getty_stop 增强）、`4ba484b`（UDP 非阻塞）
 
 ## 十五、固件产物 md5
 
 | 文件 | md5 |
 |---|---|
-| dji_rc（mmap 每次重映射，PB6 运行中切换已修复）| `54e2a723` |
+| dji_rc（v150 固化，UDP 非阻塞 + mmap 重映射）| `fad8b8f2` |
 | web_server | `c56238ae` |
-| rootfs_v146.squashfs | `7ba75ad5` |
-| spi_image_v146.bin | `c96a2f69` |
+| rootfs_v150.squashfs | `de22318a` |
+| spi_image_v150.bin | `ebc7486d` |
