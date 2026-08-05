@@ -158,8 +158,15 @@ static void getty_start(void)
 
 static void getty_stop(void)
 {
+    /* 杀掉所有挂 ttyS0 的进程 (含 getty + login shell):
+     * - killall getty 只杀 getty 进程, 但 getty 派生出的 login shell (-sh) 不是 getty,
+     *   killall 杀不到, 会一直占用 ttyS0, 导致切回协议时 uart_open_out 失败。
+     * - fuser -k /dev/ttyS0 按终端杀所有占用进程 (busybox 内置 fuser)。
+     * - inittab 若仍有 ttyS0::respawn:/sbin/getty, 杀掉的 getty 会被立刻 respawn,
+     *   需在 rootfs 构建时禁用该行 (见 build_rootfs_v*.sh)。 */
     ::system("killall getty 2>/dev/null");
-    ::usleep(200000);   /* 等 getty 完全退出并释放 ttyS0 (避免 fd 占用) */
+    ::system("fuser -k /dev/ttyS0 2>/dev/null");
+    ::usleep(300000);   /* 等进程完全退出并释放 ttyS0 (避免 fd 占用) */
 }
 
 static int uart_open_out(const char *dev, int baud, bool even2);   /* forward */

@@ -33,16 +33,20 @@ def main():
     print(f"SPL: {len(spl)}B  U-Boot: {len(uboot)}B  DTB: {len(dtb)}B  zImage: {len(zimage)}B  rootfs: {len(squashfs)}B")
 
     # PB6 检测: 接地 → console=ttyS0@115200 (debug); 上拉 → console=null (协议输出)
-    # U-Boot gpio input <bank> <pin>: PB6 = bank 1, pin 6
+    # U-Boot gpio input <name>: 只接受单个参数, 用 "PB6" (非 "1 6", 那会解析成 PA1)
+    # gpio input 返回引脚值本身: 接地(GPIO=0)→then, 上拉(GPIO=1)→else
     base_args = ("panic=5 sunxi_wdt.nowayout=1 "
+                 "root=/dev/mtdblock3 "
                  "rootfstype=squashfs rootwait "
                  "mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),4576k(rootfs_a),-(rootfs_b) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0")
     # bootcmd: 检测 PB6, 设 console, 启动内核
-    bootcmd = ("if gpio input 1 6; then "
+    # 注意: U-Boot CONFIG_ENV_IS_NOWHERE 不读 SPI env 区, 此处仅保持与 .config CONFIG_BOOTCOMMAND 一致
+    # (实际生效的是编译嵌入的 CONFIG_BOOTCOMMAND, 见 u-boot/.config)。
+    bootcmd = ("if gpio input PB6; then "
                "setenv bootargs console=ttyS0,115200 " + base_args + "; "
                "else "
                "setenv bootargs console=null " + base_args + "; "
-               "fi; bootz 0x41000000 - 0x42000000")
+               "fi; fdt addr 0x42000000; bootz 0x41000000 - 0x42000000")
     # bootargs 默认值 (U-Boot 加载时用; bootcmd 会覆盖)
     bootargs = "console=ttyS0,115200 " + base_args
     env_str = "bootargs=" + bootargs + "\0" + "bootcmd=" + bootcmd + "\0"
