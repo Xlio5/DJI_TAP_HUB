@@ -401,6 +401,11 @@ static int rcmsg_open(const char *host, int port, sockaddr_in *dst)
         return -1;
     }
 
+    /* 非阻塞: 目标不可达时 sendto 立即返回 EAGAIN, 避免 UDP 发送缓冲区
+     * 填满后阻塞主循环 (曾卡在 sock_alloc_send_pskb, 导致主循环停 + PB6 poll 失效)。 */
+    int fl = ::fcntl(fd, F_GETFL, 0);
+    if (fl >= 0) ::fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+
     std::printf("[dji_rc] rcmsg UDP: %s:%d fd=%d\n", host, port, fd);
     debug_log("[dji_rc][dbg] rcmsg UDP %s:%d fd=%d", host, port, fd);
     return fd;
@@ -449,10 +454,12 @@ static void send_rcmsg(int fd, const sockaddr_in &dst, const rc_state_t &st,
     for (int i = 0; i < 6; i++) msg.raw_ch[i] = src.ch[i];
     msg.buttons = valid ? button_bits(st) : 0;
 
-    ssize_t n = ::sendto(fd, &msg, sizeof(msg), 0,
+    ssize_t n = ::sendto(fd, &msg, sizeof(msg), MSG_DONTWAIT,
                          (const sockaddr *)&dst, sizeof(dst));
     if (n != (ssize_t)sizeof(msg)) {
-        std::fprintf(stderr, "[dji_rc] rcmsg send fail n=%d errno=%d\n", (int)n, errno);
+        /* 目标不可达/缓冲区满时 sendto 返回 EAGAIN, 忽略 (主循环不能阻塞) */
+        if (errno != EAGAIN && errno != EWOULDBLOCK)
+            std::fprintf(stderr, "[dji_rc] rcmsg send fail n=%d errno=%d\n", (int)n, errno);
     }
 }
 
@@ -781,7 +788,7 @@ static void send_tlm(int fd, const sockaddr_in &dst, const crsf_telem_t &t)
     msg.has_vario = t.has_vario; msg.vario_cms = t.vario_cms;
     msg.has_fmode = t.has_fmode; memcpy(msg.flight_mode, t.flight_mode, sizeof(msg.flight_mode));
 
-    ::sendto(fd, &msg, sizeof(msg), 0, (const sockaddr *)&dst, sizeof(dst));
+    ::sendto(fd, &msg, sizeof(msg), MSG_DONTWAIT, (const sockaddr *)&dst, sizeof(dst));
 }
 
 /* 回传数据写状态文件 (供 web_server /api/rc/telemetry) */
