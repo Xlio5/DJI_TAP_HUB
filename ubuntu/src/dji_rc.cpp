@@ -83,7 +83,8 @@ static crsf_telem_t g_telem;            // 最近回传数据 (CRSF 回传线程
 static bool g_pb6_debug = false;        // PB6 接地=true → UART0 作为 debug 串口, 不输出协议
 
 // PB6 输入检测: 接地(0) → debug 模式; 上拉(1,默认) → 协议输出
-// PB6 检测: 先强制配置 input + pull-up, 再读电平, 避免 DTB 上拉未生效时误判。
+// 用 mmap /dev/mem 读物理寄存器。每次检测重新 open+mmap+munmap (新虚拟地址映射同一物理页),
+// 避免同一次映射读到旧值 (运行中切换失效的根因假设)。
 // sun8i-v3s GPIO: pinctrl base @0x01C20800, bank 内存 0x24 (BANK_MEM_SIZE)。
 // PB = bank 1 → bank offset 0x24。PB bank 寄存器:
 //   CFG0 (PB0-3) @0x24, CFG1 (PB4-7) @0x28, PB6 = CFG1 bit 24-25 (值 0=input)
@@ -92,19 +93,19 @@ static bool g_pb6_debug = false;        // PB6 接地=true → UART0 作为 debu
 // 失败时返回 false (协议输出) 保持默认安全。
 static bool pb6_grounded(void)
 {
+    /* 注意: 0x01C20800 & ~0xFFF = 0x01C20000 是 clock 区!
+     * 必须加页内偏移 0x800 才能访问到 pinctrl (0x01C20800)。 */
+    const uintptr_t PIO_PHYS  = 0x01C20800u;      /* pinctrl 物理基址 */
+    const uintptr_t BASE      = PIO_PHYS & ~0xFFFu;  /* 页对齐 0x01C20000 */
+    const uintptr_t PAGE_OFF  = PIO_PHYS - BASE;      /* 0x800, 页内偏移 */
+    const size_t    PG        = (size_t)sysconf(_SC_PAGESIZE);
+
     int memfd = ::open("/dev/mem", O_RDWR | O_SYNC);
     if (memfd < 0) {
         std::fprintf(stderr, "[dji_rc] PB6 检测: 无法打开 /dev/mem (%s)\n", std::strerror(errno));
         return false;
     }
-    /* 页对齐映射 pinctrl 寄存器区 (0x01C20800).
-     * 注意: 0x01C20800 & ~0xFFF = 0x01C20000 是 clock 区! 必须加页内偏移 0x800
-     * 才能访问到 pinctrl (0x01C20800-0x01C20BFF)。 */
-    const uintptr_t PIO_PHYS = 0x01C20800u;      /* pinctrl 物理基址 */
-    const uintptr_t BASE = PIO_PHYS & ~0xFFFu;   /* 页对齐 0x01C20000 */
-    const uintptr_t PAGE_OFF = PIO_PHYS - BASE;  /* 0x800, 页内偏移 */
-    size_t pg = (size_t)sysconf(_SC_PAGESIZE);
-    void *map = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_SHARED, memfd, (off_t)BASE);
+    void *map = mmap(NULL, PG, PROT_READ | PROT_WRITE, MAP_SHARED, memfd, (off_t)BASE);
     ::close(memfd);
     if (map == MAP_FAILED) {
         std::fprintf(stderr, "[dji_rc] PB6 检测: mmap 失败 (%s)\n", std::strerror(errno));
@@ -131,15 +132,16 @@ static bool pb6_grounded(void)
     uint32_t reg = *data;
     bool grounded = ((reg >> 6) & 1u) == 0;
 
-    /* 诊断打印 (首次调用才打, 避免刷屏) */
+    /* 诊断打印 (仅首次调用, 避免每次 poll 刷屏) */
     static bool dbg_once = false;
     if (!dbg_once) {
         dbg_once = true;
         std::printf("[dji_rc] PB6 检测: CFG1=0x%08X PU0=0x%08X DATA=0x%08X grounded=%d\n",
-                    (unsigned)*cfg1, (unsigned)*pu0, (unsigned)reg, grounded ? 1 : 0);
+                    (unsigned)c, (unsigned)pu, (unsigned)reg, grounded ? 1 : 0);
         std::fflush(stdout);
     }
-    munmap(map, pg);
+
+    munmap(map, PG);
     return grounded;
 }
 
