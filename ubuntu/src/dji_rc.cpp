@@ -146,15 +146,18 @@ static bool pb6_grounded(void)
 /* 启动/停止 ttyS0 getty (debug 串口登录终端) */
 static void getty_start(void)
 {
-    if (::system("pkill -f 'getty -L 115200 ttyS0' 2>/dev/null; "
-                 "setsid /sbin/getty -L 115200 ttyS0 vt100 >/dev/null 2>&1 &") != 0) {
+    /* 先确保无残留 getty (busybox 无 pkill, 用 killall), 再启动新的 */
+    ::system("killall getty 2>/dev/null");
+    ::usleep(100000);   /* 等旧 getty 完全退出释放 ttyS0 */
+    if (::system("setsid /sbin/getty -L 115200 ttyS0 vt100 >/dev/null 2>&1 &") != 0) {
         std::fprintf(stderr, "[dji_rc] getty 启动命令失败\n");
     }
 }
 
 static void getty_stop(void)
 {
-    ::system("pkill -f 'getty -L 115200 ttyS0' 2>/dev/null");
+    ::system("killall getty 2>/dev/null");
+    ::usleep(200000);   /* 等 getty 完全退出并释放 ttyS0 (避免 fd 占用) */
 }
 
 static int uart_open_out(const char *dev, int baud, bool even2);   /* forward */
