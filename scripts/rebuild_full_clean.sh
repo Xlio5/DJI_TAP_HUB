@@ -55,10 +55,10 @@ chown -R xlong:xlong . 2>/dev/null || true
 echo "make clean..."
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- clean 2>&1 | tail -3 || true
 
-# 强制 U-Boot 交互串口和 Linux 控制台都使用 921600。
-sed -i 's/^CONFIG_BAUDRATE=.*/CONFIG_BAUDRATE=921600/' .config
-sed -i 's/console=ttyS0,115200/console=ttyS0,921600/g' .config
-sed -i 's/console=ttyS0,115200/console=ttyS0,921600/g' include/configs/sunxi-common.h
+# 统一 U-Boot 交互串口和 Linux 控制台为 115200 (PB6 检测控制 debug 模式)。
+sed -i 's/^CONFIG_BAUDRATE=.*/CONFIG_BAUDRATE=115200/' .config
+sed -i 's/console=ttyS0,921600/console=ttyS0,115200/g' .config
+sed -i 's/console=ttyS0,921600/console=ttyS0,115200/g' include/configs/sunxi-common.h
 echo "baudrate=$(grep '^CONFIG_BAUDRATE=' .config)"
 echo "bootcmd=$(grep '^CONFIG_BOOTCOMMAND=' .config)"
 

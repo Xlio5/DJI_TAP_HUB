@@ -83,30 +83,63 @@ static crsf_telem_t g_telem;            // 最近回传数据 (CRSF 回传线程
 static bool g_pb6_debug = false;        // PB6 接地=true → UART0 作为 debug 串口, 不输出协议
 
 // PB6 输入检测: 接地(0) → debug 模式; 上拉(1,默认) → 协议输出
-// 用 mmap /dev/mem 读 GPIO 数据寄存器 (sun8i-v3s PB bank @0x01C20800,
-// 数据寄存器 @0x01C20810, PB6 = bit6, 0=接地 1=上拉)。
+// PB6 检测: 先强制配置 input + pull-up, 再读电平, 避免 DTB 上拉未生效时误判。
+// sun8i-v3s GPIO: pinctrl base @0x01C20800, bank 内存 0x24 (BANK_MEM_SIZE)。
+// PB = bank 1 → bank offset 0x24。PB bank 寄存器:
+//   CFG0 (PB0-3) @0x24, CFG1 (PB4-7) @0x28, PB6 = CFG1 bit 24-25 (值 0=input)
+//   DATA (PB0-31) @0x34, PB6 = bit6
+//   PU0 (PB0-15)  @0x40, PB6 = bit 12-13 (值 01=pull-up)
 // 失败时返回 false (协议输出) 保持默认安全。
 static bool pb6_grounded(void)
 {
-    int memfd = ::open("/dev/mem", O_RDONLY | O_SYNC);
+    int memfd = ::open("/dev/mem", O_RDWR | O_SYNC);
     if (memfd < 0) {
         std::fprintf(stderr, "[dji_rc] PB6 检测: 无法打开 /dev/mem (%s)\n", std::strerror(errno));
         return false;
     }
-    /* 页对齐映射 GPIO 寄存器区 (0x01C20800, 映射 0x1000) */
-    const uintptr_t BASE = 0x01C20800u & ~0xFFFu;
+    /* 页对齐映射 pinctrl 寄存器区 (0x01C20800).
+     * 注意: 0x01C20800 & ~0xFFF = 0x01C20000 是 clock 区! 必须加页内偏移 0x800
+     * 才能访问到 pinctrl (0x01C20800-0x01C20BFF)。 */
+    const uintptr_t PIO_PHYS = 0x01C20800u;      /* pinctrl 物理基址 */
+    const uintptr_t BASE = PIO_PHYS & ~0xFFFu;   /* 页对齐 0x01C20000 */
+    const uintptr_t PAGE_OFF = PIO_PHYS - BASE;  /* 0x800, 页内偏移 */
     size_t pg = (size_t)sysconf(_SC_PAGESIZE);
-    void *map = mmap(NULL, pg, PROT_READ, MAP_SHARED, memfd, (off_t)BASE);
+    void *map = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_SHARED, memfd, (off_t)BASE);
     ::close(memfd);
     if (map == MAP_FAILED) {
         std::fprintf(stderr, "[dji_rc] PB6 检测: mmap 失败 (%s)\n", std::strerror(errno));
         return false;
     }
-    /* 数据寄存器偏移 = 0x01C20810 - BASE */
-    volatile uint32_t *data = (volatile uint32_t *)((uint8_t *)map + (0x01C20810u - BASE));
+
+    uint8_t *pio = (uint8_t *)map + PAGE_OFF;    /* 指向 0x01C20800 */
+    volatile uint32_t *cfg1 = (volatile uint32_t *)(pio + 0x28);  /* PB CFG1 (PB4-7) */
+    volatile uint32_t *data = (volatile uint32_t *)(pio + 0x34);  /* PB DATA */
+    volatile uint32_t *pu0  = (volatile uint32_t *)(pio + 0x40);  /* PB PU0 */
+
+    /* 1. 强制 PB6 为 input (CFG1 bit24-25 = 00) */
+    uint32_t c = *cfg1;
+    c &= ~(0x3u << 24);
+    *cfg1 = c;
+    /* 2. 强制 PB6 pull-up (PU0 bit12-13 = 01) */
+    uint32_t pu = *pu0;
+    pu &= ~(0x3u << 12);
+    pu |= (0x1u << 12);
+    *pu0 = pu;
+    /* 3. 短延时等寄存器生效 */
+    ::usleep(1000);
+    /* 4. 读 DATA bit6: 0=接地, 1=上拉 */
     uint32_t reg = *data;
-    bool grounded = ((reg >> 6) & 1u) == 0;   /* PB6 bit6: 0=接地 */
-    munmap(map, pg);   /* 先 munmap, 不访问悬垂指针 */
+    bool grounded = ((reg >> 6) & 1u) == 0;
+
+    /* 诊断打印 (首次调用才打, 避免刷屏) */
+    static bool dbg_once = false;
+    if (!dbg_once) {
+        dbg_once = true;
+        std::printf("[dji_rc] PB6 检测: CFG1=0x%08X PU0=0x%08X DATA=0x%08X grounded=%d\n",
+                    (unsigned)*cfg1, (unsigned)*pu0, (unsigned)reg, grounded ? 1 : 0);
+        std::fflush(stdout);
+    }
+    munmap(map, pg);
     return grounded;
 }
 

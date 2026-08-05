@@ -28,10 +28,16 @@ def binascii_crc32(data):
     import binascii
     return binascii.crc32(data) & 0xFFFFFFFF
 
-bootargs = ("console=ttyS0,921600 panic=5 sunxi_wdt.nowayout=1 "
-            "rootfstype=squashfs rootwait "
-            "mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),4576k(rootfs_a),-(rootfs_b) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0")
-bootcmd = "bootz 0x41000000 - 0x42000000"
+# PB6 检测: 接地→console=ttyS0@115200 (debug); 上拉→console=null (协议输出)
+base_args = ("panic=5 sunxi_wdt.nowayout=1 "
+             "rootfstype=squashfs rootwait "
+             "mtdparts=firmware:1M(uboot),64k(dtb),6M(kernel),4576k(rootfs_a),-(rootfs_b) g_serial.idVendor=0x0BDA g_serial.idProduct=0x8812 g_serial.use_acm=0")
+bootcmd = ("if gpio input 1 6; then "
+           "setenv bootargs console=ttyS0,115200 " + base_args + "; "
+           "else "
+           "setenv bootargs console=null " + base_args + "; "
+           "fi; bootz 0x41000000 - 0x42000000")
+bootargs = "console=ttyS0,115200 " + base_args
 env_str = "bootargs=" + bootargs + "\0" + "bootcmd=" + bootcmd + "\0"
 env_bytes = env_str.encode().ljust(0x1FFC, b'\0')
 crc = binascii_crc32(env_bytes)

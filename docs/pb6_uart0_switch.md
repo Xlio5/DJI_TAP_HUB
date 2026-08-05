@@ -54,8 +54,11 @@ V3s 只有 3 个 UART（UART0/UART1/UART2），UART0 原本是内核 console + d
 
 ### 3. dji_rc（用户态）
 
-- **pb6_grounded()**：`mmap /dev/mem` 读 GPIO 数据寄存器
-  - PB bank @0x01C20800，DATA @0x01C20810，PB6 = bit6，0=接地 1=上拉
+- **pb6_grounded()**：`mmap /dev/mem` **运行时主动配置 PB6 寄存器**（最终策略，不依赖 DTB）
+  - **CFG1** @0x04：PB6 强制 input（bit24-25=00）
+  - **PU0** @0x1C：PB6 强制 pull-up（bit12-13=01）
+  - **DATA** @0x10：读 PB6 bit6，0=接地 1=上拉
+  - 每次检测前配置寄存器 + 短延时，确保上拉生效，避免浮空误判
 - **pb6_auto_switch()**：每 2s 检测，**连续 3 次相同**才切换（防抖，6s 确认）
   - 接地 → debug：关闭协议输出 fd + 启动 getty（`setsid getty -L 115200 ttyS0`）
   - 上拉 → 协议：杀掉 getty + 按配置打开 SBUS/CRSF 输出 fd
