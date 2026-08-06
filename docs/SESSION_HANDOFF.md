@@ -144,9 +144,16 @@ PB = bank 1 → bank offset 0x24
    - 根因2：inittab getty respawn + login shell 占 ttyS0 → 禁用 getty + fuser -k（`1c0a9a2`）
    - 根因3：UDP sendto 阻塞卡死主循环 → 非阻塞 socket（`4ba484b`）
    - 真机验证：运行中接地/断开多次往返切换正常
-2. **OTA A/B 槽切换**（docs/ota_ab_slot_issue.md）：bootcmd 硬编码 A 槽，SPL 无 0xFC000 逻辑
-3. 安装 App v1.3.0 到 DJI RC（需 adb 在线）
-4. CRSF 模式实测（切 CRSF 输出 + 回传）
+2. ✅ **【已完成】OTA A/B 槽切换验证**：连续 20 次 OTA 测试 20/20 成功
+   - 每次上传 rootfs → 重启 → 正确切到另一槽（A↔B 往返）
+   - **OTA 切槽完全正常**（之前"bootcmd 硬编码 A 槽不会切"的判断被实测推翻）
+   - docs/ota_ab_slot_issue.md 的判断已过时，OTA 可用
+3. **U-Boot 段乱码（低优先）**：冷启动 Booting Linux 前 U-Boot banner 乱码（115200/921600 都乱）。
+   - 已排除：CONFIG_BAUDRATE=115200、SPL 115200、bootcmd 正确
+   - 疑点：UART0 是 `snps,dw-apb-uart`，可能 DW 驱动波特率时钟计算错误
+   - 待办：查 DW 驱动 APB2 时钟频率；或用 UART1/2 做 console 规避
+4. 安装 App v1.3.0 到 DJI RC（需 adb 在线）
+5. CRSF 模式实测（切 CRSF 输出 + 回传）
 
 ## 十二、不能随意修改的内容
 
