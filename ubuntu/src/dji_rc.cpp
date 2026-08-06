@@ -261,6 +261,13 @@ static constexpr uint32_t RCMSG_MAGIC = 0x314D4352u;  // "RCM1", little-endian o
 static constexpr int RCMSG_PORT = 65530;
 static constexpr const char *RCMSG_HOST = "10.0.0.2";
 
+// ── CRSF 桥 (crsf-bridge 模式): UART0 CRSF 帧 ↔ 网口 UDP 透明转发 ──
+// App 跑 ELRS Lua 脚本, 经网口 UDP 发 CRSF 参数命令, V3s 转 UART0。
+static bool g_crsf_bridge = false;   // --crsf-bridge 启用
+static constexpr uint32_t CRSFBR_MAGIC = 0x46534352u;   // "RCSF" little-endian = "CRSF"
+static int       crsfbr_port = 65532;                   // 网口 CRSF 桥端口
+static const char *crsfbr_host = "10.0.0.2";
+
 // ── tlm (回传数据 UDP) ──
 static constexpr uint32_t TLM_MAGIC = 0x314D4C54u;    // "TLM1", little-endian on wire
 static constexpr int TLM_PORT = 65531;
@@ -745,13 +752,20 @@ static void crsf_rx_thread()
     crsf_rx_t rx;
     crsf_rx_init(&rx);
 
-    /* 设备描述 (Device_Info 响应用) */
+    /* 设备描述 (Device_Info 响应用, 非 bridge 模式) */
     static crsf_dev_desc_t dev;
     memset(&dev, 0, sizeof(dev));
     strncpy(dev.name, "V3s-Hub", sizeof(dev.name) - 1);
     dev.serial_hi = 0x01; dev.serial_lo = 0x46;   /* v1.4.x */
     dev.hw_ver = 0x01; dev.sw_ver = 0x01;
     dev.proto_ver = 2;                             /* ELRS 参数协议 v2 */
+
+    /* bridge 模式: 参数帧转发网口 UDP */
+    int crsfbr_fd = -1;
+    sockaddr_in crsfbr_dst;
+    if (g_crsf_bridge) {
+        crsfbr_fd = rcmsg_open(crsfbr_host, crsfbr_port, &crsfbr_dst);
+    }
 
     while (!g_crsf_stop.load(std::memory_order_relaxed)) {
         uint8_t buf[64];
@@ -764,14 +778,27 @@ static void crsf_rx_thread()
                     uint8_t type = rx.buf[2];
                     if (crsf_parse_frame(rx.buf, (uint8_t)r, &telem))
                         telem.last_rx_us = now_us();
-                    /* 设备/参数请求 → 生成响应写回 UART0 上行 */
-                    if (type >= 0x28) {
-                        uint8_t resp[CRSF_FRAME_MAX];
-                        int rlen = crsf_handle_request(rx.buf, (uint8_t)r, &dev,
-                                                       g_crsf_params, g_crsf_n_params, resp);
-                        if (rlen > 0) {
-                            ssize_t w = ::write(g_out_fd, resp, (size_t)rlen);
+                    if (g_crsf_bridge) {
+                        /* bridge 模式: 参数帧(0x28+) 原样转发网口 UDP */
+                        if (type >= 0x28 && crsfbr_fd >= 0) {
+                            uint8_t pkt[4 + CRSF_FRAME_MAX];
+                            uint32_t m = CRSFBR_MAGIC;
+                            memcpy(pkt, &m, 4);
+                            memcpy(pkt + 4, rx.buf, (size_t)r);
+                            ssize_t w = ::sendto(crsfbr_fd, pkt, 4 + (size_t)r, MSG_DONTWAIT,
+                                                 (const sockaddr *)&crsfbr_dst, sizeof(crsfbr_dst));
                             (void)w;
+                        }
+                    } else {
+                        /* 设备/参数请求 → 生成响应写回 UART0 上行 */
+                        if (type >= 0x28) {
+                            uint8_t resp[CRSF_FRAME_MAX];
+                            int rlen = crsf_handle_request(rx.buf, (uint8_t)r, &dev,
+                                                           g_crsf_params, g_crsf_n_params, resp);
+                            if (rlen > 0) {
+                                ssize_t w = ::write(g_out_fd, resp, (size_t)rlen);
+                                (void)w;
+                            }
                         }
                     }
                 }
@@ -786,6 +813,51 @@ static void crsf_rx_thread()
             ::usleep(2000);    /* 无数据, 2ms 轮询 (O_NONBLOCK) */
         }
     }
+    if (crsfbr_fd >= 0) ::close(crsfbr_fd);
+}
+
+/* ── bridge 下行线程: 收网口 UDP CRSF 命令 → 写 UART0 ── */
+static void crsf_bridge_rx_thread()
+{
+    int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return;
+    int fl = ::fcntl(fd, F_GETFL, 0);
+    if (fl >= 0) ::fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    int yes = 1;
+    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    sockaddr_in sa;
+    std::memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_ANY);
+    sa.sin_port = htons((uint16_t)crsfbr_port);
+    if (::bind(fd, (sockaddr *)&sa, sizeof(sa)) < 0) {
+        std::fprintf(stderr, "[dji_rc] crsf-bridge bind 失败: %s\n", std::strerror(errno));
+        ::close(fd);
+        return;
+    }
+
+    std::printf("[dji_rc] crsf-bridge 监听 UDP %s:%d → UART0\n", crsfbr_host, crsfbr_port);
+
+    while (!g_crsf_stop.load(std::memory_order_relaxed)) {
+        uint8_t pkt[4 + CRSF_FRAME_MAX];
+        ssize_t n = ::recvfrom(fd, pkt, sizeof(pkt), 0, NULL, NULL);
+        if (n > 0) {
+            /* 校验 magic "CRSF" + 帧长合法, 原样写 UART0 */
+            if (n >= 5 && memcmp(pkt, &CRSFBR_MAGIC, 4) == 0) {
+                uint8_t flen = pkt[4 + 1];   /* CRSF len 字段 */
+                if (flen + 2 == (uint8_t)(n - 4) && g_out_fd >= 0) {
+                    ::write(g_out_fd, pkt + 4, (size_t)(n - 4));
+                }
+            }
+        } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
+            if (g_crsf_stop.load(std::memory_order_relaxed)) break;
+            ::usleep(20000);
+        } else {
+            ::usleep(2000);
+        }
+    }
+    ::close(fd);
 }
 
 // ── 回传数据 UDP 发送 (TLM1) ──────────────────────────────────────
@@ -1000,6 +1072,9 @@ int main(int argc, char **argv)
         else if (std::strcmp(argv[i], "--sbus-baud") == 0 && i + 1 < argc) out_baud = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--rcmsg-host") == 0 && i + 1 < argc) rcmsg_host = argv[++i];
         else if (std::strcmp(argv[i], "--rcmsg-port") == 0 && i + 1 < argc) rcmsg_port = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--crsf-bridge") == 0) g_crsf_bridge = true;
+        else if (std::strcmp(argv[i], "--crsfbr-host") == 0 && i + 1 < argc) crsfbr_host = argv[++i];
+        else if (std::strcmp(argv[i], "--crsfbr-port") == 0 && i + 1 < argc) { crsfbr_port = std::atoi(argv[++i]); }
         else if (std::strcmp(argv[i], "--selftest") == 0) { selftest(); return 0; }
     }
 
@@ -1014,6 +1089,16 @@ int main(int argc, char **argv)
     if (out_baud == 0) out_baud = (out_mode == 'c') ? 420000 : (g_sbus_std ? 100000 : 115200);
     g_out_baud = out_baud;   /* 先修复零值再赋值 */
     g_crsf_telem = crsf_telem;
+
+    /* bridge 模式: 强制 CRSF 输出 (UART0 双向 CRSF, 参数帧透明转发) */
+    if (g_crsf_bridge) {
+        out_mode = 'c';
+        g_out_mode = 'c';
+        g_crsf_telem = true;
+        if (out_baud == 0) out_baud = 420000;
+        g_out_baud = out_baud;
+        std::printf("[dji_rc] crsf-bridge 模式: UART0 CRSF %d baud, 参数帧转发网口\n", out_baud);
+    }
 
     if (debug_uart0) debug_uart0_open(debug_dev, debug_baud);
 
@@ -1064,12 +1149,14 @@ int main(int argc, char **argv)
     }
 
     // 启动接收线程 (协议输出在 P20 rx_thread 的 handle_pkt 里事件驱动)
-    std::thread t1, t2, t3;
+    std::thread t1, t2, t3, t4;
     crsf_params_init();   /* 初始化 CRSF 参数表 (Device_Ping 响应用) */
     if (g_p20.fd >= 0) t1 = std::thread(rx_thread, &g_p20);
     if (g_p0.fd  >= 0) t2 = std::thread(rx_thread, &g_p0);
     if (out_mode == 'c' && g_crsf_telem && g_out_fd >= 0)
         t3 = std::thread(crsf_rx_thread);
+    if (g_crsf_bridge && g_out_fd >= 0)
+        t4 = std::thread(crsf_bridge_rx_thread);   /* bridge 下行: 网口 → UART0 */
 
     // 主循环: 状态文件写入 + 控制台打印 (SBUS/CRSF 输出走独立事件驱动)
     std::printf("[dji_rc] Ctrl+C 停止\n\n");
@@ -1190,6 +1277,7 @@ int main(int argc, char **argv)
     if (g_p0.fd  >= 0) { ::close(g_p0.fd);  g_p0.fd  = -1; }
     if (g_out_fd >= 0) { ::close(g_out_fd); g_out_fd = -1; }
     if (t3.joinable()) t3.join();
+    if (t4.joinable()) t4.join();   /* bridge 下行线程 */
     if (t1.joinable()) t1.join();
     if (t2.joinable()) t2.join();
     if (g_debug_fd >= 0) ::close(g_debug_fd);
