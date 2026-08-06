@@ -71,4 +71,7 @@ dependencies {
     // Kotlin 协程
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
+    // Lua 引擎 (ELRS Lua 参数脚本)
+    implementation("org.luaj:luaj-jse:3.0.1")
+
 }

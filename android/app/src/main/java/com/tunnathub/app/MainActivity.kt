@@ -820,6 +820,22 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                             Column(modifier = Modifier.fillMaxSize().verticalScroll(scrollState).padding(16.dp)) {
                                 @Composable fun SectionHdr(t: String) { Text(t, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8), modifier = Modifier.padding(bottom = 6.dp)) }
 
+                                // ELRS 参数配置入口 (Lua 脚本驱动)
+                                SectionHdr("ELRS 参数")
+                                Text("连接 V3s crsf-bridge, 用 Lua 脚本配置 ELRS 模块射频参数", fontSize = 9.sp, color = Color(0xFF475569))
+                                Spacer(Modifier.height(6.dp))
+                                Button(
+                                    onClick = {
+                                        ctx.startActivity(
+                                            android.content.Intent(ctx, com.tunnathub.app.crsf.LuaParamActivity::class.java)
+                                                .putExtra("host", "192.168.144.66")
+                                        )
+                                    },
+                                    modifier = Modifier.fillMaxWidth().height(40.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0EA5E9))
+                                ) { Text("打开 ELRS 参数配置", fontSize = 13.sp) }
+                                Spacer(Modifier.height(12.dp))
+
                                 SectionHdr("网段配置")
                                 Text("修改后需断开并重连 VPN 生效", fontSize = 9.sp, color = Color(0xFF475569))
                                 Spacer(Modifier.height(6.dp))

@@ -38,6 +38,12 @@
             </intent-filter>
         </activity>
 
+        <!-- ELRS Lua 参数配置页 -->
+        <activity
+            android:name=".crsf.LuaParamActivity"
+            android:exported="false"
+            android:theme="@style/Theme.TUNNATHUB" />
+
         <!-- VPN Service -->
         <service
             android:name=".service.TunNatVpnService"
