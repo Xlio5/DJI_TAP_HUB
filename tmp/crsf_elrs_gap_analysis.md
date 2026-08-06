@@ -45,11 +45,31 @@
 - Heartbeat(0x0B/11)
 - OpenTX_Sync(0x10/16) — 已有 CRSF_FRAMETYPE_OPEN_TX_SYNC
 
-## 三、开发计划（按功能点 commit）
+## 三、开发进度（已完成 ✓）
 
-1. **地址常量修正**：CRSF_ADDR_RX 0xEE → 0xEA；明确 TX/RX 语义
-2. **Heartbeat 帧**：crsf_pack_heartbeat()
-3. **参数协议**：Parameter_Ping/Device_Info/Settings_Entry/Read/Value_Write 打包+解析
-4. **ELRS 链路统计增强**：0x29 变体字段
-5. **完整帧类型**：Subset_RC、11_bits 等
-6. **App/配置对接**：web_server 暴露 CRSF 参数配置端点
+1. ✅ **地址常量 + 完整帧类型修正**（`162a757`）：DEVICE_PING=0x28, DEVICE_INFO=0x29, PARAMETER_SETTINGS_ENTRY=0x2B, READ=0x2C, WRITE=0x2D, COMMAND=0x32；地址补 RC_RX=0xEC, RADIO_TX=0xEE, CRSF_RX=0xEA
+2. ✅ **Heartbeat + 扩展头帧 + Device_Ping**（`162a757`）：crsf_pack_heartbeat / crsf_pack_ext_frame / crsf_pack_device_ping
+3. ✅ **参数协议**（`0285b0b`）：crsf_param_type_t + crsf_pack_device_info + crsf_param_parse_entry
+4. ✅ **Parameter Read/Write**（`d430690`）：crsf_pack_param_read/write + crsf_param_parse_dev_info
+5. ✅ **回传状态机 + 参数表**（`91e394f`）：crsf_handle_request + g_crsf_params + crsf_rx_thread 接入
+6. ✅ **主机侧验证**：CRC-8 表 / 帧打包 / Device_Ping→Device_Info / Parameter_Read→Settings_Entry 全部 CRC 正确
+
+## 四、剩余待做
+
+1. 真机验证 CRSF 回传（需接收机/飞控发 Device_Ping）
+2. ELRS 链路统计增强（0x29 变体字段）
+3. Subset_RC / 11_bits 帧类型
+4. App/配置对接：web_server 暴露 CRSF 参数配置端点
+
+## 五、CRSF-Lua 桥接 (新分支 feature/crsf-lua-bridge)
+
+已完成:
+- M1: V3s --crsf-bridge 模式 (UART0 CRSF 帧 ↔ 网口 UDP 65532 透明转发), 提交 1e75ebd
+- M2: App LuaJ 引擎 + EdgeTX API 绑定 (crossfireTelemetryPush/lcd), 提交 a41aaff
+- M3: elrsV3.lua + LuaParamActivity 参数界面, 提交 a41aaff
+- 固件: rootfs_bridge.squashfs (b041d706) + spi_image_bridge.bin (a9b36be7)
+- APK: app-debug.apk (含 Lua 引擎 + 参数界面)
+
+待验证 (M4, 设备离线):
+- 部署 bridge 固件 + 启动 --crsf-bridge
+- App 连 V3s 网口 → Lua 参数界面 → ELRS 模块参数读写
