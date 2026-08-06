@@ -34,6 +34,11 @@ bool decode_rc_ae(const uint8_t *pl, int pl_len, rc_state_t *st)
         uint16_t raw = (uint16_t)(pl[5 + i * 2] | (pl[6 + i * 2] << 8));
         st->ch[i] = (int16_t)((int)raw - 1024);
     }
+    /* 实机确认: DJI RC Plus 2 (RC/0xAE) 的 ADC 通道顺序与物理摇杆错位,
+     * CH5(ch[4])/CH6(ch[5]) 需对调才与物理控件一致 (实测验证)。 */
+    {
+        int16_t t = st->ch[4]; st->ch[4] = st->ch[5]; st->ch[5] = t;
+    }
 
     const int m = b2 & 0x3;
     /* mode 映射按实机纠正: m=1->N, m=2->F(与 P20/SPECIAL 一致) */
