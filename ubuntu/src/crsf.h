@@ -96,6 +96,48 @@ void crsf_rx_init(crsf_rx_t *rx);
 /* 喂 1 字节。返回: 0=收集中, >0=完整帧长度(buf 内), -1=错误丢弃(自动重同步) */
 int crsf_rx_byte(crsf_rx_t *rx, uint8_t b);
 
+/* ── 参数协议 (ELRS Lua 配置, 对照逆向 I.c + elrsV3.lua) ── */
+#define CRSF_PARAM_HIDDEN     0x80   /* 参数类型 bit7 = hidden */
+#define CRSF_PARAM_ROOT       0xFF   /* 父 id = 根 */
+
+typedef enum {
+    CRSF_PTYPE_UINT8    = 0,
+    CRSF_PTYPE_INT8     = 1,
+    CRSF_PTYPE_UINT16   = 2,
+    CRSF_PTYPE_INT16    = 3,
+    CRSF_PTYPE_UINT32   = 4,
+    CRSF_PTYPE_INT32    = 5,
+    CRSF_PTYPE_FLOAT    = 8,
+    CRSF_PTYPE_TEXT_SEL = 9,
+    CRSF_PTYPE_STRING   = 10,
+    CRSF_PTYPE_FOLDER   = 11,
+    CRSF_PTYPE_INFO     = 12,
+    CRSF_PTYPE_COMMAND  = 13,
+    CRSF_PTYPE_OUT_OF_RANGE = 0x7F
+} crsf_param_type_t;
+
+/* 参数条目 (Settings_Entry 0x2B 解析结果) */
+typedef struct {
+    uint8_t id;
+    uint8_t parent;
+    uint8_t type;              /* crsf_param_type_t (含 hidden bit) */
+    uint8_t flags;
+    uint8_t min[4];            /* 值域最小 (按类型宽度) */
+    uint8_t max[4];            /* 值域最大 */
+    uint8_t def[4];            /* 默认值 */
+    char     unit[7];          /* 单位 (NUL 结尾) */
+    char     name[17];         /* 名称 (NUL 结尾) */
+} crsf_param_entry_t;
+
+/* 解析 Settings_Entry payload → crsf_param_entry_t */
+void crsf_param_parse_entry(const uint8_t *pl, uint8_t plen, crsf_param_entry_t *e);
+
+/* Device_Info (0x29) 响应: 设备名/版本/参数数 (扩展头) 打包 */
+int crsf_pack_device_info(const char *name, uint8_t serial_hi, uint8_t serial_lo,
+                          uint8_t hw_ver, uint8_t sw_ver,
+                          uint8_t num_params, uint8_t proto_ver,
+                          uint8_t out[CRSF_FRAME_MAX]);
+
 /* ── 回传遥测数据 ── */
 typedef struct {
     uint32_t last_rx_us;         /* 最近一帧到达时刻(单调时钟, 微秒) */

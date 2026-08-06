@@ -1,6 +1,7 @@
 /* CRSF 协议编解码实现 —— 见 crsf.h。纯 C。 */
 #include "crsf.h"
 #include "sbus.h"   /* 复用 sbus_us_to_val 的 us->11bit 缩放 */
+#include <stdio.h>
 #include <string.h>
 
 /* ── CRC-8 poly 0xD5 查表 (crc = 0; do crc=tab[crc^b] while(...)) ── */
@@ -144,6 +145,60 @@ int crsf_rx_byte(crsf_rx_t *rx, uint8_t b) {
     rx->len = 0;
     rx->synced = false;
     return -1;
+}
+
+/* ── 参数协议 (ELRS Lua 配置) ── */
+
+/* Settings_Entry (0x2B) payload 解析:
+ *   [id][parent][type][flags][min(按类型宽)][max][def][unit(≤6)][name(≤16)]
+ *   FOLDER 无值域/单位; TEXT_SELECTION 的 min/max 是选项索引范围。 */
+void crsf_param_parse_entry(const uint8_t *pl, uint8_t plen, crsf_param_entry_t *e) {
+    memset(e, 0, sizeof(*e));
+    if (plen < 4) return;
+    e->id     = pl[0];
+    e->parent = pl[1];
+    e->type   = pl[2];
+    e->flags  = pl[3];
+    uint8_t w = 4;   /* 值域字节数按类型 */
+    switch (e->type & 0x7F) {
+    case CRSF_PTYPE_UINT16:
+    case CRSF_PTYPE_INT16:
+        w = 2; break;
+    case CRSF_PTYPE_UINT32:
+    case CRSF_PTYPE_INT32:
+    case CRSF_PTYPE_FLOAT:
+        w = 4; break;
+    default:   /* UINT8/INT8/TEXT_SEL/FOLDER/... */
+        w = 1; break;
+    }
+    uint8_t p = 4;
+    if (p + w <= plen) { memcpy(e->min, pl + p, w); p += w; }
+    if (p + w <= plen) { memcpy(e->max, pl + p, w); p += w; }
+    if (p + w <= plen) { memcpy(e->def, pl + p, w); p += w; }
+    /* unit: 固定 6 字节 (可含 NUL), 后跟 name 定长 16 字节 */
+    if (p + 6 <= plen) { memcpy(e->unit, pl + p, 6); p += 6; }
+    if (p + 16 <= plen) { memcpy(e->name, pl + p, 16); p += 16; }
+    e->unit[6] = '\0';
+    e->name[16] = '\0';
+}
+
+/* Device_Info (0x29) 响应 (扩展头):
+ *   payload = [serial_hi][serial_lo][hw_ver][sw_ver][num_params][proto_ver][name...] */
+int crsf_pack_device_info(const char *name, uint8_t serial_hi, uint8_t serial_lo,
+                          uint8_t hw_ver, uint8_t sw_ver,
+                          uint8_t num_params, uint8_t proto_ver,
+                          uint8_t out[CRSF_FRAME_MAX]) {
+    uint8_t pl[16 + 8];
+    pl[0] = serial_hi;
+    pl[1] = serial_lo;
+    pl[2] = hw_ver;
+    pl[3] = sw_ver;
+    pl[4] = num_params;
+    pl[5] = proto_ver;
+    memset(pl + 6, 0, 16);   /* 设备名定长 16, NUL 填充 */
+    if (name) snprintf((char *)pl + 6, 16, "%s", name);
+    return crsf_pack_ext_frame(CRSF_ADDR_RADIO_TX, CRSF_FRAMETYPE_DEVICE_INFO,
+                               CRSF_ADDR_TX, CRSF_ADDR_RADIO_TX, pl, 22, out);
 }
 
 /* ── 帧解析 (回传) ── */
