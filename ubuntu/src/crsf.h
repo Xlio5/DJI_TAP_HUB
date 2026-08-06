@@ -21,24 +21,41 @@
 #define CRSF_FRAME_MAX   62
 #define CRSF_CH_PACKED   31   /* 22ch × 11bit = 242bit -> 31B payload */
 
-/* 地址 */
-#define CRSF_ADDR_FC            0xC0
-#define CRSF_ADDR_TX            0xC8   /* 发射机 -> 接收机(下行) */
-#define CRSF_ADDR_RX            0xEE   /* 接收机 -> 发射机(上行/回传) */
-#define CRSF_ADDR_BROADCAST     0xEA
+/* 地址 (CRSF 官方标准, 对照 ax12 逆向) */
+#define CRSF_ADDR_FC            0xC0   /* Flight controller 飞控 */
+#define CRSF_ADDR_TX            0xC8   /* CRSF_TRANSMITTER, 下行源 (兼容现有) */
+#define CRSF_ADDR_CRSF_RX       0xEA   /* CRSF_RECEIVER 接收机 (回传源/广播) */
+#define CRSF_ADDR_RC_RX         0xEC   /* RC receiver */
+#define CRSF_ADDR_RADIO_TX      0xEE   /* Radio_Transmitter 遥控器 (V3s 扮演角色) */
+#define CRSF_ADDR_BROADCAST     0xEA   /* 广播 (与 CRSF_RECEIVER 同值) */
+#define CRSF_ADDR_USB           0x10
 
-/* 帧类型 */
-#define CRSF_FRAMETYPE_RC_CHANNELS_PACKED  0x16
-#define CRSF_FRAMETYPE_LINK_STATISTICS     0x14
-#define CRSF_FRAMETYPE_GPS                 0x02
-#define CRSF_FRAMETYPE_BATTERY_SENSOR      0x08
-#define CRSF_FRAMETYPE_ATTITUDE            0x1E
-#define CRSF_FRAMETYPE_VARIO               0x07
-#define CRSF_FRAMETYPE_FLIGHT_MODE         0x21
-#define CRSF_FRAMETYPE_DEVICE_PING         0x1C
-#define CRSF_FRAMETYPE_DEVICE_INFO         0x28
-#define CRSF_FRAMETYPE_OPEN_TX_SYNC        0x10
-#define CRSF_FRAMETYPE_ELRS_LINK_STATS     0x29   /* ELRS 变体 */
+/* 帧类型 (CRSF 官方规范 + ax12 逆向对照)
+ * 广播帧 (0x02-0x27): [addr][len][type][payload][crc]
+ * 扩展头帧 (0x28-0x96): [addr][len][type][dest][orig][payload][crc] — 多点寻址/配置 */
+#define CRSF_FRAMETYPE_GPS                   0x02
+#define CRSF_FRAMETYPE_VARIO                 0x07
+#define CRSF_FRAMETYPE_BATTERY_SENSOR        0x08
+#define CRSF_FRAMETYPE_HEARTBEAT             0x0B
+#define CRSF_FRAMETYPE_OPEN_TX_SYNC          0x10
+#define CRSF_FRAMETYPE_LINK_STATISTICS       0x14
+#define CRSF_FRAMETYPE_RC_CHANNELS_PACKED    0x16
+#define CRSF_FRAMETYPE_SUBSET_RC_CHANNELS    0x17
+#define CRSF_FRAMETYPE_11_BITS               0x18
+#define CRSF_FRAMETYPE_ATTITUDE              0x1E
+#define CRSF_FRAMETYPE_FLIGHT_MODE           0x21
+/* 扩展头帧 (0x28+) */
+#define CRSF_FRAMETYPE_DEVICE_PING           0x28
+#define CRSF_FRAMETYPE_DEVICE_INFO           0x29
+#define CRSF_FRAMETYPE_PARAMETER_SETTINGS_ENTRY 0x2B
+#define CRSF_FRAMETYPE_PARAMETER_READ        0x2C
+#define CRSF_FRAMETYPE_PARAMETER_WRITE       0x2D
+#define CRSF_FRAMETYPE_COMMAND               0x32
+#define CRSF_FRAMETYPE_MAV_LINK              0x30
+#define CRSF_FRAMETYPE_MAV_FC                0x31
+
+/* ELRS 链路统计: ELRS 发射机用 0x14 标准帧, RX 侧扩展字段在 payload 内 */
+#define CRSF_FRAMETYPE_ELRS_LINK_STATS       CRSF_FRAMETYPE_LINK_STATISTICS
 
 /* CRC-8 poly 0xD5 查表 */
 extern const uint8_t crsf_crc8_table[256];
@@ -54,6 +71,19 @@ int crsf_pack_channels(const uint16_t ch_us[16], uint8_t out[CRSF_FRAME_MAX]);
 int crsf_pack_frame(uint8_t addr, uint8_t type,
                     const uint8_t *payload, uint8_t plen,
                     uint8_t out[CRSF_FRAME_MAX]);
+
+/* 打包扩展头帧 (0x28+, 含 dest/orig 两字节):
+ *   [addr][len][type][dest][orig][payload][crc]
+ * dest=目标设备地址, orig=源设备地址。返回整帧长度, <0 失败 */
+int crsf_pack_ext_frame(uint8_t addr, uint8_t type, uint8_t dest, uint8_t orig,
+                        const uint8_t *payload, uint8_t plen,
+                        uint8_t out[CRSF_FRAME_MAX]);
+
+/* Heartbeat 帧: [0xC8][len=4][0x0B][dev_hi][dev_lo][CRC] (逆向 D.i) */
+int crsf_pack_heartbeat(uint8_t dev_hi, uint8_t dev_lo, uint8_t out[CRSF_FRAME_MAX]);
+
+/* Device_Ping: [addr][len][type][dest][orig][CRC] — 设备发现 (扩展头) */
+int crsf_pack_device_ping(uint8_t dest, uint8_t orig, uint8_t out[CRSF_FRAME_MAX]);
 
 /* ── 接收状态机 ── */
 typedef struct {

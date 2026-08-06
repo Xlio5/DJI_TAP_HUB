@@ -74,6 +74,36 @@ int crsf_pack_frame(uint8_t addr, uint8_t type,
     return (int)len + 2;                 /* 整帧 = addr + len + len 字节 = 2 + len */
 }
 
+/* 扩展头帧: [addr][len][type][dest][orig][payload][crc]
+ * CRC 覆盖 addr..payload 末尾 (共 len 字节: type+dest+orig+payload+crc) */
+int crsf_pack_ext_frame(uint8_t addr, uint8_t type, uint8_t dest, uint8_t orig,
+                        const uint8_t *payload, uint8_t plen,
+                        uint8_t out[CRSF_FRAME_MAX]) {
+    if (plen > 58) return -1;   /* 扩展头多 2 字节, payload 上限 58 */
+    uint8_t len = (uint8_t)(plen + 4);   /* type + dest + orig + payload + crc */
+    out[0] = addr;
+    out[1] = len;
+    out[2] = type;
+    out[3] = dest;
+    out[4] = orig;
+    if (plen) memcpy(out + 5, payload, plen);
+    out[len + 1] = crsf_crc8(out, len);  /* crc 在索引 len+1 */
+    return (int)len + 2;
+}
+
+/* Heartbeat: [0xC8][4][0x0B][dev_hi][dev_lo][CRC]
+ * len = 4 = type + dev_hi + dev_lo + crc */
+int crsf_pack_heartbeat(uint8_t dev_hi, uint8_t dev_lo, uint8_t out[CRSF_FRAME_MAX]) {
+    uint8_t pl[2] = {dev_hi, dev_lo};
+    return crsf_pack_frame(CRSF_ADDR_RADIO_TX, CRSF_FRAMETYPE_HEARTBEAT, pl, 2, out);
+}
+
+/* Device_Ping (扩展头): 广播发现, dest=目标/0 广播, orig=源 */
+int crsf_pack_device_ping(uint8_t dest, uint8_t orig, uint8_t out[CRSF_FRAME_MAX]) {
+    return crsf_pack_ext_frame(CRSF_ADDR_RADIO_TX, CRSF_FRAMETYPE_DEVICE_PING,
+                               dest, orig, NULL, 0, out);
+}
+
 void crsf_rx_init(crsf_rx_t *rx) {
     memset(rx, 0, sizeof(*rx));
 }
@@ -129,8 +159,7 @@ bool crsf_parse_frame(const uint8_t *buf, uint8_t len, crsf_telem_t *telem) {
     uint8_t plen = len - 4;
 
     switch (type) {
-    case CRSF_FRAMETYPE_LINK_STATISTICS:
-    case CRSF_FRAMETYPE_ELRS_LINK_STATS: {
+    case CRSF_FRAMETYPE_LINK_STATISTICS: {   /* ELRS_LINK_STATS 同值 0x14 */
         if (plen < 8) return false;
         telem->up_rssi1  = (int8_t)pl[0];
         telem->up_rssi2  = (int8_t)pl[1];
