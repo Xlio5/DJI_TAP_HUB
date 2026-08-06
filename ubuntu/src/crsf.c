@@ -238,6 +238,106 @@ void crsf_param_parse_dev_info(const uint8_t *pl, uint8_t plen, crsf_dev_info_t 
     d->name[16] = '\0';
 }
 
+/* ── 请求处理 (Device_Ping/Parameter 请求 → 响应帧) ── */
+
+/* 打包 Settings_Entry (0x2B) 帧 (扩展头) 从参数条目 */
+static int pack_settings_entry(const crsf_param_t *p, uint8_t out[CRSF_FRAME_MAX]) {
+    uint8_t pl[4 + 12 + 6 + 16];
+    uint8_t w;
+    switch (p->type & 0x7F) {
+    case CRSF_PTYPE_UINT16: case CRSF_PTYPE_INT16: w = 2; break;
+    case CRSF_PTYPE_UINT32: case CRSF_PTYPE_INT32: case CRSF_PTYPE_FLOAT: w = 4; break;
+    default: w = 1; break;
+    }
+    pl[0] = p->id;
+    pl[1] = p->parent;
+    pl[2] = p->type;
+    pl[3] = p->flags;
+    uint8_t i = 4;
+    memcpy(pl + i, p->min, w); i += w;
+    memcpy(pl + i, p->max, w); i += w;
+    memcpy(pl + i, p->def, w); i += w;
+    memcpy(pl + i, p->unit, 6); i += 6;
+    memcpy(pl + i, p->name, 16); i += 16;
+    return crsf_pack_ext_frame(CRSF_ADDR_RADIO_TX, CRSF_FRAMETYPE_PARAMETER_SETTINGS_ENTRY,
+                               CRSF_ADDR_TX, CRSF_ADDR_RADIO_TX, pl, i, out);
+}
+
+/* 打包参数值响应 (Parameter_Read 应答): [id][chunk][value...] */
+static int pack_param_value(const crsf_param_t *p, uint8_t chunk, uint8_t out[CRSF_FRAME_MAX]) {
+    uint8_t pl[2 + 8];
+    pl[0] = p->id;
+    pl[1] = chunk;
+    uint8_t vlen = p->value_len ? p->value_len : 1;
+    if (chunk == 0) {
+        /* 首段: 全部值 */
+        uint8_t n = vlen < 8 ? vlen : 8;
+        memcpy(pl + 2, p->value, n);
+        return crsf_pack_ext_frame(CRSF_ADDR_RADIO_TX, CRSF_FRAMETYPE_PARAMETER_READ,
+                                   CRSF_ADDR_TX, CRSF_ADDR_RADIO_TX, pl, 2 + n, out);
+    }
+    /* 后续段: 补 0 */
+    memset(pl + 2, 0, 8);
+    return crsf_pack_ext_frame(CRSF_ADDR_RADIO_TX, CRSF_FRAMETYPE_PARAMETER_READ,
+                               CRSF_ADDR_TX, CRSF_ADDR_RADIO_TX, pl, 10, out);
+}
+
+/* 处理一帧请求。frame 是已校验 CRC 的完整帧。返回响应长度。 */
+int crsf_handle_request(const uint8_t *frame, uint8_t flen,
+                        const crsf_dev_desc_t *dev,
+                        crsf_param_t *params, uint8_t n_params,
+                        uint8_t resp[CRSF_FRAME_MAX]) {
+    if (flen < 4) return 0;
+    uint8_t type = frame[2];
+    const uint8_t *pl = frame + 3;
+    uint8_t plen = flen - 4;
+
+    switch (type) {
+    case CRSF_FRAMETYPE_DEVICE_PING:
+        /* 响应 Device_Info */
+        return crsf_pack_device_info(dev->name, dev->serial_hi, dev->serial_lo,
+                                     dev->hw_ver, dev->sw_ver,
+                                     n_params, dev->proto_ver, resp);
+    case CRSF_FRAMETYPE_PARAMETER_READ: {
+        /* 扩展头: [dest][orig][id][chunk], 所以 payload 从 frame+5 */
+        if (flen < 7) return 0;
+        uint8_t id = frame[5];
+        uint8_t chunk = frame[6];
+        for (uint8_t i = 0; i < n_params; i++) {
+            if (params[i].id == id) {
+                if (chunk == 0)
+                    return pack_settings_entry(&params[i], resp);  /* 首段: 定义 */
+                return pack_param_value(&params[i], chunk, resp);  /* 后续: 值 */
+            }
+        }
+        return 0;   /* 未找到 */
+    }
+    case CRSF_FRAMETYPE_PARAMETER_WRITE: {
+        if (flen < 8) return 0;
+        uint8_t id = frame[5];
+        uint8_t chunk = frame[6];
+        for (uint8_t i = 0; i < n_params; i++) {
+            if (params[i].id == id) {
+                /* 写值: value 从 frame[7], 有效 chunk 段 (0=首段写定义后值) */
+                uint8_t vlen = flen - 7;
+                if (vlen > 4) vlen = 4;
+                memcpy(params[i].value, frame + 7, vlen);
+                params[i].value_len = vlen;
+                return 0;   /* 无需显式响应 */
+            }
+        }
+        return 0;
+    }
+    case CRSF_FRAMETYPE_COMMAND: {
+        /* Command (0x32): 简单回 ACK (无 payload) */
+        return crsf_pack_ext_frame(CRSF_ADDR_RADIO_TX, CRSF_FRAMETYPE_COMMAND,
+                                   CRSF_ADDR_TX, CRSF_ADDR_RADIO_TX, NULL, 0, resp);
+    }
+    default:
+        return 0;   /* 不是请求, 不处理 */
+    }
+}
+
 /* ── 帧解析 (回传) ── */
 static uint16_t rd_u16be(const uint8_t *p) { return (uint16_t)((p[0] << 8) | p[1]); }
 static uint32_t rd_u32be(const uint8_t *p) {

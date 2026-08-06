@@ -82,6 +82,38 @@ static uint8_t g_ch_map[CH_COUNT];      // 通道映射表
 static crsf_telem_t g_telem;            // 最近回传数据 (CRSF 回传线程写)
 static bool g_pb6_debug = false;        // PB6 接地=true → UART0 作为 debug 串口, 不输出协议
 
+// ── CRSF 参数表 (供 Device_Ping/Parameter_Read 响应, ELRS 协议) ──
+static crsf_param_t g_crsf_params[] = {
+    /* id, parent, type, flags, min, max, def, unit, name */
+    { 0, 0xFF, CRSF_PTYPE_FOLDER, 0, {0},{0},{0}, "", "V3s Hub" },
+    { 1, 0, CRSF_PTYPE_TEXT_SEL, 0, {0},{2},{0}, "", "Output Mode" },
+    { 2, 0, CRSF_PTYPE_UINT32, 0,
+      {0,0,0,0}, {0,0,0x0F,0xA0}, {0,0,1,0x86}, "bps", "Baudrate" },
+    { 3, 0, CRSF_PTYPE_UINT8, 0, {0},{100},{50}, "%", "Telemetry" },
+};
+static uint8_t g_crsf_n_params = (uint8_t)(sizeof(g_crsf_params) / sizeof(g_crsf_params[0]));
+
+/* 参数表运行时初始化: 设默认值 + 文本选项 (C++ 无法在静态初始化里用 strncpy) */
+static void crsf_params_init(void)
+{
+    for (uint8_t i = 0; i < g_crsf_n_params; i++) {
+        uint8_t w = 1;
+        switch (g_crsf_params[i].type & 0x7F) {
+        case CRSF_PTYPE_UINT16: case CRSF_PTYPE_INT16: w = 2; break;
+        case CRSF_PTYPE_UINT32: case CRSF_PTYPE_INT32: case CRSF_PTYPE_FLOAT: w = 4; break;
+        default: break;
+        }
+        memcpy(g_crsf_params[i].value, g_crsf_params[i].def, w);
+        g_crsf_params[i].value_len = w;
+    }
+    /* 文本选项 */
+    memset(g_crsf_params[1].text_opts, 0, sizeof(g_crsf_params[1].text_opts));
+    strncpy((char *)g_crsf_params[1].text_opts[0], "SBUS", 16);
+    strncpy((char *)g_crsf_params[1].text_opts[1], "CRSF", 16);
+    strncpy((char *)g_crsf_params[1].text_opts[2], "Auto", 16);
+    g_crsf_params[1].n_opts = 3;
+}
+
 // PB6 输入检测: 接地(0) → debug 模式; 上拉(1,默认) → 协议输出
 // 用 mmap /dev/mem 读物理寄存器。每次检测重新 open+mmap+munmap (新虚拟地址映射同一物理页),
 // 避免同一次映射读到旧值 (运行中切换失效的根因假设)。
@@ -713,6 +745,14 @@ static void crsf_rx_thread()
     crsf_rx_t rx;
     crsf_rx_init(&rx);
 
+    /* 设备描述 (Device_Info 响应用) */
+    static crsf_dev_desc_t dev;
+    memset(&dev, 0, sizeof(dev));
+    strncpy(dev.name, "V3s-Hub", sizeof(dev.name) - 1);
+    dev.serial_hi = 0x01; dev.serial_lo = 0x46;   /* v1.4.x */
+    dev.hw_ver = 0x01; dev.sw_ver = 0x01;
+    dev.proto_ver = 2;                             /* ELRS 参数协议 v2 */
+
     while (!g_crsf_stop.load(std::memory_order_relaxed)) {
         uint8_t buf[64];
         ssize_t n = ::read(g_out_fd, buf, sizeof(buf));
@@ -720,8 +760,21 @@ static void crsf_rx_thread()
             crsf_telem_t telem = g_telem;
             for (ssize_t i = 0; i < n; i++) {
                 int r = crsf_rx_byte(&rx, buf[i]);
-                if (r > 0 && crsf_parse_frame(rx.buf, (uint8_t)r, &telem))
-                    telem.last_rx_us = now_us();
+                if (r > 0) {
+                    uint8_t type = rx.buf[2];
+                    if (crsf_parse_frame(rx.buf, (uint8_t)r, &telem))
+                        telem.last_rx_us = now_us();
+                    /* 设备/参数请求 → 生成响应写回 UART0 上行 */
+                    if (type >= 0x28) {
+                        uint8_t resp[CRSF_FRAME_MAX];
+                        int rlen = crsf_handle_request(rx.buf, (uint8_t)r, &dev,
+                                                       g_crsf_params, g_crsf_n_params, resp);
+                        if (rlen > 0) {
+                            ssize_t w = ::write(g_out_fd, resp, (size_t)rlen);
+                            (void)w;
+                        }
+                    }
+                }
             }
             g_mtx.lock();
             g_telem = telem;
@@ -1012,6 +1065,7 @@ int main(int argc, char **argv)
 
     // 启动接收线程 (协议输出在 P20 rx_thread 的 handle_pkt 里事件驱动)
     std::thread t1, t2, t3;
+    crsf_params_init();   /* 初始化 CRSF 参数表 (Device_Ping 响应用) */
     if (g_p20.fd >= 0) t1 = std::thread(rx_thread, &g_p20);
     if (g_p0.fd  >= 0) t2 = std::thread(rx_thread, &g_p0);
     if (out_mode == 'c' && g_crsf_telem && g_out_fd >= 0)

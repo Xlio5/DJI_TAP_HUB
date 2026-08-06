@@ -149,6 +149,40 @@ int crsf_pack_param_write(uint8_t dest, uint8_t param_id, uint8_t chunk_index,
                           const uint8_t *value, uint8_t vlen,
                           uint8_t out[CRSF_FRAME_MAX]);
 
+/* ── 参数表 (模拟 ELRS 设备参数, 供 Device_Ping/Parameter_Read 响应) ── */
+typedef struct {
+    uint8_t  id;              /* 参数 id */
+    uint8_t  parent;          /* 父文件夹 id, 0xFF=根 */
+    uint8_t  type;            /* crsf_param_type_t */
+    uint8_t  flags;
+    uint8_t  min[4];
+    uint8_t  max[4];
+    uint8_t  def[4];
+    char     unit[7];
+    char     name[17];
+    /* 当前值 (运行时可变) */
+    uint8_t  value[4];
+    uint8_t  value_len;       /* 当前值有效字节数 */
+    uint8_t  text_opts[5][17]; /* TEXT_SELECTION 选项 (≤5) */
+    uint8_t  n_opts;
+} crsf_param_t;
+
+/* 设备信息 (Device_Info 响应) */
+typedef struct {
+    char    name[17];         /* 设备名 (如 "V3s-Hub") */
+    uint8_t serial_hi, serial_lo;
+    uint8_t hw_ver, sw_ver;
+    uint8_t proto_ver;        /* ELRS 参数协议版本 (通常 2) */
+} crsf_dev_desc_t;
+
+/* 处理一帧请求 (Device_Ping/Parameter_Read/Parameter_Write/Command),
+ * 生成响应帧写入 resp (返回长度, 0=无响应, <0 错误)。
+ * dev: 设备描述; params: 参数表; n_params: 参数个数 */
+int crsf_handle_request(const uint8_t *frame, uint8_t flen,
+                        const crsf_dev_desc_t *dev,
+                        crsf_param_t *params, uint8_t n_params,
+                        uint8_t resp[CRSF_FRAME_MAX]);
+
 /* 解析 Device_Info (0x29) payload → 设备信息 */
 typedef struct {
     uint8_t  serial_hi, serial_lo;
