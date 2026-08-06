@@ -65,7 +65,8 @@ int crsf_pack_channels(const uint16_t ch_us[16], uint8_t out[CRSF_FRAME_MAX]) {
 int crsf_pack_frame(uint8_t addr, uint8_t type,
                     const uint8_t *payload, uint8_t plen,
                     uint8_t out[CRSF_FRAME_MAX]) {
-    if (plen > 60) return -1;
+    /* 整帧 = plen + 4 (addr+len+type+crc), ≤ CRSF_FRAME_MAX(62) → plen ≤ 58 */
+    if (plen > 58) return -1;
     uint8_t len = (uint8_t)(plen + 2);   /* type + payload + crc */
     out[0] = addr;
     out[1] = len;
@@ -80,7 +81,8 @@ int crsf_pack_frame(uint8_t addr, uint8_t type,
 int crsf_pack_ext_frame(uint8_t addr, uint8_t type, uint8_t dest, uint8_t orig,
                         const uint8_t *payload, uint8_t plen,
                         uint8_t out[CRSF_FRAME_MAX]) {
-    if (plen > 58) return -1;   /* 扩展头多 2 字节, payload 上限 58 */
+    /* 整帧 = plen + 6 (addr+len+type+dest+orig+crc), ≤ 62 → plen ≤ 56 */
+    if (plen > 56) return -1;   /* 扩展头多 2 字节, payload 上限 56 */
     uint8_t len = (uint8_t)(plen + 4);   /* type + dest + orig + payload + crc */
     out[0] = addr;
     out[1] = len;
@@ -184,7 +186,8 @@ void crsf_param_parse_entry(const uint8_t *pl, uint8_t plen, crsf_param_entry_t 
 
 /* Device_Info (0x29) 响应 (扩展头):
  *   payload = [serial_hi][serial_lo][hw_ver][sw_ver][num_params][proto_ver][name...] */
-int crsf_pack_device_info(const char *name, uint8_t serial_hi, uint8_t serial_lo,
+int crsf_pack_device_info(uint8_t dest, const char *name,
+                          uint8_t serial_hi, uint8_t serial_lo,
                           uint8_t hw_ver, uint8_t sw_ver,
                           uint8_t num_params, uint8_t proto_ver,
                           uint8_t out[CRSF_FRAME_MAX]) {
@@ -198,7 +201,7 @@ int crsf_pack_device_info(const char *name, uint8_t serial_hi, uint8_t serial_lo
     memset(pl + 6, 0, 16);   /* 设备名定长 16, NUL 填充 */
     if (name) snprintf((char *)pl + 6, 16, "%s", name);
     return crsf_pack_ext_frame(CRSF_ADDR_RADIO_TX, CRSF_FRAMETYPE_DEVICE_INFO,
-                               CRSF_ADDR_TX, CRSF_ADDR_RADIO_TX, pl, 22, out);
+                               dest, CRSF_ADDR_RADIO_TX, pl, 22, out);
 }
 
 /* Parameter_Read (0x2C): 读参数, payload=[id][chunk] */
@@ -289,15 +292,16 @@ int crsf_handle_request(const uint8_t *frame, uint8_t flen,
                         uint8_t resp[CRSF_FRAME_MAX]) {
     if (flen < 4) return 0;
     uint8_t type = frame[2];
-    const uint8_t *pl = frame + 3;
-    uint8_t plen = flen - 4;
 
     switch (type) {
-    case CRSF_FRAMETYPE_DEVICE_PING:
-        /* 响应 Device_Info */
-        return crsf_pack_device_info(dev->name, dev->serial_hi, dev->serial_lo,
+    case CRSF_FRAMETYPE_DEVICE_PING: {
+        /* 响应 Device_Info, dest = 请求方 orig (扩展头 frame[4]; 广播 ping 用 0) */
+        uint8_t req_orig = (flen >= 5) ? frame[4] : 0;
+        uint8_t dest = req_orig ? req_orig : CRSF_ADDR_TX;
+        return crsf_pack_device_info(dest, dev->name, dev->serial_hi, dev->serial_lo,
                                      dev->hw_ver, dev->sw_ver,
                                      n_params, dev->proto_ver, resp);
+    }
     case CRSF_FRAMETYPE_PARAMETER_READ: {
         /* 扩展头: [dest][orig][id][chunk], 所以 payload 从 frame+5 */
         if (flen < 7) return 0;
@@ -313,13 +317,14 @@ int crsf_handle_request(const uint8_t *frame, uint8_t flen,
         return 0;   /* 未找到 */
     }
     case CRSF_FRAMETYPE_PARAMETER_WRITE: {
+        /* 帧: [addr][len][type][dest][orig][id][chunk][value...][crc]
+         * value 从 frame[7], 字节数 = flen - 8 (flen 含末尾 crc) */
         if (flen < 8) return 0;
         uint8_t id = frame[5];
         uint8_t chunk = frame[6];
         for (uint8_t i = 0; i < n_params; i++) {
             if (params[i].id == id) {
-                /* 写值: value 从 frame[7], 有效 chunk 段 (0=首段写定义后值) */
-                uint8_t vlen = flen - 7;
+                uint8_t vlen = flen - 8;
                 if (vlen > 4) vlen = 4;
                 memcpy(params[i].value, frame + 7, vlen);
                 params[i].value_len = vlen;

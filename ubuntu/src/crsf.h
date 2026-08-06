@@ -132,8 +132,10 @@ typedef struct {
 /* 解析 Settings_Entry payload → crsf_param_entry_t */
 void crsf_param_parse_entry(const uint8_t *pl, uint8_t plen, crsf_param_entry_t *e);
 
-/* Device_Info (0x29) 响应: 设备名/版本/参数数 (扩展头) 打包 */
-int crsf_pack_device_info(const char *name, uint8_t serial_hi, uint8_t serial_lo,
+/* Device_Info (0x29) 响应: 设备名/版本/参数数 (扩展头) 打包
+ * dest = 响应目标地址 (通常是请求方 orig) */
+int crsf_pack_device_info(uint8_t dest, const char *name,
+                          uint8_t serial_hi, uint8_t serial_lo,
                           uint8_t hw_ver, uint8_t sw_ver,
                           uint8_t num_params, uint8_t proto_ver,
                           uint8_t out[CRSF_FRAME_MAX]);
