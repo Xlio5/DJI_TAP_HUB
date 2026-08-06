@@ -201,6 +201,43 @@ int crsf_pack_device_info(const char *name, uint8_t serial_hi, uint8_t serial_lo
                                CRSF_ADDR_TX, CRSF_ADDR_RADIO_TX, pl, 22, out);
 }
 
+/* Parameter_Read (0x2C): 读参数, payload=[id][chunk] */
+int crsf_pack_param_read(uint8_t dest, uint8_t param_id, uint8_t chunk_index,
+                         uint8_t out[CRSF_FRAME_MAX]) {
+    uint8_t pl[2] = {param_id, chunk_index};
+    return crsf_pack_ext_frame(CRSF_ADDR_RADIO_TX, CRSF_FRAMETYPE_PARAMETER_READ,
+                               dest, CRSF_ADDR_RADIO_TX, pl, 2, out);
+}
+
+/* Parameter_Write (0x2D): 写参数, payload=[id][chunk][value...] */
+int crsf_pack_param_write(uint8_t dest, uint8_t param_id, uint8_t chunk_index,
+                          const uint8_t *value, uint8_t vlen,
+                          uint8_t out[CRSF_FRAME_MAX]) {
+    uint8_t pl[2 + 8];
+    pl[0] = param_id;
+    pl[1] = chunk_index;
+    if (vlen > 8) vlen = 8;
+    memcpy(pl + 2, value, vlen);
+    return crsf_pack_ext_frame(CRSF_ADDR_RADIO_TX, CRSF_FRAMETYPE_PARAMETER_WRITE,
+                               dest, CRSF_ADDR_RADIO_TX, pl, 2 + vlen, out);
+}
+
+/* Device_Info (0x29) payload 解析: [serial_hi][serial_lo][hw][sw][nparam][proto][name16] */
+void crsf_param_parse_dev_info(const uint8_t *pl, uint8_t plen, crsf_dev_info_t *d) {
+    memset(d, 0, sizeof(*d));
+    if (plen < 6) return;
+    d->serial_hi  = pl[0];
+    d->serial_lo  = pl[1];
+    d->hw_ver     = pl[2];
+    d->sw_ver     = pl[3];
+    d->num_params = pl[4];
+    d->proto_ver  = pl[5];
+    uint8_t n = plen - 6;
+    if (n > 16) n = 16;
+    memcpy(d->name, pl + 6, n);
+    d->name[16] = '\0';
+}
+
 /* ── 帧解析 (回传) ── */
 static uint16_t rd_u16be(const uint8_t *p) { return (uint16_t)((p[0] << 8) | p[1]); }
 static uint32_t rd_u32be(const uint8_t *p) {

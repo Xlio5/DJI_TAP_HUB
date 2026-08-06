@@ -138,6 +138,26 @@ int crsf_pack_device_info(const char *name, uint8_t serial_hi, uint8_t serial_lo
                           uint8_t num_params, uint8_t proto_ver,
                           uint8_t out[CRSF_FRAME_MAX]);
 
+/* Parameter_Read (0x2C) 请求: 读参数值 (扩展头)
+ * payload = [param_id][chunk_index] (chunk_index=0 首段, 1=剩余 8 字节) */
+int crsf_pack_param_read(uint8_t dest, uint8_t param_id, uint8_t chunk_index,
+                         uint8_t out[CRSF_FRAME_MAX]);
+
+/* Parameter_Write (0x2D): 写参数值 (扩展头)
+ * payload = [param_id][chunk_index][value...] */
+int crsf_pack_param_write(uint8_t dest, uint8_t param_id, uint8_t chunk_index,
+                          const uint8_t *value, uint8_t vlen,
+                          uint8_t out[CRSF_FRAME_MAX]);
+
+/* 解析 Device_Info (0x29) payload → 设备信息 */
+typedef struct {
+    uint8_t  serial_hi, serial_lo;
+    uint8_t  hw_ver, sw_ver;
+    uint8_t  num_params, proto_ver;
+    char     name[17];
+} crsf_dev_info_t;
+void crsf_param_parse_dev_info(const uint8_t *pl, uint8_t plen, crsf_dev_info_t *d);
+
 /* ── 回传遥测数据 ── */
 typedef struct {
     uint32_t last_rx_us;         /* 最近一帧到达时刻(单调时钟, 微秒) */
