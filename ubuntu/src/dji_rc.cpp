@@ -1209,8 +1209,9 @@ int main(int argc, char **argv)
         }
 
         // 每 2s 检测输出配置变化 (web_server 保存后进程内热重配, 避免 execv 崩溃)
+        // bridge 模式: 保持 CRSF bridge 配置, 跳过 SPI config 热重配
         static int64_t last_cfg_check = 0;
-        if (n - last_cfg_check > 2000000LL) {
+        if (!g_crsf_bridge && n - last_cfg_check > 2000000LL) {
             last_cfg_check = n;
             char cm; int cb; bool cs;
             if (load_rc_output_cfg(cm, cb, cs) &&
