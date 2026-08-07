@@ -141,11 +141,14 @@ class TunNatVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "VpnService 启动")
 
-        // 已在运行，忽略重复的启动请求
-        // USB 热插拔由 BootReceiver 先停止再启动，不走这里
+        // isStarted 残留 true (上次停止不彻底) 时强制重启:
+        // 否则 USB Bridge 不启动, 导致"开多次 App 才能连上"
         if (isStarted) {
-            Log.w(TAG, "VpnService 已在运行，忽略重复启动")
-            return START_STICKY
+            Log.w(TAG, "VpnService 残留, 强制重启")
+            stopVpn()   // 停掉旧的 (TUN + USB + isStarted 复位)
+            // 重新初始化 USB Bridge (onDestroy 可能没跑, 这里补)
+            usbBridge?.disconnect()
+            usbBridge = null
         }
         isStarted = true
         isRunning = true
