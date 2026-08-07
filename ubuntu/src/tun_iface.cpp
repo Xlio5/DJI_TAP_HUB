@@ -17,6 +17,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <linux/if.h>
 #include <linux/if_tun.h>
 
@@ -48,7 +51,47 @@ TunIface::TunIface(const std::string& name, int mtu)
     // 实际名称可能被内核截断
     name_ = ifr.ifr_name;
 
+    // 配置 tun 接口: MTU + UP + IP (自包含, 不依赖 setup_v3s.sh 时序)
+    // 修复: usb_tund 重启后 tun_hub 可能 DOWN, 导致 write EIO, 隧道不转发
+    configure(name_, mtu_);
+
     std::cout << "[TUN] 接口 '" << name_ << "' 已创建 (fd=" << fd_ << ", mtu=" << mtu_ << ")" << std::endl;
+}
+
+/// 配置 TUN 接口: 设置 MTU + UP + IP (10.0.0.1/24), 通过 ioctl/netlink
+void TunIface::configure(const std::string& name, int mtu) {
+    // 1. MTU
+    int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) { std::cerr << "[TUN] socket 失败: " << strerror(errno) << std::endl; return; }
+    struct ifreq ifr = {};
+    strncpy(ifr.ifr_name, name.c_str(), IFNAMSIZ - 1);
+    ifr.ifr_mtu = mtu;
+    if (ioctl(sock, SIOCSIFMTU, &ifr) < 0)
+        std::cerr << "[TUN] SIOCSIFMTU 失败: " << strerror(errno) << std::endl;
+
+    // 2. UP
+    if (ioctl(sock, SIOCGIFFLAGS, &ifr) < 0)
+        std::cerr << "[TUN] SIOCGIFFLAGS 失败: " << strerror(errno) << std::endl;
+    ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
+    if (ioctl(sock, SIOCSIFFLAGS, &ifr) < 0)
+        std::cerr << "[TUN] SIOCSIFFLAGS(UP) 失败: " << strerror(errno) << std::endl;
+
+    // 3. IP: 10.0.0.1/24 (通过 ifr_addr)
+    struct ifreq ipr = {};
+    strncpy(ipr.ifr_name, name.c_str(), IFNAMSIZ - 1);
+    struct sockaddr_in* sin = (struct sockaddr_in*)&ipr.ifr_addr;
+    sin->sin_family = AF_INET;
+    sin->sin_addr.s_addr = inet_addr("10.0.0.1");
+    if (ioctl(sock, SIOCSIFADDR, &ipr) < 0)
+        std::cerr << "[TUN] SIOCSIFADDR 失败: " << strerror(errno) << std::endl;
+
+    // 4. netmask
+    sin->sin_addr.s_addr = inet_addr("255.255.255.0");
+    if (ioctl(sock, SIOCSIFNETMASK, &ipr) < 0)
+        std::cerr << "[TUN] SIOCSIFNETMASK 失败: " << strerror(errno) << std::endl;
+
+    ::close(sock);
+    std::cout << "[TUN] 配置 " << name << ": mtu=" << mtu << " UP 10.0.0.1/24" << std::endl;
 }
 
 TunIface::~TunIface() {
