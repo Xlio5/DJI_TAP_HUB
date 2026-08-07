@@ -105,9 +105,9 @@ class MainActivity : ComponentActivity() {
             var autoConnected by remember { mutableStateOf(false) }
 
             LaunchedEffect(pollState) {
-                if (pollState != "scanning") return@LaunchedEffect
+                val um = this@MainActivity.getSystemService(Context.USB_SERVICE) as UsbManager
                 var count = 0
-                while (count < USB_POLL_MAX) {
+                while (count < USB_POLL_MAX && !autoConnected) {
                     count++
                     pollCount = count
                     kotlinx.coroutines.delay(2000)
@@ -116,14 +116,29 @@ class MainActivity : ComponentActivity() {
                         usbDevice = dev
                         polledDevice = dev
                         pollState = "found"
-                        if (!autoConnected) {
+                        // 权限授予后主动检测 (DJI RC 权限广播可能不触发, 轮询 hasPermission)
+                        if (um.hasPermission(dev)) {
                             autoConnected = true
+                            startAuthFlow()   // hasPermission=true → requestVpn
+                            return@LaunchedEffect
+                        } else {
+                            // 请求权限 (弹窗)
                             startAuthFlow()
+                            // 等权限授予 (轮询 hasPermission, 不依赖广播)
+                            var permCount = 0
+                            while (permCount < 5) {
+                                delay(2000)
+                                if (um.hasPermission(dev)) {
+                                    autoConnected = true
+                                    requestVpn()
+                                    return@LaunchedEffect
+                                }
+                                permCount++
+                            }
                         }
-                        return@LaunchedEffect
                     }
                 }
-                pollState = "timeout"
+                if (!autoConnected) pollState = "timeout"
             }
 
             TunNatHubApp(
