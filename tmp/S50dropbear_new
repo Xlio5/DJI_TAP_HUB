@@ -1,0 +1,47 @@
+#!/bin/sh
+#
+# Starts dropbear sshd.
+# TUN_NAT_HUB: 移除 -R (每次重启重新生成 host key),
+# 改用固化在 rootfs 的持久 host key (/etc/dropbear_ed25519_host_key),
+# 使 SSH host key 稳定, 客户端 known_hosts 不每次失效。
+
+# Allow a few customizations from a config file
+test -r /etc/default/dropbear && . /etc/default/dropbear
+
+start() {
+	# 用持久化的 ed25519 host key (固化在 rootfs, 重启不变)
+	DROPBEAR_ARGS="$DROPBEAR_ARGS -r /etc/dropbear_ed25519_host_key"
+
+	printf "Starting dropbear sshd: "
+	umask 077
+
+	start-stop-daemon -S -q -p /var/run/dropbear.pid \
+		--exec /usr/sbin/dropbear -- $DROPBEAR_ARGS
+	[ $? = 0 ] && echo "OK" || echo "FAIL"
+}
+stop() {
+	printf "Stopping dropbear sshd: "
+	start-stop-daemon -K -q -p /var/run/dropbear.pid
+	[ $? = 0 ] && echo "OK" || echo "FAIL"
+}
+restart() {
+	stop
+	start
+}
+
+case "$1" in
+  start)
+  	start
+	;;
+  stop)
+  	stop
+	;;
+  restart|reload)
+  	restart
+	;;
+  *)
+	echo "Usage: $0 {start|stop|restart}"
+	exit 1
+esac
+
+exit $?
