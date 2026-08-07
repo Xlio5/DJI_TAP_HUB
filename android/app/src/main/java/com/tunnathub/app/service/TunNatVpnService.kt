@@ -227,82 +227,33 @@ class TunNatVpnService : VpnService() {
     private val reconnecting = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
-     * 尝试一次性连接 USB，失败时注册 USB_DEVICE_ATTACHED 等待设备重新插入
+     * 尝试连接 USB。失败后轮询重试（不依赖 USB 插入广播，
+     * 设备一直插着也能重连，解决"开多次 App 才连上"的问题）。
      */
     private suspend fun doReconnect() {
         if (!isStarted || !reconnecting.compareAndSet(false, true)) return
         usbBridge?.disconnect()
         isReconnectingState.value = true
 
-        // 先在主线程注册 USB 监听（防止漏掉插入事件）
-        withContext(Dispatchers.Main) {
-            unregisterReconnectReceiver()
-            val latch = java.util.concurrent.CountDownLatch(1)
-            reconnectLatch.set(latch)
-            reconnectReceiver = object : BroadcastReceiver() {
-                override fun onReceive(ctx: Context, intent: Intent) {
-                    if ("android.hardware.usb.action.USB_DEVICE_ATTACHED" == intent.action) {
-                        val dev = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
-                        if (dev != null && dev.vendorId == UsbBridge.USB_VID && dev.productId == UsbBridge.USB_PID) {
-                            AppLog.i(TAG, "收到 V3s 插入广播")
-                            latch.countDown()
-                        }
-                    }
-                }
-            }
-            registerReceiver(reconnectReceiver, IntentFilter("android.hardware.usb.action.USB_DEVICE_ATTACHED"), Context.RECEIVER_NOT_EXPORTED)
-        }
-
         try {
             var retries = 0
             while (isStarted) {
                 retries++
-                // 先立即试一次（第一次可能设备已经在线）
-                if (retries == 1) {
-                    try {
-                        updateNotification("USB 连接中...")
-                        usbBridge!!.start(scope)
-                        AppLog.i(TAG, "USB 首次连接成功")
-                        isReconnectingState.value = false
-                        return
-                    } catch (e: Exception) {
-                        AppLog.w(TAG, "USB 未在线: ${e.message}，等待插入...")
-                        updateNotification("等待 USB 设备...")
-                    }
+                try {
+                    updateNotification("USB 连接中... ($retries)")
+                    usbBridge!!.start(scope)
+                    AppLog.i(TAG, "USB 连接成功 (第${retries}次)")
+                    isReconnectingState.value = false
+                    return
+                } catch (e: Exception) {
+                    AppLog.w(TAG, "USB 连接失败 (第${retries}次): ${e.message}")
+                    updateNotification("USB 重连中... ($retries)")
                 }
-
-                // 等待 USB 插入（阻塞 IO 线程，等待硬件事件）
-                val latch = reconnectLatch.get()
-                if (latch != null) {
-                    withContext(Dispatchers.IO) { latch.await() }
-                    reconnectLatch.set(java.util.concurrent.CountDownLatch(1))  // 重置
-                }
-                if (!isStarted) break
-
-                delay(1000)  // 等驱动加载完
-                // DJI RC 权限授予有延迟 → 重试多次
-                var reconnected = false
-                for (attempt in 1..5) {
-                    try {
-                        updateNotification("重连中... ($retries)")
-                        usbBridge?.disconnect()
-                        usbBridge!!.start(scope)
-                        AppLog.i(TAG, "USB 重连成功 (第${retries}次)")
-                        isReconnectingState.value = false
-                        reconnected = true
-                        break
-                    } catch (e: Exception) {
-                        AppLog.w(TAG, "USB 重连尝试 $attempt/5 失败: ${e.message}")
-                        usbBridge?.disconnect()
-                        if (attempt < 5) delay(800)
-                    }
-                }
-                if (reconnected) return
-                // 5 次都失败 → 重新等广播
+                // 轮询重试: 设备一直插着也能重连, 不依赖插入广播
+                delay(RECONNECT_DELAY)
             }
         } finally {
             reconnecting.set(false)
-            withContext(Dispatchers.Main) { unregisterReconnectReceiver() }
         }
     }
 

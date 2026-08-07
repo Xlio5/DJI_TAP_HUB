@@ -66,6 +66,8 @@ class UsbBridge(
      * 冷启/重启后 USB 权限可能丢失，先检查并请求权限再打开设备
      */
     suspend fun start(scope: CoroutineScope) {
+        // 幂等: 已连接则先断开, 避免重复 openDevice/协程 (解决多次连接卡死)
+        if (isConnected) disconnect()
         val device = findDevice() ?: throw IllegalStateException("未找到 TUN_NAT_HUB USB 设备")
         val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
         AppLog.i(TAG, "找到 USB 设备: VID=0x${USB_VID.toString(16)} PID=0x${USB_PID.toString(16)}")
