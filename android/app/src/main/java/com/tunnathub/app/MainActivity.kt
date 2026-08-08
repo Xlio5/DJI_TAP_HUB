@@ -56,6 +56,7 @@ import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
 import com.tunnathub.app.video.Media3RtspProbePlayer
 import com.tunnathub.app.video.RtspPlaybackEngine
+import com.tunnathub.app.video.RtspUdpProbe
 import kotlinx.coroutines.*
 import org.easydarwin.video.BenchmarkStats
 import org.easydarwin.video.Client
@@ -341,6 +342,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var testing by remember { mutableStateOf(false) }
     var codecBenchmarkRunning by remember { mutableStateOf(false) }
     var codecBenchmarkText by remember { mutableStateOf("") }
+    var rtspUdpProbeRunning by remember { mutableStateOf(false) }
+    var rtspUdpProbeText by remember { mutableStateOf("") }
 
     // ── HTTP POST ──
     // C-02: 用 remember 的 apiScope (随 composition 取消), 避免每次调用创建孤儿协程
@@ -716,6 +719,24 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     }
 
     /** 自动重连: 播放失败后延迟重试 (限次, 手动停止后不触发) */
+    fun doRunRtspUdpProbe() {
+        if (rtspUdpProbeRunning || !vpnRunning) return
+        val url = rtspUrl
+        rtspUdpProbeRunning = true
+        rtspUdpProbeText = "RTSP UDP 探测中..."
+        AppLog.i("RtspUdpProbe", "start $url")
+        apiScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val normal = RtspUdpProbe.run(url, 5)
+            val protectedTun = RtspUdpProbe.runProtectedTun(url, 5)
+            val text = normal.toDisplayString() + "\n\n" + protectedTun.toDisplayString()
+            AppLog.i("RtspUdpProbe", text)
+            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                rtspUdpProbeText = text
+                rtspUdpProbeRunning = false
+            }
+        }
+    }
+
     fun doScheduleReconnect() {
         if (!autoReconnectActive) return                     // 手动停止 → 不重连
         if (isPlaying) return                                // 已在播 → 不重连
@@ -1465,6 +1486,16 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     }, enabled = vpnRunning && !testing, modifier = Modifier.height(28.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))) { Text(if (testing) "⏳" else "⏱", fontSize = 11.sp) }
                                 }
                                 if (latencyText.isNotEmpty()) Text(latencyText, fontSize = 10.sp, color = Color(0xFF38BDF8), modifier = Modifier.padding(top = 2.dp))
+
+                                Spacer(Modifier.height(8.dp))
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    Text("RTSP UDP/RTP", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                                    Button(onClick = { doRunRtspUdpProbe() }, enabled = vpnRunning && !rtspUdpProbeRunning,
+                                        modifier = Modifier.height(28.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))) {
+                                        Text(if (rtspUdpProbeRunning) "探测中" else "探测", fontSize = 11.sp)
+                                    }
+                                }
+                                if (rtspUdpProbeText.isNotEmpty()) Text(rtspUdpProbeText, fontSize = 9.sp, color = Color(0xFF38BDF8), lineHeight = 13.sp, modifier = Modifier.padding(top = 2.dp))
 
                                 Spacer(Modifier.height(8.dp))
                                 var debugExpanded by remember { mutableStateOf(true) }
