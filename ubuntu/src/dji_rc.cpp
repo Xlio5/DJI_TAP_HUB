@@ -76,6 +76,7 @@ static int64_t g_last_debug_us = 0;
 static std::atomic<int> g_out_fd{-1};
 static std::atomic<char> g_out_mode{'s'}; // 's' = SBUS, 'c' = CRSF
 static std::atomic<int>  g_out_baud{100000}; // 实际波特率 (SBUS标准=100000, SBUS非标=115200, CRSF=420000)
+static std::mutex g_out_write_mtx;        // CO-4: 保护对 g_out_fd 的写 (out_send + crsf_rx_thread 并发)
 static bool g_sbus_std = true;          // SBUS 标准模式: true=100k 8E2, false=115200 8N1
 static bool g_crsf_telem = true;        // CRSF 是否接收回传
 static std::atomic<bool> g_ch_map_valid{false};  // CRIT#2: atomic, 主线程热重配写 + rx_thread 读
@@ -697,14 +698,25 @@ static void out_send(const rc_state_t &m)
     if (outFd < 0) return;
 
     uint16_t ch[CH_COUNT];
-    // CRIT#2: atomic load g_ch_map_valid; g_ch_map 在 g_mtx 保护下写入 (热重配), 读取此处
-    rc_map_build(&m, g_ch_map_valid.load() ? g_ch_map : NULL, ch);
+    // C-1: 持锁拷贝 g_ch_map, 避免与主线程热重配 (load_rc_output_cfg) 的数据竞争。
+    // g_ch_map_valid 只作为"映射是否有效"标志, 拷贝必须在 g_mtx 内完成,
+    // 否则 reader 可能在 writer 写入过程中读到 torn map (g_ch_map_valid 永不复位的场景)。
+    uint8_t mapSnap[CH_COUNT];
+    bool mapValid = false;
+    {
+        std::lock_guard<std::mutex> lock(g_mtx);
+        mapValid = g_ch_map_valid.load(std::memory_order_acquire);
+        if (mapValid) std::memcpy(mapSnap, g_ch_map, CH_COUNT);
+    }
+    rc_map_build(&m, mapValid ? mapSnap : NULL, ch);
 
     int n = 0;
     if (outMode == 'c') {
         uint8_t frame[CRSF_FRAME_MAX];
         n = crsf_pack_channels(ch, frame);
         if (n > 0) {
+            std::lock_guard<std::mutex> lock(g_out_write_mtx);   // CO-4: 串口写互斥, 防 CRSF 帧交错
+            if (g_out_fd.load() != outFd) return;                // CO-5: fd 已被替换, 丢弃本次输出
             ssize_t w = ::write(outFd, frame, (size_t)n);
             out_attempts++;
             if (w != n) { out_errors++; }
@@ -712,6 +724,8 @@ static void out_send(const rc_state_t &m)
     } else {
         uint8_t frame[SBUS_FRAME_LEN];
         sbus_encode(ch, frame);
+        std::lock_guard<std::mutex> lock(g_out_write_mtx);       // CO-4: 串口写互斥
+        if (g_out_fd.load() != outFd) return;                    // CO-5: fd 已被替换
         ssize_t w = ::write(outFd, frame, SBUS_FRAME_LEN);
         out_attempts++;
         if (w != SBUS_FRAME_LEN) { out_errors++; }
@@ -734,17 +748,26 @@ static void out_send(const rc_state_t &m)
 static void sbus_send_if_p20(DjiPort *p)
 {
     if (p != &g_p20) return;
-    if (g_p20.state.type == RC_NONE) return;
-
-    int64_t n = now_us();
-    if ((n - g_p20.last_us) > 500000LL) return;
     if (g_out_fd.load() < 0) return;   // C1: atomic load
 
-    int64_t age20 = n - g_p20.last_us;
-    int64_t age0  = (g_p0.state.type == RC_NONE) ? INT64_MAX : n - g_p0.last_us;
+    int64_t n = now_us();
+
+    // CO-2/CO-3: 持锁拷贝 state, 避免与 P0 rx_thread / 主线程热重配的数据竞争
+    rc_state_t s20, s0;
+    int64_t l20, l0;
+    g_mtx.lock();
+    s20 = g_p20.state; l20 = g_p20.last_us;
+    s0  = g_p0.state;  l0  = g_p0.last_us;
+    g_mtx.unlock();
+
+    if (s20.type == RC_NONE) return;
+    if ((n - l20) > 500000LL) return;
+
+    int64_t age20 = n - l20;
+    int64_t age0  = (s0.type == RC_NONE) ? INT64_MAX : n - l0;
 
     rc_state_t m;
-    rc_merge(&g_p20.state, age20, &g_p0.state, age0, 500000LL, &m);
+    rc_merge(&s20, age20, &s0, age0, 500000LL, &m);
 
     if (m.type != RC_NONE) out_send(m);   // write() outside mutex
 }
@@ -783,6 +806,8 @@ static void crsf_rx_thread()
                         int rlen = crsf_handle_request(rx.buf, (uint8_t)r, &dev,
                                                        g_crsf_params, g_crsf_n_params, resp);
                         if (rlen > 0) {
+                            std::lock_guard<std::mutex> lock(g_out_write_mtx);  // CO-4: 串口写互斥, 防与下行帧交错
+                            if (g_out_fd.load() != outFd) continue;             // CO-5: fd 已替换
                             ssize_t w = ::write(outFd, resp, (size_t)rlen);
                             (void)w;
                         }
@@ -953,11 +978,13 @@ static bool load_rc_output_cfg(char &mode, int &baud, bool &sbus_std)
 
     auto presetS = cfg_json_str(obj, "map_preset");
     auto preset = rc_preset_parse(presetS.c_str());
-    // CRIT#2: g_ch_map 写入加锁 (out_send 读取), 防数据竞争
+    // C-1: 写 g_ch_map 前先复位 valid, 让 out_send 的读者跳过旧映射, 再在锁内更新。
+    // 解析失败 (map 为空/项数不足) 时保持 invalid, 避免使用上一轮的旧映射。
     g_mtx.lock();
+    g_ch_map_valid.store(false, std::memory_order_release);
     if (preset != MAP_CUSTOM) {
         rc_map_apply_preset(preset, g_ch_map);
-        g_ch_map_valid.store(true);
+        g_ch_map_valid.store(true, std::memory_order_release);
     } else {
         /* map: 逗号分隔 source 名, 如 "ch1,ch2,ch3,ch4,ch5,ch6,mode,rec,..." */
         std::string mapS = cfg_json_str(obj, "map");
@@ -973,7 +1000,7 @@ static bool load_rc_output_cfg(char &mode, int &baud, bool &sbus_std)
                 if (comma == std::string::npos) break;
                 pos = comma + 1;
             }
-            if (idx >= CH_COUNT) g_ch_map_valid.store(true);
+            if (idx >= CH_COUNT) g_ch_map_valid.store(true, std::memory_order_release);
         }
     }
     g_mtx.unlock();

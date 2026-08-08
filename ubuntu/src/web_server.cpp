@@ -39,7 +39,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.0"   // 固件版本 — 改这里全局生效
+#define VERSION     "1.6.2"   // 固件版本 — 改这里全局生效
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
@@ -291,8 +291,12 @@ static std::string detectLanIface() {
     return "eth0";
 }
 
-static Config loadConfig() {
+// H-3: loadConfig 支持报告"配置是否被修改" (LAN 网段自动检测到变化时置 true),
+// 调用方据此决定是否要 saveConfig — 避免每次启动都无条件擦写 SPI NOR flash (磨损寿命)。
+// outChanged 可空 (nullptr 表示不关心)。
+static Config loadConfig(bool* outChanged = nullptr) {
     Config cfg;
+    if (outChanged) *outChanged = false;
     // Read config from SPI Flash (persistent, survives reboot)
     int fd = ::open(CFG_DEV, O_RDONLY);
     if (fd < 0) return cfg;
@@ -391,6 +395,7 @@ static Config loadConfig() {
     if (!detected.empty() && detected != cfg.lanSubnet) {
         std::cout << "[web_server] LAN 网段自动检测: " << cfg.lanSubnet << " → " << detected << std::endl;
         cfg.lanSubnet = detected;
+        if (outChanged) *outChanged = true;
     }
 
     return cfg;
@@ -520,11 +525,15 @@ static int extractRequest(std::string& buf, Request* req) {
         return 0;
     }
     // 解析 Content-Length（可能无 body）
+    // CO-7: atoi 溢出是 UB, 改用 stoll + try-catch, 超限返回 -1
     int contentLen = 0;
     size_t clPos = buf.find("Content-Length:");
     if (clPos != std::string::npos && clPos < hdrEnd) {
-        contentLen = std::atoi(buf.c_str() + clPos + 15);
-        if (contentLen < 0 || contentLen > 8 * 1024 * 1024) return -1;
+        try {
+            long long cl = std::stoll(buf.substr(clPos + 15, hdrEnd - clPos - 15));
+            if (cl < 0 || cl > 8 * 1024 * 1024) return -1;
+            contentLen = (int)cl;
+        } catch (...) { return -1; }
     }
     size_t total = hdrEnd + 4 + (size_t)contentLen;
     if (buf.size() < total) return 0;   // body 未收全
@@ -557,8 +566,15 @@ struct Response {
             "Connection: " + std::string(keepAlive ? "keep-alive" : "close") + "\r\n"
             "Content-Length: " + std::to_string(body.size()) + "\r\n"
             "\r\n";
-        ::send(fd, hdr.c_str(), hdr.size(), MSG_NOSIGNAL);
-        ::send(fd, body.c_str(), body.size(), MSG_NOSIGNAL);
+        // C-2: send() 可能短写 (慢连接/内核缓冲满), 必须循环写完, 否则客户端收到截断响应,
+        // 破坏 keep-alive 连接上后续请求的 Content-Length 帧对齐。
+        const std::string full = hdr + body;
+        size_t off = 0;
+        while (off < full.size()) {
+            ssize_t n = ::send(fd, full.c_str() + off, full.size() - off, MSG_NOSIGNAL);
+            if (n <= 0) break;   // EAGAIN/EINTR 或对端关闭: 放弃本次发送
+            off += (size_t)n;
+        }
     }
 };
 
@@ -1288,7 +1304,10 @@ static void handleFirmwareUpload(int fd) {
     }
     int vFd = ::open(tmpPath.c_str(), O_RDONLY);
     if (vFd >= 0) {
-        uint8_t magic[4]; ::read(vFd, magic, 4); ::close(vFd);
+        uint8_t magic[4] = {0};
+        // H-1: read 返回值检查, 失败则按 bad magic 处理 (magic 保持初始化值 0)
+        if (::read(vFd, magic, 4) != 4) { ::close(vFd); magic[0] = magic[1] = magic[2] = magic[3] = 0; }
+        else ::close(vFd);
         std::cout << "[fw] MAGIC: " << magic[0] << magic[1] << magic[2] << magic[3] << " (expect hsqs)" << std::endl;
         if (magic[0] != 'h' || magic[1] != 's' || magic[2] != 'q' || magic[3] != 's') {
             std::cout << "[fw] ERR: bad magic" << std::endl;
@@ -1302,9 +1321,15 @@ static void handleFirmwareUpload(int fd) {
     if (::stat(tmpPath.c_str(), &st) == 0 && st.st_size > 12) {
         int tf = ::open(tmpPath.c_str(), O_RDONLY);
         if (tf >= 0) {
-            char tail[12]; ::lseek(tf, st.st_size - 12, SEEK_SET); ::read(tf, tail, 12); ::close(tf);
+            char tail[12];
+            if (::lseek(tf, st.st_size - 12, SEEK_SET) >= 0 && ::read(tf, tail, 12) != 12) {
+                std::memset(tail, 0, sizeof(tail));   // H-1: 读失败则清空, 避免用未初始化栈数据
+            }
+            ::close(tf);
             if (memcmp(tail, "TUN_NAT_HUB", 11) == 0) {
-                uint32_t crc = *(uint32_t*)(tail + 8);
+                // C-3: 避免 unaligned 访问 UB, 用 memcpy 提取 CRC32
+                uint32_t crc;
+                std::memcpy(&crc, tail + 8, sizeof(crc));
                 std::cout << "[fw] TAIL: CRC32=0x" << std::hex << crc << std::dec << " OK" << std::endl;
             } else { std::cout << "[fw] TAIL: not present" << std::endl; }
         }
@@ -1318,7 +1343,12 @@ static void handleFirmwareUpload(int fd) {
     std::string mtdDev = runningOnB ? "/dev/mtd3" : "/dev/mtd4";
     std::string eraseCmd = "flash_erase -q " + mtdDev + " 0 0 2>/dev/null || mtd_debug erase " + mtdDev + " 0 1048576 2>/dev/null || true";
     std::cout << "[fw] ERASE: " << eraseCmd << std::endl;
-    system(eraseCmd.c_str());
+    // H-2: 检查擦除命令返回值 (命令含 || true 兜底, 但 flash_erase 失败路径需告警,
+    // 未擦除就 dd 写入可能损坏 rootfs)
+    int eraseRc = system(eraseCmd.c_str());
+    if (eraseRc != 0) {
+        std::cout << "[fw] WARN: erase 命令返回 " << eraseRc << " (可能未擦除, dd 写入有风险)" << std::endl;
+    }
 
     std::cout << "[fw] dd " << tmpPath << " -> " << inactiveDev << std::endl;
 	std::string flashCmd = "dd if=" + tmpPath + " of=" + inactiveDev + " bs=4096 2>&1";
@@ -1356,7 +1386,12 @@ static void handleFirmwareUpload(int fd) {
     }
     int vf2 = ::open("/dev/mtdblock0", O_RDONLY);
     if (vf2 >= 0) {
-        uint8_t ctl[6]; ::lseek(vf2, 0xFC000, SEEK_SET); ::read(vf2, ctl, 6); ::close(vf2);
+        uint8_t ctl[6] = {0};
+        // H-1: read 返回值检查, 失败时 ctl 保持初始化 0
+        if (::lseek(vf2, 0xFC000, SEEK_SET) >= 0 && ::read(vf2, ctl, 6) != 6) {
+            std::memset(ctl, 0, sizeof(ctl));
+        }
+        ::close(vf2);
         std::cout << "[fw] VFY: ctl=" << std::hex << (int)ctl[4] << "|" << (int)ctl[5] << std::dec << std::endl;
     }
     ::unlink(tmpPath.c_str());
@@ -1377,8 +1412,10 @@ int main() {
     std::cout << "[web_server] LAN 网口: " << g_lanIface << std::endl;
 
     // 加载配置 + 应用已有转发规则
-    Config cfg = loadConfig();
-    saveConfig(cfg);  // 自动检测写入
+    bool cfgChanged = false;
+    Config cfg = loadConfig(&cfgChanged);
+    // H-3: 只在配置实际变化时写 SPI, 避免每次启动无条件擦写 NOR flash (磨损寿命)
+    if (cfgChanged) saveConfig(cfg);
     applyAllForwards(cfg);
 
     // 创建监听 socket

@@ -43,7 +43,7 @@ int crsf_pack_channels(const uint16_t ch_us[16], uint8_t out[CRSF_FRAME_MAX]) {
 
     /* 16 通道 11bit 连续位流 */
     uint32_t bitbuf = 0;
-    int bitlen = 0, byte = 0, bit = 0;
+    int bitlen = 0, byte = 0;
     for (int i = 0; i < 16; i++) {
         uint32_t v = crsf_us_to_ch(ch_us[i]) & 0x7FF;   /* 11-bit */
         bitbuf |= v << bitlen;
@@ -53,7 +53,6 @@ int crsf_pack_channels(const uint16_t ch_us[16], uint8_t out[CRSF_FRAME_MAX]) {
             bitbuf >>= 8;
             bitlen -= 8;
         }
-        (void)bit;
     }
     if (bitlen > 0) payload[byte++] = (uint8_t)(bitbuf & 0xFF);
     /* 22 通道: 剩 6 通道为 0, 已由 memset 填充 */
@@ -321,7 +320,6 @@ int crsf_handle_request(const uint8_t *frame, uint8_t flen,
          * value 从 frame[7], 字节数 = flen - 8 (flen 含末尾 crc) */
         if (flen < 8) return 0;
         uint8_t id = frame[5];
-        uint8_t chunk = frame[6];
         for (uint8_t i = 0; i < n_params; i++) {
             if (params[i].id == id) {
                 uint8_t vlen = flen - 8;

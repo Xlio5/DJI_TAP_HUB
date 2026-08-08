@@ -25,7 +25,13 @@ case "$1" in
             NEW_RTY=$((RTY - 1))
             if [ "$NEW_RTY" -le 0 ]; then
                 _ts "FALLBACK: retries exhausted, reverting to last_slot=$LAST"
-                printf '%b' "\\x$LAST" | dd of=/dev/mtdblock0 bs=1 count=1 seek=1032192 2>/dev/null
+                # A-1 修复: 不能用 printf '%b' "\\x$LAST" — 当 LAST=255 时 \x255 被解析为
+                # \x25('%')+字面'5', 写出错误字节。0xFF/0x00 用八进制固定转义写。
+                if [ "$LAST" = "255" ]; then
+                    printf '\377' | dd of=/dev/mtdblock0 bs=1 count=1 seek=1032192 2>/dev/null
+                else
+                    printf '\000' | dd of=/dev/mtdblock0 bs=1 count=1 seek=1032192 2>/dev/null
+                fi
                 printf '\377' | dd of=/dev/mtdblock0 bs=1 count=1 seek=1032193 2>/dev/null
                 printf '\000' | dd of=/dev/mtdblock0 bs=1 count=1 seek=1032194 2>/dev/null
                 sync

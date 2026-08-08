@@ -139,6 +139,10 @@ static void ttyToTun(TunIface& tun, Stats& s) {
         int fd = gTtyFd.load();
         if (fd < 0) { usleep(100000); pos = 0; continue; }
 
+        // CO-1: 防环形缓冲越界 (frame_unpack 异常时 pos 可能不减少, 累积到越界)
+        if (pos + FRAME_MAX_LEN > (int)sizeof(ring)) {
+            pos = 0;   // 缓冲溢出风险 → 丢弃未处理数据, 重新对齐
+        }
         ssize_t n = ::read(fd, ring + pos, FRAME_MAX_LEN);
         if (n < 0) {
             if (errno == EAGAIN) continue;
