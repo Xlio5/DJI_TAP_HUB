@@ -41,6 +41,7 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
     private static final String TAG = "LowLatencyRtspPlayer";
     private static final int VIDEO_CODEC_H264 = 0x1C;
     private static final int VIDEO_CODEC_H265 = 0xAE;
+    public static final String DEFAULT_H264_CODEC = "c2.qti.avc.decoder.low_latency";
     private static volatile String sForcedCodecName = null;
 
     private final Context context;
@@ -303,13 +304,17 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
             }
             Log.w(TAG, "forced codec not found: " + forced);
         }
-        List<String> names = new ArrayList<>();
-        for (MediaCodecInfo candidate : candidates) names.add(candidate.getName());
-        String bestName = CodecNameRanker.bestName(names);
+        MediaCodecInfo best = null;
+        int bestScore = Integer.MIN_VALUE;
         for (MediaCodecInfo candidate : candidates) {
-            if (candidate.getName().equals(bestName)) return candidate;
+            int score = CodecNameRanker.score(candidate.getName());
+            if (supportsLowLatencyFeature(candidate, mimeType)) score += 75;
+            if (best == null || score > bestScore) {
+                best = candidate;
+                bestScore = score;
+            }
         }
-        return candidates.get(0);
+        return best;
     }
 
     private static boolean codecMatch(String mimeType, MediaCodecInfo codecInfo) {
@@ -319,6 +324,16 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
         return false;
     }
 
+    private static boolean supportsLowLatencyFeature(MediaCodecInfo codecInfo, String mimeType) {
+        if (Build.VERSION.SDK_INT < 30) return false;
+        try {
+            MediaCodecInfo.CodecCapabilities caps = codecInfo.getCapabilitiesForType(mimeType);
+            return caps != null && caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private static void configureLowLatency(MediaFormat format) {
         format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 0);
         if (Build.VERSION.SDK_INT >= 30) {
@@ -326,7 +341,7 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
             put(format, "low-latency", 1);
             put(format, "vendor.qti-ext-dec-low-latency.delay-tolerance", 10000);
             put(format, "vendor.qti-ext-dec-out-buf-count", 1);
-            put(format, MediaFormat.KEY_OPERATING_RATE, 25);
+            put(format, MediaFormat.KEY_OPERATING_RATE, 60);
             put(format, MediaFormat.KEY_PRIORITY, 0);
             put(format, MediaFormat.KEY_LATENCY, 1);
             put(format, MediaFormat.KEY_OUTPUT_REORDER_DEPTH, 0);

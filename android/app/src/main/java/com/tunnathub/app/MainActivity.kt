@@ -321,8 +321,14 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var needVpnReconnect by remember { mutableStateOf(false) }
 
     // ── 解码器选择 ──
-    val savedCodec = remember { prefs.getString("forced_codec", "auto") ?: "auto" }
-    LaunchedEffect(Unit) { LowLatencyRtspPlayer.setForcedCodec(savedCodec) }
+    val savedCodec = remember {
+        val codec = prefs.getString("forced_codec", null)
+        if (codec.isNullOrBlank() || codec == "auto") LowLatencyRtspPlayer.DEFAULT_H264_CODEC else codec
+    }
+    LaunchedEffect(Unit) {
+        LowLatencyRtspPlayer.setForcedCodec(savedCodec)
+        prefs.edit().putString("forced_codec", savedCodec).apply()
+    }
 
     // 延迟测试
     var latencyText by remember { mutableStateOf("") }
