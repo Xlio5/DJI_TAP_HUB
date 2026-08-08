@@ -596,7 +596,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         if (codecBenchmarkRunning) return
         val url = rtspUrl
         codecBenchmarkRunning = true
-        codecBenchmarkText = "准备测试..."
+        codecBenchmarkText = "准备 1min/decoder 测试..."
         apiScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val originalCodec = LowLatencyRtspPlayer.getForcedCodec()
             val candidates = (listOf("auto") + LowLatencyRtspPlayer.listAvailableDecoders("video/avc")).distinct()
@@ -643,7 +643,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         testPlayer.start(url, Client.TRANSTYPE_TCP)
                         val displayed = firstFrame.await(4, java.util.concurrent.TimeUnit.SECONDS)
                         if (displayed && errorRef.get() == null) {
-                            Thread.sleep(6000)
+                            Thread.sleep(60_000)
                         } else {
                             Thread.sleep(1000)
                         }
@@ -1366,7 +1366,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     modifier = Modifier.fillMaxWidth().height(30.dp),
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E))) {
-                                    Text(if (codecBenchmarkRunning) "测试中..." else "自动测试 H264 解码器", fontSize = 10.sp)
+                                    Text(if (codecBenchmarkRunning) "测试中..." else "自动测试 H264 解码器 1min", fontSize = 10.sp)
                                 }
                                 if (codecBenchmarkText.isNotEmpty()) {
                                     Text(codecBenchmarkText, fontSize = 9.sp, color = Color(0xFF38BDF8), lineHeight = 13.sp, modifier = Modifier.padding(top = 4.dp))
