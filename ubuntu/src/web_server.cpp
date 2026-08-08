@@ -1099,6 +1099,16 @@ static Response handleRequest(const Request& req) {
             } else {
                 resp.body = R"({"error":"RC daemon not running"})";
             }
+        } else if (p == "/api/dji_rc/log") {
+            // 诊断接口: 抓启动配置行 + 热重配检测行 + 状态刷屏行 + tail
+            std::string boot = exec({"sh", "-c",
+                "echo '=== BOOT ==='; "
+                "grep -aE '输出|fd=|已打开' /var/log/dji_rc.log | head -8; "
+                "echo '=== CFGCHK ==='; "
+                "grep -aE 'cfg chk|变化|重配' /var/log/dji_rc.log | tail -8; "
+                "echo '=== TAIL ==='; tail -4 /var/log/dji_rc.log"});
+            resp.contentType = "text/plain; charset=utf-8";
+            resp.body = boot;
         } else if (p == "/api/rc/output") {
             Config c = loadConfig();
             resp.body = apiRcOutput(c);

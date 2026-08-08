@@ -1173,7 +1173,17 @@ int main(int argc, char **argv)
         if (n - last_cfg_check > 2000000LL) {
             last_cfg_check = n;
             char cm; int cb; bool cs;
-            if (load_rc_output_cfg(cm, cb, cs) &&
+            // DBG#baud: 记录 load_rc_output_cfg 读取结果, 定位热重配为何不触发
+            bool cfgOk = load_rc_output_cfg(cm, cb, cs);
+            if (cfgOk) {
+                bool diff = (cm != g_out_mode.load() || cb != g_out_baud.load() || cs != g_sbus_std);
+                std::printf("[dji_rc][dbg] cfg chk: ok=%d cur=%c/%d/%d spi=%c/%d/%d diff=%d\n",
+                            cfgOk ? 1 : 0,
+                            g_out_mode.load(), g_out_baud.load(), g_sbus_std ? 1 : 0,
+                            cm, cb, cs ? 1 : 0, diff ? 1 : 0);
+                std::fflush(stdout);
+            }
+            if (cfgOk &&
                 (cm != g_out_mode.load() || cb != g_out_baud.load() || cs != g_sbus_std)) {
                 std::printf("[dji_rc] 输出配置变化 mode=%c baud=%d sbus_std=%d → 热重配\n",
                             cm, cb, cs ? 1 : 0);
