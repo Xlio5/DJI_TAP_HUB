@@ -73,8 +73,24 @@ def parse_sps(nal_data):
     return width, height
 
 # Get NAL data from file
-adb_cmd = f"adb -s 10.248.133.112:{sys.argv[2] if len(sys.argv) > 2 else '42557'} shell \"dd if={sys.argv[1]} bs=1 count=128 skip=4 2>/dev/null | od -A n -t x1\""
-result = subprocess.run(adb_cmd, capture_output=True, text=True, shell=True)
+# CRITICAL-4 修复: 用列表参数避免 shell=True 命令注入; 校验 filepath 不含 shell 元字符
+if len(sys.argv) < 2:
+    print("用法: parse_sps.py <远端文件路径> [adb端口]", file=sys.stderr)
+    sys.exit(1)
+filepath = sys.argv[1]
+port = sys.argv[2] if len(sys.argv) > 2 else "42557"
+if not filepath.strip() or any(ch in filepath for ch in ";|&`$()<>"):
+    print(f"非法文件路径: {filepath}", file=sys.stderr)
+    sys.exit(1)
+if not port.isdigit():
+    print(f"非法端口: {port}", file=sys.stderr)
+    sys.exit(1)
+# 远端 shell 内的 dd 命令本身是白名单固定格式, 仅 filepath 是参数 (已校验)
+shell_cmd = f"dd if={filepath} bs=1 count=128 skip=4 2>/dev/null | od -A n -t x1"
+result = subprocess.run(
+    ["adb", "-s", f"10.248.133.112:{port}", "shell", shell_cmd],
+    capture_output=True, text=True, timeout=10,
+)
 hex_str = result.stdout.strip().replace('\n', ' ').replace('\r', '')
 try:
     sps_data = bytes.fromhex(hex_str)

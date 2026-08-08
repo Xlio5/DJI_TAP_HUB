@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Build rootfs with web_server logging + 12B verification tail"""
-import os, shutil, zlib, struct
+import os, shutil, zlib, struct, subprocess, sys
 
 PROJECT = "/mnt/c/my_project/TUN_NAT_HUB"
 TGT = "/home/xlong/v3s/buildroot-2024.02/output/target"
 CPP = f"{PROJECT}/ubuntu/src/web_server.cpp"
 
 # 1. Add logging to web_server source BEFORE compilation
-ws_src = open(CPP).read()
+# HIGH-2/4 修复: 修改前先备份 + with 语句 + 替换计数告警
+with open(CPP, encoding="utf-8") as f:
+    ws_src = f.read()
+
+added = 0
 
 # Add log after inactiveDev assignment
 old = 'std::cout << "[fw] current slot: " << (runningOnB ? "B" : "A")'
@@ -16,6 +20,9 @@ new = ('std::cout << "[fw] UPGRADE START: target=" << inactiveDev << ", size=" <
 if old in ws_src:
     ws_src = ws_src.replace(old, new)
     print("Added upgrade start log")
+    added += 1
+else:
+    print("[WARN] 未找到注入点1, 源码结构可能已变", file=sys.stderr)
 
 # Add log after dd success
 old2 = 'std::string flashCmd = "dd if=" + tmpPath + " of=" + inactiveDev + " bs=4096 2>&1";'
@@ -24,6 +31,9 @@ new2 = ('std::cout << "[fw] dd " << tmpPath << " -> " << inactiveDev << std::end
 if old2 in ws_src:
     ws_src = ws_src.replace(old2, new2)
     print("Added dd log")
+    added += 1
+else:
+    print("[WARN] 未找到注入点2, 源码结构可能已变", file=sys.stderr)
 
 # Add log after slot write
 old3 = '::close(slotFd);\n\t\tsync();'
@@ -33,12 +43,29 @@ new3 = ('::close(slotFd);'
 if old3 in ws_src:
     ws_src = ws_src.replace(old3, new3)
     print("Added slot write log")
+    added += 1
+else:
+    print("[WARN] 未找到注入点3, 源码结构可能已变", file=sys.stderr)
 
-open(CPP, "w").write(ws_src)
+# HIGH-2 修复: 有实际修改才写回; 写前备份 (git 可恢复, 但额外 .bak 保险)
+if added > 0:
+    shutil.copy2(CPP, CPP + ".bak_ota")
+    with open(CPP, "w", encoding="utf-8") as f:
+        f.write(ws_src)
+    print(f"已写回 {CPP} (新增 {added} 处日志)")
+else:
+    print("[WARN] 没有任何注入生效, 跳过写回", file=sys.stderr)
 
 # 2. Compile web_server
 print("Compiling web_server...")
-os.system(f"arm-linux-gnueabihf-g++ -std=c++17 -Os -o {TGT}/usr/local/bin/web_server {CPP} -lpthread 2>&1 | tail -2")
+# MEDIUM-6 修复: 用 subprocess.run 检查返回码, 编译失败立即中止 (不再静默继续)
+r = subprocess.run(
+    f"arm-linux-gnueabihf-g++ -std=c++17 -Os -o {TGT}/usr/local/bin/web_server {CPP} -lpthread 2>&1 | tail -2",
+    shell=True, capture_output=True, text=True,
+)
+if r.returncode != 0:
+    print(f"[ERROR] 编译 web_server 失败:\n{r.stdout}", file=sys.stderr)
+    sys.exit(1)
 os.chmod(f"{TGT}/usr/local/bin/web_server", 0o755)
 print(f"web_server: {os.path.getsize(f'{TGT}/usr/local/bin/web_server')} bytes")
 
@@ -53,7 +80,13 @@ for src, dst in [
 # 4. Build squashfs
 print("Building squashfs...")
 os.chdir("/home/xlong/v3s/buildroot-2024.02")
-os.system("mksquashfs output/target /tmp/rootfs_tmp.sq -comp xz -b 1048576 -Xdict-size 1048576 -noappend 2>&1 | tail -3")
+r = subprocess.run(
+    "mksquashfs output/target /tmp/rootfs_tmp.sq -comp xz -b 1048576 -Xdict-size 1048576 -noappend 2>&1 | tail -3",
+    shell=True, capture_output=True, text=True,
+)
+if r.returncode != 0:
+    print(f"[ERROR] mksquashfs 失败:\n{r.stdout}", file=sys.stderr)
+    sys.exit(1)
 
 # 5. Append 12B verification tail (TUN_NAT_HUB + CRC32)
 with open("/tmp/rootfs_tmp.sq", "rb") as f:

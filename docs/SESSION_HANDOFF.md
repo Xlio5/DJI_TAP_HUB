@@ -97,7 +97,7 @@ PB = bank 1 → bank offset 0x24
 
 ## 六、输出格式
 
-- 固件版本 v1.4.6，App 版本 v1.3.0
+- 固件版本 v1.6.2，App 版本 v1.4.1（当前分支 feature/crsf-elrs）
 - 代码引用用 markdown 链接 `[文件](路径:行号)`
 - 汇报用表格清晰呈现验证结果
 
