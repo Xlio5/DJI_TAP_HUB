@@ -1,0 +1,10 @@
+version=1.6.3
+feature=rtsp_udp_rtp_forward_persistent
+rootfs=/mnt/c/my_project/TUN_NAT_HUB/backup/release_20260809_v163/rootfs_v163.squashfs
+rootfs_size=3973120
+rootfs_md5=69a47e40aa6e1fd1790244adafa5567e
+spi_image=/mnt/c/my_project/TUN_NAT_HUB/backup/release_20260809_v163/spi_image_v10_v163.bin
+spi_size=16777216
+spi_md5=8bd3f92d6bbaee7cf9d9ae359137fd9b
+web_server_md5=a343ccea407aebd9e9abbbfddf03bf1e
+base_rootfs=/mnt/c/my_project/TUN_NAT_HUB/backup/release_20260808_v162/rootfs_v162.squashfs
