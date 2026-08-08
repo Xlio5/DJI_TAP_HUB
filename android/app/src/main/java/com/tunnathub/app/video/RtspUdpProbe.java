@@ -58,6 +58,7 @@ public final class RtspUdpProbe {
 
             String describe = request(output, input, rtspUrl, "DESCRIBE", cseq++, "Accept: application/sdp\r\n", null);
             int describeCode = RtspUdpProbeParser.statusCode(describe);
+            RtspUdpProbeParser.H264Sprop sprop = RtspUdpProbeParser.h264SpropParameterSets(describe);
             if (describeCode < 200 || describeCode >= 300) {
                 return Result.error(rtspUrl, mode, "describe_" + describeCode, trimRtspStatus(describe));
             }
@@ -92,7 +93,9 @@ public final class RtspUdpProbe {
                 // 诊断结束时尽量释放 RTSP 会话即可。
             }
             return Result.ok(rtspUrl, mode, System.currentTimeMillis() - startMs, stats.packets, stats.bytes, stats.firstPacketMs)
-                .withRtsp(optionsCode, describeCode, setupCode, udpPair.rtp.getLocalPort(), udpPair.rtcp.getLocalPort(), transport);
+                .withRtsp(optionsCode, describeCode, setupCode, udpPair.rtp.getLocalPort(), udpPair.rtcp.getLocalPort(), transport)
+                .withPacketStats(stats.sequenceStats)
+                .withSprop(sprop);
         } catch (Exception e) {
             return Result.error(rtspUrl, mode, e.getClass().getSimpleName(), e.getMessage());
         } finally {
@@ -195,17 +198,29 @@ public final class RtspUdpProbe {
         int packets = 0;
         long bytes = 0;
         long firstPacketMs = -1;
+        RtpSequenceStats sequenceStats = new RtpSequenceStats();
         while (System.currentTimeMillis() < deadline) {
             try {
                 rtp.receive(packet);
                 if (firstPacketMs < 0) firstPacketMs = System.currentTimeMillis() - startMs;
                 packets++;
                 bytes += packet.getLength();
+                int seq = parseRtpSequence(packet);
+                if (seq >= 0) sequenceStats.observe(seq);
             } catch (java.net.SocketTimeoutException ignored) {
                 // 短超时用于定期检查总测试时长。
             }
         }
-        return new PacketStats(packets, bytes, firstPacketMs);
+        return new PacketStats(packets, bytes, firstPacketMs, sequenceStats);
+    }
+
+    private static int parseRtpSequence(DatagramPacket packet) {
+        if (packet.getLength() < 4) return -1;
+        byte[] data = packet.getData();
+        int offset = packet.getOffset();
+        int version = (data[offset] & 0xff) >> 6;
+        if (version != 2) return -1;
+        return ((data[offset + 2] & 0xff) << 8) | (data[offset + 3] & 0xff);
     }
 
     private static String trimRtspStatus(String response) {
@@ -232,12 +247,44 @@ public final class RtspUdpProbe {
         final int packets;
         final long bytes;
         final long firstPacketMs;
+        final RtpSequenceStats sequenceStats;
 
-        PacketStats(int packets, long bytes, long firstPacketMs) {
+        PacketStats(int packets, long bytes, long firstPacketMs, RtpSequenceStats sequenceStats) {
             this.packets = packets;
             this.bytes = bytes;
             this.firstPacketMs = firstPacketMs;
+            this.sequenceStats = sequenceStats;
         }
+    }
+
+    public static final class RtpSequenceStats {
+        private int packets;
+        private int lastSeq = -1;
+        private int gaps;
+        private int missingPackets;
+        private int wraps;
+
+        public void observe(int seq) {
+            seq &= 0xffff;
+            packets++;
+            if (lastSeq >= 0) {
+                int expected = (lastSeq + 1) & 0xffff;
+                if (seq < lastSeq) wraps++;
+                if (seq != expected) {
+                    int diff = (seq - expected) & 0xffff;
+                    if (diff > 0 && diff < 0x8000) {
+                        gaps++;
+                        missingPackets += diff;
+                    }
+                }
+            }
+            lastSeq = seq;
+        }
+
+        public int packets() { return packets; }
+        public int gaps() { return gaps; }
+        public int missingPackets() { return missingPackets; }
+        public int wraps() { return wraps; }
     }
 
     public static final class Result {
@@ -258,6 +305,11 @@ public final class RtspUdpProbe {
         public final String transport;
         public final int serverRtpPort;
         public final int serverRtcpPort;
+        public final int sequenceGaps;
+        public final int sequenceMissingPackets;
+        public final int sequenceWraps;
+        public final int spsBytes;
+        public final int ppsBytes;
 
         private Result(
             String rtspUrl,
@@ -276,7 +328,12 @@ public final class RtspUdpProbe {
             int clientRtcpPort,
             String transport,
             int serverRtpPort,
-            int serverRtcpPort
+            int serverRtcpPort,
+            int sequenceGaps,
+            int sequenceMissingPackets,
+            int sequenceWraps,
+            int spsBytes,
+            int ppsBytes
         ) {
             this.rtspUrl = rtspUrl;
             this.mode = mode;
@@ -295,21 +352,36 @@ public final class RtspUdpProbe {
             this.transport = transport;
             this.serverRtpPort = serverRtpPort;
             this.serverRtcpPort = serverRtcpPort;
+            this.sequenceGaps = sequenceGaps;
+            this.sequenceMissingPackets = sequenceMissingPackets;
+            this.sequenceWraps = sequenceWraps;
+            this.spsBytes = spsBytes;
+            this.ppsBytes = ppsBytes;
         }
 
         static Result ok(String rtspUrl, String mode, long totalMs, int rtpPackets, long rtpBytes, long firstPacketMs) {
-            return new Result(rtspUrl, mode, rtpPackets > 0, null, null, totalMs, rtpPackets, rtpBytes, firstPacketMs, -1, -1, -1, -1, -1, "", -1, -1);
+            return new Result(rtspUrl, mode, rtpPackets > 0, null, null, totalMs, rtpPackets, rtpBytes, firstPacketMs, -1, -1, -1, -1, -1, "", -1, -1, 0, 0, 0, 0, 0);
         }
 
         static Result error(String rtspUrl, String mode, String errorCode, String errorMessage) {
-            return new Result(rtspUrl, mode, false, errorCode, errorMessage, 0, 0, 0, -1, -1, -1, -1, -1, -1, "", -1, -1);
+            return new Result(rtspUrl, mode, false, errorCode, errorMessage, 0, 0, 0, -1, -1, -1, -1, -1, -1, "", -1, -1, 0, 0, 0, 0, 0);
         }
 
         Result withRtsp(int optionsCode, int describeCode, int setupCode, int clientRtpPort, int clientRtcpPort, RtspUdpProbeParser.Transport parsedTransport) {
             String rawTransport = parsedTransport == null ? "" : parsedTransport.raw();
             int serverRtp = parsedTransport == null ? -1 : parsedTransport.serverRtpPort();
             int serverRtcp = parsedTransport == null ? -1 : parsedTransport.serverRtcpPort();
-            return new Result(rtspUrl, mode, ok, errorCode, errorMessage, totalMs, rtpPackets, rtpBytes, firstPacketMs, optionsCode, describeCode, setupCode, clientRtpPort, clientRtcpPort, rawTransport, serverRtp, serverRtcp);
+            return new Result(rtspUrl, mode, ok, errorCode, errorMessage, totalMs, rtpPackets, rtpBytes, firstPacketMs, optionsCode, describeCode, setupCode, clientRtpPort, clientRtcpPort, rawTransport, serverRtp, serverRtcp, sequenceGaps, sequenceMissingPackets, sequenceWraps, spsBytes, ppsBytes);
+        }
+
+        Result withPacketStats(RtpSequenceStats stats) {
+            return new Result(rtspUrl, mode, ok, errorCode, errorMessage, totalMs, rtpPackets, rtpBytes, firstPacketMs, optionsCode, describeCode, setupCode, clientRtpPort, clientRtcpPort, transport, serverRtpPort, serverRtcpPort, stats.gaps(), stats.missingPackets(), stats.wraps(), spsBytes, ppsBytes);
+        }
+
+        Result withSprop(RtspUdpProbeParser.H264Sprop sprop) {
+            int sps = sprop == null || sprop.sps == null ? 0 : sprop.sps.length;
+            int pps = sprop == null || sprop.pps == null ? 0 : sprop.pps.length;
+            return new Result(rtspUrl, mode, ok, errorCode, errorMessage, totalMs, rtpPackets, rtpBytes, firstPacketMs, optionsCode, describeCode, setupCode, clientRtpPort, clientRtcpPort, transport, serverRtpPort, serverRtcpPort, sequenceGaps, sequenceMissingPackets, sequenceWraps, sps, pps);
         }
 
         public String toDisplayString() {
@@ -320,7 +392,11 @@ public final class RtspUdpProbe {
                 + " server=" + serverRtpPort + "-" + serverRtcpPort
                 + " rtp=" + rtpPackets
                 + " bytes=" + rtpBytes
-                + " first=" + firstPacketMs + "ms";
+                + " first=" + firstPacketMs + "ms"
+                + " gap=" + sequenceGaps
+                + " miss=" + sequenceMissingPackets
+                + " wrap=" + sequenceWraps
+                + " sps/pps=" + spsBytes + "/" + ppsBytes;
             if (transport != null && !transport.isBlank()) base += "\nTransport: " + transport;
             if (!ok) base += "\n结论: UDP RTP 未收到" + (errorCode == null ? "" : " (" + errorCode + ")") + (errorMessage == null ? "" : " " + errorMessage);
             else base += "\n结论: UDP RTP 可回流";

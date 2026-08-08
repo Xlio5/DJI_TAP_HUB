@@ -174,7 +174,7 @@ class TunNatVpnService : VpnService() {
         }
         isStarted = true
         isStartedForUi = true
-        isRunning = true
+        isRunning = false
 
         // 前台服务
         startForeground(NOTIFICATION_ID, buildNotification("正在启动..."))
@@ -311,11 +311,9 @@ class TunNatVpnService : VpnService() {
                     // H-02: 局部变量安全检查, 避免与 stopVpn() 置 null 竞态 NPE
                     val bridge = usbBridge ?: break
                     bridge.start(scope)
-                    AppLog.i(TAG, "USB 连接成功 (第${retries}次)")
-                    isReconnectingState.value = false
-                    // Connected 回调已设 isRunning=true, 这里兜底
-                    isRunning = true
-                    return
+                    AppLog.w(TAG, "USB 转发循环已退出 (第${retries}次), 继续重连")
+                    isReconnectingState.value = true
+                    isRunning = false
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e   // H-01: 协程取消必须传播, 避免 isRunning 被错误覆写
                 } catch (e: Exception) {

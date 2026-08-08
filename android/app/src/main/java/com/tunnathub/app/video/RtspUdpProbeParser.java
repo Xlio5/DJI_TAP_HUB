@@ -1,6 +1,7 @@
 package com.tunnathub.app.video;
 
 import java.net.URI;
+import java.util.Base64;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -63,6 +64,27 @@ public final class RtspUdpProbeParser {
         return (semi >= 0 ? session.substring(0, semi) : session).trim();
     }
 
+    public static H264Sprop h264SpropParameterSets(String response) {
+        String body = body(response);
+        Matcher m = Pattern.compile("(?im)^a=fmtp:\\d+\\s+(.+)$").matcher(body);
+        while (m.find()) {
+            Matcher sprop = Pattern.compile("(?i)(?:^|;)\\s*sprop-parameter-sets\\s*=\\s*([^;\\r\\n]+)")
+                .matcher(m.group(1));
+            if (!sprop.find()) continue;
+            String[] parts = sprop.group(1).split(",");
+            if (parts.length < 2) return null;
+            try {
+                return new H264Sprop(
+                    Base64.getDecoder().decode(parts[0].trim()),
+                    Base64.getDecoder().decode(parts[1].trim())
+                );
+            } catch (IllegalArgumentException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
     public static int statusCode(String response) {
         Matcher m = Pattern.compile("(?m)^RTSP/\\d\\.\\d\\s+(\\d{3})").matcher(response);
         return m.find() ? Integer.parseInt(m.group(1)) : -1;
@@ -114,5 +136,15 @@ public final class RtspUdpProbeParser {
         public int clientRtcpPort() { return clientRtcpPort; }
         public int serverRtpPort() { return serverRtpPort; }
         public int serverRtcpPort() { return serverRtcpPort; }
+    }
+
+    public static final class H264Sprop {
+        public final byte[] sps;
+        public final byte[] pps;
+
+        H264Sprop(byte[] sps, byte[] pps) {
+            this.sps = sps;
+            this.pps = pps;
+        }
     }
 }

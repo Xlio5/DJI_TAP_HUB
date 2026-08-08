@@ -28,6 +28,7 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
         void onUnsupportedVideo();
         void onError(String message, Throwable error);
         default void onStats(BenchmarkStats.Snapshot snapshot) {}
+        default void onWaitingKeyFrame(long elapsedMs, int restarts) {}
     }
 
     private static final class FrameSample {
@@ -43,6 +44,8 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
     private static final String TAG = "LowLatencyRtspPlayer";
     private static final int VIDEO_CODEC_H264 = 0x1C;
     private static final int VIDEO_CODEC_H265 = 0xAE;
+    private static final long KEY_FRAME_RESTART_NS = 5_000_000_000L;
+    private static final int MAX_KEY_FRAME_RESTARTS = 8;
     public static final String DEFAULT_H264_CODEC = "c2.qti.avc.decoder.low_latency";
     private static volatile String sForcedCodecName = null;
 
@@ -54,10 +57,15 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
     private volatile boolean running;
     private Thread decoderThread;
     private Client client;
+    private String currentUrl;
+    private int currentTransportType;
     private BenchmarkStats stats = new BenchmarkStats("auto");
     private int channel;
     private boolean processBoundToVpn;
     private boolean waitingKeyFrame = true;
+    private boolean restartingForKeyFrame;
+    private int keyFrameRestarts;
+    private long lastKeyFrameNoticeNs;
     private int debugVideoFrames;
     private long firstVideoFrameNs;
     private short width;
@@ -109,7 +117,12 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
     public synchronized int start(String url, int transportType) {
         if (running) stop();
         running = true;
+        currentUrl = url;
+        currentTransportType = transportType;
         waitingKeyFrame = true;
+        restartingForKeyFrame = false;
+        keyFrameRestarts = 0;
+        lastKeyFrameNoticeNs = 0;
         debugVideoFrames = 0;
         firstVideoFrameNs = 0;
         videoQueue.clear();
@@ -119,11 +132,7 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
         decoderThread.start();
 
         processBoundToVpn = VpnNetworkBinder.bindProcessToVpn(context);
-        client = new Client(context);
-        channel = client.registerCallback(this);
-        Log.i(TAG, "open rtsp: " + url);
-        return client.openStream(channel, url, transportType, 1,
-                Client.EASY_SDK_VIDEO_FRAME_FLAG, "", "");
+        return openClientLocked(url, transportType);
     }
 
     public synchronized void stop() {
@@ -155,6 +164,27 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
         if (processBoundToVpn) {
             VpnNetworkBinder.clearProcessBinding(context);
             processBoundToVpn = false;
+        }
+    }
+
+    private int openClientLocked(String url, int transportType) {
+        client = new Client(context);
+        channel = client.registerCallback(this);
+        Log.i(TAG, "open rtsp: " + url);
+        return client.openStream(channel, url, transportType, 1,
+                Client.EASY_SDK_VIDEO_FRAME_FLAG, "", "");
+    }
+
+    private void closeClientLocked() {
+        Client c = client;
+        client = null;
+        if (c == null) return;
+        c.unrigisterCallback(this);
+        c.closeStream();
+        try {
+            c.close();
+        } catch (IOException e) {
+            Log.w(TAG, "close client failed", e);
         }
     }
 
@@ -191,7 +221,10 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
             callback.onVideoSize(width, height);
         }
         boolean syncFrame = isSyncFrame(frameInfo);
-        if (waitingKeyFrame && !syncFrame) return;
+        if (waitingKeyFrame && !syncFrame) {
+            maybeRestartForMissingKeyFrame(receivedNs);
+            return;
+        }
         if (waitingKeyFrame) {
             Log.i(TAG, "first key frame after "
                     + Math.round((receivedNs - firstVideoFrameNs) / 1_000_000.0)
@@ -199,7 +232,44 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
                     + ", len=" + frameInfo.length);
         }
         waitingKeyFrame = false;
+        restartingForKeyFrame = false;
         offerLatest(new FrameSample(frameInfo, receivedNs));
+    }
+
+    private void maybeRestartForMissingKeyFrame(long nowNs) {
+        long firstNs = firstVideoFrameNs;
+        if (firstNs == 0) return;
+        long elapsedNs = nowNs - firstNs;
+        if (lastKeyFrameNoticeNs == 0 || nowNs - lastKeyFrameNoticeNs >= 1_000_000_000L) {
+            lastKeyFrameNoticeNs = nowNs;
+            callback.onWaitingKeyFrame(elapsedNs / 1_000_000L, keyFrameRestarts);
+        }
+        if (elapsedNs < KEY_FRAME_RESTART_NS || restartingForKeyFrame
+                || keyFrameRestarts >= MAX_KEY_FRAME_RESTARTS) {
+            return;
+        }
+        restartingForKeyFrame = true;
+        final int attempt = keyFrameRestarts + 1;
+        Log.w(TAG, "no key frame for " + (elapsedNs / 1_000_000L)
+                + "ms, restart rtsp session #" + attempt);
+        new Thread(() -> restartRtspForKeyFrame(attempt), "RTSP_KEY_RESTART").start();
+    }
+
+    private void restartRtspForKeyFrame(int attempt) {
+        synchronized (this) {
+            if (!running || !waitingKeyFrame) {
+                restartingForKeyFrame = false;
+                return;
+            }
+            keyFrameRestarts = attempt;
+            firstVideoFrameNs = 0;
+            debugVideoFrames = 0;
+            lastKeyFrameNoticeNs = 0;
+            videoQueue.clear();
+            closeClientLocked();
+            openClientLocked(currentUrl, currentTransportType);
+            restartingForKeyFrame = false;
+        }
     }
 
     @Override

@@ -65,6 +65,7 @@ class UsbBridge(
 
     /** 断开通知去重标志: 双协程任一退出即置 isConnected=false + 触发 Disconnected, 只通知一次 */
     private val disconnectedNotified = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val activeNotified = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private val bufferPool = ConcurrentLinkedQueue<ByteArray>()
 
@@ -106,6 +107,7 @@ class UsbBridge(
         grantedDevices[deviceKey] = true
         // 新连接周期: 重置断开通知标志 (同实例重连时)
         disconnectedNotified.set(false)
+        activeNotified.set(false)
         AppLog.i(TAG, "USB openDevice 成功")
 
         // 遍历所有接口找 Bulk 端点
@@ -125,7 +127,6 @@ class UsbBridge(
         activateTty()
 
         isConnected = true
-        onLinkStateChange?.invoke(LinkState.Connected)
         AppLog.i(TAG, "双协程启动，开始 TUN↔USB 转发")
 
         val tunInput = FileInputStream(tunFd.fileDescriptor)
@@ -213,8 +214,15 @@ class UsbBridge(
     private fun notifyDisconnected(reason: String) {
         if (disconnectedNotified.compareAndSet(false, true)) {
             isConnected = false
+            activeNotified.set(false)
             onLinkStateChange?.invoke(LinkState.Disconnected)
             AppLog.w(TAG, "USB Bridge 已断开 ($reason)")
+        }
+    }
+
+    private fun notifyActive() {
+        if (activeNotified.compareAndSet(false, true)) {
+            onLinkStateChange?.invoke(LinkState.Connected)
         }
     }
 
@@ -264,6 +272,7 @@ class UsbBridge(
                     continue
                 }
                 consecutiveFails = 0
+                notifyActive()
             } catch (e: Exception) {
                 if (coroutineContext.isActive) Log.e(TAG, "TUN→USB 异常", e)
                 break
@@ -293,6 +302,7 @@ class UsbBridge(
                     continue
                 }
                 if (n == 0) continue
+                notifyActive()
 
                 when (val result = FrameCodec.unpack(buf, n)) {
                     is FrameCodec.UnpackResult.Data -> tunOutput.write(result.payload)

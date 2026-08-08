@@ -56,6 +56,7 @@ import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
 import com.tunnathub.app.video.Media3RtspProbePlayer
 import com.tunnathub.app.video.RtspPlaybackEngine
+import com.tunnathub.app.video.RtspKeyFrameRequester
 import com.tunnathub.app.video.RtspTransportPolicy
 import com.tunnathub.app.video.RtspUdpProbe
 import kotlinx.coroutines.*
@@ -180,7 +181,6 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        if (usbDevice != null) startAuthFlow()
     }
 
     override fun onDestroy() {
@@ -345,6 +345,11 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var codecBenchmarkText by remember { mutableStateOf("") }
     var rtspUdpProbeRunning by remember { mutableStateOf(false) }
     var rtspUdpProbeText by remember { mutableStateOf("") }
+    var rtcpFeedbackText by remember { mutableStateOf("") }
+    var rtcpFeedbackRunning by remember { mutableStateOf(false) }
+    var lastRtcpFeedbackAt by remember { mutableLongStateOf(0L) }
+    var autoPlayInFlight by remember { mutableStateOf(false) }
+    var lastAutoPlayAt by remember { mutableLongStateOf(0L) }
 
     // ── HTTP POST ──
     // C-02: 用 remember 的 apiScope (随 composition 取消), 避免每次调用创建孤儿协程
@@ -549,18 +554,47 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     scheduleAutoReconnectFn()
                 }
             }
+
+            override fun onWaitingKeyFrame(elapsedMs: Long, restarts: Int) {
+                mainHandler.post {
+                    statusText = "Waiting IDR ${elapsedMs}ms, restart=$restarts"
+                    isPlaying = true
+                    val now = System.currentTimeMillis()
+                    if (!rtcpFeedbackRunning && elapsedMs >= 1000 && now - lastRtcpFeedbackAt >= 2000) {
+                        lastRtcpFeedbackAt = now
+                        rtcpFeedbackRunning = true
+                        val url = rtspUrl
+                        apiScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            val result = RtspKeyFrameRequester.request(url, 1200)
+                            AppLog.i("RtspKeyFrame", result.toDisplayString())
+                            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                rtcpFeedbackText = result.toDisplayString()
+                                rtcpFeedbackRunning = false
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
     // ── 自动播放: VPN 连上且未在播放时, 自动播放保存的 RTSP ──
     LaunchedEffect(vpnRunning) {
         if (vpnRunning && !isPlaying && rtspUrl.isNotBlank()) {
+            val now = System.currentTimeMillis()
+            if (autoPlayInFlight || now - lastAutoPlayAt < 2_000) return@LaunchedEffect
+            autoPlayInFlight = true
+            lastAutoPlayAt = now
             AppLog.i("Player", "VPN 已连接, 自动播放")
             autoReconnectActive = true
             // 等 surface 就绪后播放
             kotlinx.coroutines.delay(1000)
-            if (vpnRunning && !isPlaying && surfaceViewRef != null) {
-                startPlaybackFn()
+            try {
+                if (vpnRunning && !isPlaying && surfaceViewRef != null) {
+                    startPlaybackFn()
+                }
+            } finally {
+                autoPlayInFlight = false
             }
         }
     }
@@ -747,6 +781,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         if (autoReconnectCount >= MAX_AUTO_RECONNECT) {      // 达到上限 → 停止
             statusText = "自动重连已达上限, 请手动重试"
             AppLog.w("Player", "自动重连达上限 ($autoReconnectCount)")
+            playerHolder.getAndSet(null)?.stop()
+            playerRef = null
+            isPlaying = false
             return
         }
         autoReconnectCount++
@@ -1500,6 +1537,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     }
                                 }
                                 if (rtspUdpProbeText.isNotEmpty()) Text(rtspUdpProbeText, fontSize = 9.sp, color = Color(0xFF38BDF8), lineHeight = 13.sp, modifier = Modifier.padding(top = 2.dp))
+                                if (rtcpFeedbackText.isNotEmpty()) Text(rtcpFeedbackText, fontSize = 9.sp, color = Color(0xFFFBBF24), lineHeight = 13.sp, modifier = Modifier.padding(top = 2.dp))
 
                                 Spacer(Modifier.height(8.dp))
                                 var debugExpanded by remember { mutableStateOf(true) }
