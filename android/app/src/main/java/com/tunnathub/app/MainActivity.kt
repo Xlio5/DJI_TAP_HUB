@@ -15,7 +15,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.ResultReceiver
 import android.util.Log
 import android.view.SurfaceView
 import android.widget.FrameLayout
@@ -57,10 +56,10 @@ import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
 import kotlinx.coroutines.*
 import org.easydarwin.video.Client
-import org.easydarwin.video.EasyPlayerClient
+import org.easydarwin.video.LowLatencyRtspPlayer
 
 /** Activity 与 Compose 共享的播放器引用，用于 onDestroy 时释放 */
-private val playerHolder = java.util.concurrent.atomic.AtomicReference<EasyPlayerClient?>(null)
+private val playerHolder = java.util.concurrent.atomic.AtomicReference<LowLatencyRtspPlayer?>(null)
 
 class MainActivity : ComponentActivity() {
     companion object {
@@ -270,10 +269,10 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var statusText by remember { mutableStateOf("") }
     var resolutionText by remember { mutableStateOf("") }
     var surfaceViewRef by remember { mutableStateOf<SurfaceView?>(null) }
-    var playerRef by remember { mutableStateOf<EasyPlayerClient?>(null) }
+    var playerRef by remember { mutableStateOf<LowLatencyRtspPlayer?>(null) }
     var autoReconnectCount by remember { mutableStateOf(0) }   // 自动重连计数
     var autoReconnectActive by remember { mutableStateOf(false) } // 自动重连开关(手动停止后关闭)
-    // 函数引用 (打破 receiver→schedule→start→receiver 循环引用, 定义后赋值)
+    // 函数引用 (打破播放回调→schedule→start→播放回调循环引用, 定义后赋值)
     lateinit var startPlaybackFn: () -> Unit
     lateinit var scheduleAutoReconnectFn: () -> Unit
 
@@ -322,7 +321,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
 
     // ── 解码器选择 ──
     val savedCodec = remember { prefs.getString("forced_codec", "auto") ?: "auto" }
-    LaunchedEffect(Unit) { EasyPlayerClient.setForcedCodec(savedCodec) }
+    LaunchedEffect(Unit) { LowLatencyRtspPlayer.setForcedCodec(savedCodec) }
 
     // 延迟测试
     var latencyText by remember { mutableStateOf("") }
@@ -489,24 +488,46 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         }
     }
 
-    val receiver = remember {
-        object : ResultReceiver(Handler(ctx.mainLooper)) {
-            override fun onReceiveResult(code: Int, data: Bundle?) {
-                when (code) {
-                    EasyPlayerClient.RESULT_VIDEO_DISPLAYED -> {
-                        val cn = EasyPlayerClient.getForcedCodec()
-                        val ts = if (cn != "auto") cn.split(".").last().take(25)
-                            else if ((data?.getInt(EasyPlayerClient.KEY_VIDEO_DECODE_TYPE, -1) ?: -1) == 1) "MediaCodec"
-                            else "SW"
-                        statusText = "播放中 [$ts]"; isPlaying = true
-                        autoReconnectCount = 0  // 播放成功 → 重置自动重连计数
-                        AppLog.i("Player", "解码器: $ts")
-                    }
-                    EasyPlayerClient.RESULT_VIDEO_SIZE -> {
-                        resolutionText = "${data?.getInt(EasyPlayerClient.EXTRA_VIDEO_WIDTH, 0)}x${data?.getInt(EasyPlayerClient.EXTRA_VIDEO_HEIGHT, 0)}"
-                    }
-                    EasyPlayerClient.RESULT_TIMEOUT -> { statusText = "连接超时"; isPlaying = false; scheduleAutoReconnectFn() }
-                    EasyPlayerClient.RESULT_UNSUPPORTED_VIDEO -> { statusText = "编码不支持"; isPlaying = false; scheduleAutoReconnectFn() }
+    val playerCallback = remember {
+        object : LowLatencyRtspPlayer.Callback {
+            private val mainHandler = Handler(ctx.mainLooper)
+
+            override fun onVideoDisplayed(codecName: String) {
+                mainHandler.post {
+                    val ts = codecName.split(".").last().take(25)
+                    statusText = "播放中 [$ts]"
+                    isPlaying = true
+                    autoReconnectCount = 0
+                    AppLog.i("Player", "低延迟硬解: $codecName")
+                }
+            }
+
+            override fun onVideoSize(width: Int, height: Int) {
+                mainHandler.post { resolutionText = "${width}x${height}" }
+            }
+
+            override fun onTimeout() {
+                mainHandler.post {
+                    statusText = "连接超时"
+                    isPlaying = false
+                    scheduleAutoReconnectFn()
+                }
+            }
+
+            override fun onUnsupportedVideo() {
+                mainHandler.post {
+                    statusText = "编码不支持"
+                    isPlaying = false
+                    scheduleAutoReconnectFn()
+                }
+            }
+
+            override fun onError(message: String?, error: Throwable?) {
+                mainHandler.post {
+                    statusText = "播放错误"
+                    isPlaying = false
+                    AppLog.e("Player", "低延迟播放错误: ${message ?: error?.javaClass?.simpleName ?: "unknown"}")
+                    scheduleAutoReconnectFn()
                 }
             }
         }
@@ -535,7 +556,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         }
     }
 
-    /** 启动 RTSP 播放 (receiver/autoSyncSubnet 已定义, 无前向引用) */
+    /** 启动 RTSP 播放 (playerCallback/autoSyncSubnet 已定义, 无前向引用) */
     fun doStartPlayback() {
         val sv = surfaceViewRef ?: return
         // H2: 先释放旧播放器, 避免自动重连时 native 解码器泄漏。
@@ -545,9 +566,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         try {
             prefs.edit().putString("rtsp_url", rtspUrl).apply()
             autoSyncSubnet(rtspUrl)
-            val client = EasyPlayerClient(ctx, sv.holder.surface, receiver)
-            client.start(rtspUrl, Client.TRANSTYPE_TCP, 1,
-                Client.EASY_SDK_VIDEO_FRAME_FLAG or Client.EASY_SDK_AUDIO_FRAME_FLAG, "", "", null)
+            val client = LowLatencyRtspPlayer(ctx, sv.holder.surface, playerCallback)
+            client.start(rtspUrl, Client.TRANSTYPE_TCP)
             playerRef = client; isPlaying = true; statusText = "连接中..."
             playerHolder.set(client)
         } catch (e: Exception) { Log.e("TunNatHub", "播放失败", e); statusText = "播放失败" }
@@ -1210,14 +1230,14 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
 
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("解码器")
-                                var selectedCodec by remember { mutableStateOf(EasyPlayerClient.getForcedCodec()) }
+                                var selectedCodec by remember { mutableStateOf(LowLatencyRtspPlayer.getForcedCodec()) }
                                 var codecList by remember { mutableStateOf(listOf("auto")) }
                                 var codecDropdown by remember { mutableStateOf(false) }
                                 var codecSaved by remember { mutableStateOf(false) }
                                 // H-5: JNI 原生调用放 IO 线程, 避免阻塞主线程
                                 LaunchedEffect(Unit) {
                                     val decoders = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                        try { EasyPlayerClient.listAvailableDecoders() } catch (_: Exception) { emptyList() }
+                                        try { LowLatencyRtspPlayer.listAvailableDecoders() } catch (_: Exception) { emptyList() }
                                     }
                                     codecList = listOf("auto") + decoders
                                 }
@@ -1232,7 +1252,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                         }
                                     }
                                     Spacer(Modifier.width(6.dp))
-                                    Button(onClick = { EasyPlayerClient.setForcedCodec(selectedCodec); codecSaved = true; prefs.edit().putString("forced_codec", selectedCodec).apply() },
+                                    Button(onClick = { LowLatencyRtspPlayer.setForcedCodec(selectedCodec); codecSaved = true; prefs.edit().putString("forced_codec", selectedCodec).apply() },
                                         modifier = Modifier.height(30.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))) { Text("应用", fontSize = 10.sp) }
                                 }
                                 if (codecSaved) Text("解码器已切换, 重启播放生效", fontSize = 9.sp, color = Color(0xFFF59E0B), modifier = Modifier.padding(top = 2.dp))
