@@ -681,7 +681,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     }
                     val testPlayer = LowLatencyRtspPlayer(ctx, sv.holder.surface, callback)
                     try {
-                        testPlayer.start(url, Client.TRANSTYPE_TCP)
+                        testPlayer.start(url, RtspTransportPolicy.lowLatencyTransportType())
                         val displayed = firstFrame.await(4, java.util.concurrent.TimeUnit.SECONDS)
                         if (displayed && errorRef.get() == null) {
                             Thread.sleep(60_000)
