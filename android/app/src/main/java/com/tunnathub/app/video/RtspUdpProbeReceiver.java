@@ -37,6 +37,6 @@ public final class RtspUdpProbeReceiver extends BroadcastReceiver {
         if (extra != null && !extra.isBlank()) return extra;
         SharedPreferences prefs = context.getSharedPreferences("tun_nat_hub", Context.MODE_PRIVATE);
         String saved = prefs.getString("rtsp_url", null);
-        return saved == null || saved.isBlank() ? "rtsp://192.168.88.100:554/stream1" : saved;
+        return saved == null || saved.isBlank() ? "rtsp://192.168.144.31:554/stream1" : saved;
     }
 }

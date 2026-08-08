@@ -56,6 +56,7 @@ import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
 import com.tunnathub.app.video.Media3RtspProbePlayer
 import com.tunnathub.app.video.RtspPlaybackEngine
+import com.tunnathub.app.video.RtspTransportPolicy
 import com.tunnathub.app.video.RtspUdpProbe
 import kotlinx.coroutines.*
 import org.easydarwin.video.BenchmarkStats
@@ -267,8 +268,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     // C-02: 协程 scope 随 composition 取消 — apiPost 使用, 避免 Activity 销毁后孤儿协程泄漏
     val apiScope = androidx.compose.runtime.rememberCoroutineScope()
 
-    val savedUrl = prefs.getString("rtsp_url", "rtsp://192.168.88.100:554/stream1")
-        ?: "rtsp://192.168.88.100:554/stream1"
+    val savedUrl = prefs.getString("rtsp_url", "rtsp://192.168.144.31:554/stream1")
+        ?: "rtsp://192.168.144.31:554/stream1"
     var rtspUrl by remember { mutableStateOf(savedUrl) }
     var isPlaying by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("") }
@@ -608,7 +609,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 media3
             } else {
                 val client = LowLatencyRtspPlayer(ctx, sv.holder.surface, playerCallback)
-                client.start(rtspUrl, Client.TRANSTYPE_TCP)
+                client.start(rtspUrl, RtspTransportPolicy.lowLatencyTransportType())
                 client
             }
             playerRef = session; isPlaying = true; statusText = "连接中..."

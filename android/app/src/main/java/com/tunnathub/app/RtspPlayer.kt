@@ -28,7 +28,7 @@ import androidx.compose.ui.unit.dp
 fun RtspPlayerPanel(modifier: Modifier = Modifier) {
     val context = LocalContext.current
 
-    var rtspUrl by remember { mutableStateOf("rtsp://192.168.88.100:554/stream1") }
+    var rtspUrl by remember { mutableStateOf("rtsp://192.168.144.31:554/stream1") }
 
     Column(modifier = modifier.fillMaxWidth()) {
         Text(

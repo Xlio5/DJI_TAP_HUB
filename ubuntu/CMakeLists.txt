@@ -51,6 +51,14 @@ target_link_libraries(web_server PRIVATE
     Threads::Threads
 )
 
+add_executable(rtsp_nat_helper_test
+    tests/rtsp_nat_helper_test.cpp
+)
+
+target_include_directories(rtsp_nat_helper_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
 install(TARGETS usb_tund web_server DESTINATION /usr/local/bin)
 
 # DJI RC 双路串口解码守护进程

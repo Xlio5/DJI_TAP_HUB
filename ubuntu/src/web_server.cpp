@@ -32,6 +32,8 @@
 #include <unistd.h>
 #include <vector>
 
+#include "rtsp_nat_helper.h"
+
 extern "C" {
 #include "rc_map.h"
 }
@@ -44,6 +46,7 @@ constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
 constexpr int    MAX_CFG    = 32768;
+constexpr const char* RTSP_RTP_TUN_CLIENT = "10.0.0.2";
 const char*      CFG_DEV    = "/dev/mtdblock0";
 constexpr int    CFG_OFFSET = 0xFD000;  // uboot 分区尾部空闲区(12KB, 距SPL 1012KB)
 constexpr int    CFG_MAX    = 0x3000;   // 12KB
@@ -180,7 +183,7 @@ struct Camera {
 };
 
 struct Config {
-    std::string rtspUrl = "rtsp://192.168.88.100:554/stream1";
+    std::string rtspUrl = "rtsp://192.168.144.31:554/stream1";
     std::string lanSubnet = "192.168.88.0/24";
     std::string tunSubnet = "10.0.0.0/24";
     std::vector<ForwardRule> forwards;
@@ -457,6 +460,22 @@ static void saveConfig(const Config& cfg) {
 
 static std::string g_lanIface = "eth0";
 
+static std::string detectLanIp() {
+    std::string out = exec({"ip", "addr", "show", g_lanIface});
+    std::istringstream iss(out);
+    std::string line;
+    while (std::getline(iss, line)) {
+        auto p = line.find("inet ");
+        if (p == std::string::npos) continue;
+        std::istringstream ls(line.substr(p + 5));
+        std::string cidr;
+        ls >> cidr;
+        auto slash = cidr.find('/');
+        if (slash != std::string::npos) return cidr.substr(0, slash);
+    }
+    return "";
+}
+
 static void applyForward(const ForwardRule& r) {
     std::string port = std::to_string(r.port);
     std::string lan = g_lanIface;
@@ -475,6 +494,47 @@ static void applyForward(const ForwardRule& r) {
 
 static void applyAllForwards(const Config& cfg) {
     for (auto& r : cfg.forwards) applyForward(r);
+}
+
+static std::vector<std::string> rtspCameraHosts(const Config& cfg) {
+    std::vector<std::string> hosts;
+    addUniqueIpv4Host(hosts, rtspHostFromUrl(cfg.rtspUrl));
+    for (const auto& c : cfg.cameras) {
+        addUniqueIpv4Host(hosts, rtspHostFromUrl(c.url));
+    }
+    return hosts;
+}
+
+static void applyRtspUdpRtpForward(const Config& cfg) {
+    std::string lanIp = detectLanIp();
+    if (lanIp.empty()) {
+        std::cout << "[rtsp-udp] skip: no LAN ip on " << g_lanIface << std::endl;
+        return;
+    }
+
+    for (const auto& host : rtspCameraHosts(cfg)) {
+        if (execRet({"iptables", "-t", "nat", "-C", "PREROUTING",
+                     "-i", g_lanIface, "-p", "udp",
+                     "-s", host, "-d", lanIp, "--dport", "10000:65535",
+                     "-j", "DNAT", "--to-destination", RTSP_RTP_TUN_CLIENT}) != 0) {
+            execRet({"iptables", "-t", "nat", "-A", "PREROUTING",
+                     "-i", g_lanIface, "-p", "udp",
+                     "-s", host, "-d", lanIp, "--dport", "10000:65535",
+                     "-j", "DNAT", "--to-destination", RTSP_RTP_TUN_CLIENT});
+        }
+
+        if (execRet({"iptables", "-C", "FORWARD",
+                     "-i", g_lanIface, "-o", "tun_hub", "-p", "udp",
+                     "-s", host, "-d", RTSP_RTP_TUN_CLIENT, "--dport", "10000:65535",
+                     "-j", "ACCEPT"}) != 0) {
+            execRet({"iptables", "-A", "FORWARD",
+                     "-i", g_lanIface, "-o", "tun_hub", "-p", "udp",
+                     "-s", host, "-d", RTSP_RTP_TUN_CLIENT, "--dport", "10000:65535",
+                     "-j", "ACCEPT"});
+        }
+        std::cout << "[rtsp-udp] " << host << " -> " << RTSP_RTP_TUN_CLIENT
+                  << " via " << g_lanIface << " dport 10000:65535" << std::endl;
+    }
 }
 
 static bool addForward(Config& cfg, const std::string& proto, int port, const std::string& dest) {
@@ -1160,6 +1220,7 @@ static Response handleRequest(const Request& req) {
             auto lan = jsonStr(req.body, "lan_subnet");
             if (!lan.empty()) cfg.lanSubnet = lan;
             saveConfig(cfg);
+            applyRtspUdpRtpForward(cfg);
             JsonObj obj;
             obj.pair("ok", JsonValue::boolean(true));
             resp.body = obj.done();
@@ -1193,18 +1254,21 @@ static Response handleRequest(const Request& req) {
             if (!c.url.empty()) {
                 cfg.cameras.push_back(c);
                 saveConfig(cfg);
+                applyRtspUdpRtpForward(cfg);
             }
             JsonObj obj;
             obj.pair("ok", JsonValue::boolean(!c.url.empty()));
             resp.body = obj.done();
         } else if (p == "/api/camera/del") {
             int idx = jsonInt(req.body, "index");
-            if (idx >= 0 && idx < (int)cfg.cameras.size()) {
+            bool ok = idx >= 0 && idx < (int)cfg.cameras.size();
+            if (ok) {
                 cfg.cameras.erase(cfg.cameras.begin() + idx);
                 saveConfig(cfg);
+                applyRtspUdpRtpForward(cfg);
             }
             JsonObj obj;
-            obj.pair("ok", JsonValue::boolean(idx >= 0 && idx < (int)cfg.cameras.size()));
+            obj.pair("ok", JsonValue::boolean(ok));
             resp.body = obj.done();
         } else if (p == "/api/firmware/upload") {
             // Handled in main loop before parseRequest
@@ -1427,6 +1491,7 @@ int main() {
     // H-3: 只在配置实际变化时写 SPI, 避免每次启动无条件擦写 NOR flash (磨损寿命)
     if (cfgChanged) saveConfig(cfg);
     applyAllForwards(cfg);
+    applyRtspUdpRtpForward(cfg);
 
     // 创建监听 socket
     int srv = socket(AF_INET, SOCK_STREAM, 0);

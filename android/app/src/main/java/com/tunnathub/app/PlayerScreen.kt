@@ -35,7 +35,7 @@ fun PlayerScreen(modifier: Modifier = Modifier) {
 
     // 持久化 RTSP 地址（SharedPreferences）
     val prefs = ctx.getSharedPreferences("tun_nat_hub", Context.MODE_PRIVATE)
-    val savedUrl = prefs.getString("rtsp_url", "rtsp://192.168.88.100:554/stream1") ?: "rtsp://192.168.88.100:554/stream1"
+    val savedUrl = prefs.getString("rtsp_url", "rtsp://192.168.144.31:554/stream1") ?: "rtsp://192.168.144.31:554/stream1"
     var rtspUrl by remember { mutableStateOf(savedUrl) }
     var isPlaying by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("") }
