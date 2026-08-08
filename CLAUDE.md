@@ -34,6 +34,23 @@
 4. 推荐的下一个方案（只给一个，不要给选项列表）
 等老大确认后再动手。
 
+### 7. 每次编译变更必须同步更新版本号
+**只要编译产物（固件/App）内容发生变化，版本号必须同步递增，禁止编译出"内容已变、版本号未变"的产物。**
+
+版本号定义位置（改这里全局生效）：
+| 产物 | 版本定义位置 | 说明 |
+|---|---|---|
+| **V3s 固件** | `ubuntu/src/web_server.cpp:42` `#define VERSION "X.Y.Z"` | 经 `/api/heartbeat`、`/api/version` 上报，App 界面显示 `F版本号` |
+| **Android App** | `android/app/build.gradle.kts:15-16` `versionCode` / `versionName` | `versionName` 用户可见，`versionCode` 必须同步递增（安装升级判定）|
+
+执行要求：
+1. **每次编译**前，若源码/产物有功能改动，先确认版本号是否需要递增；修改版本号后再编译
+2. **固件版本**格式 `X.Y.Z`（如 `1.4.6`），**App 版本**格式 `X.Y.Z` + `versionCode` 整数递增
+3. 版本号变更必须写进 **git commit message**（如 `chore(ubuntu): 固件版本 1.4.5 → 1.4.6`）
+4. **文档同步**：`docs/SESSION_HANDOFF.md` 等引用版本号的地方必须同步更新，禁止文档与代码版本不一致
+5. 产物 md5 表（如 SESSION_HANDOFF 第十五节）须随每次编译更新，标明对应的版本号
+6. 版本号递增原则：修复 bug → patch（1.4.5→1.4.6），加功能 → minor（1.4→1.5），大改 → major
+
 ---
 
 ## 项目结构

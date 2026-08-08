@@ -39,7 +39,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.4.5"   // 固件版本 — 改这里全局生效
+#define VERSION     "1.5.3"   // 固件版本 — 改这里全局生效
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
@@ -692,6 +692,13 @@ async function ref(){
   document.getElementById("cam-list").innerHTML=cl;
   document.getElementById("net-info").textContent=await t(A+"/network");
   document.getElementById("ipt-info").textContent=await t(A+"/iptables");
+  let sy=await j(A+"/system");
+  document.getElementById("sys-info").textContent=
+    `运行时长: ${sy.uptime}\n`+
+    `usb_tund 守护进程: ${sy.daemon_active?'运行中':'停止'}\n`+
+    `web_server: ${sy.web_active?'运行中':'停止'}\n`+
+    `内存: ${sy.mem}\n`+
+    `磁盘: ${sy.disk}`;
 }
 async function addFwd(){
   let r=await fetch(A+"/forward/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({proto:document.getElementById("fw-proto").value,port:parseInt(document.getElementById("fw-port").value),dest:document.getElementById("fw-dest").value})});
@@ -895,12 +902,34 @@ static std::string apiSystem() {
     std::istringstream ms(mem);
     std::getline(ms, memLine); // skip header
     std::getline(ms, memLine); // Mem:
+    // 精简: "Mem: 61004 13456 40512 118 47008 56204" → "已用 13M / 共 61M"
+    {
+        std::stringstream ss(memLine);
+        std::string label; long total = 0, used = 0;
+        ss >> label >> total >> used;
+        if (total > 0) {
+            std::stringstream fmt;
+            fmt << "已用 " << used << "M / 共 " << total << "M";
+            memLine = fmt.str();
+        }
+    }
 
     auto disk = exec({"df", "-h", "/"});
     std::string diskLine;
     std::istringstream ds(disk);
     std::getline(ds, diskLine); // skip header
     std::getline(ds, diskLine);
+    // 精简: "/dev/root 3.7M 3.4M 291K 93% /" → "3.4M 已用 / 3.7M 共 (93%)"
+    {
+        std::stringstream ss(diskLine);
+        std::string dev, size, used, avail, pct, mnt;
+        ss >> dev >> size >> used >> avail >> pct >> mnt;
+        if (!size.empty()) {
+            std::stringstream fmt;
+            fmt << used << " 已用 / " << size << " 共 (" << pct << ")";
+            diskLine = fmt.str();
+        }
+    }
 
     JsonObj obj;
     obj.pair("uptime", JsonValue::string(uptime));
@@ -1388,8 +1417,9 @@ int main() {
 
             c.lastActive_ms = now_ms();
 
-            // 首个请求: peek 检测固件上传 (poll 保证有数据才 peek, 不阻塞)
-            if (!c.firstHandled) {
+            // 每个请求都 peek 检测固件上传 (peek 不消费数据, 普通请求无影响)
+            // 修复: 浏览器 fetch 复用连接时 firstHandled 已为 true, 旧逻辑只在首请求拦截导致上传失败
+            {
                 char peek[2048] = {};
                 int peekLen = ::recv(c.fd, peek, sizeof(peek) - 1, MSG_PEEK);
                 if (peekLen > 0) {
