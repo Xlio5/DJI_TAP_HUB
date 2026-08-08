@@ -9,6 +9,8 @@ import android.os.Build;
 import android.util.Log;
 import android.view.Surface;
 
+import com.tunnathub.app.video.VpnNetworkBinder;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
@@ -54,7 +56,10 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
     private Client client;
     private BenchmarkStats stats = new BenchmarkStats("auto");
     private int channel;
+    private boolean processBoundToVpn;
     private boolean waitingKeyFrame = true;
+    private int debugVideoFrames;
+    private long firstVideoFrameNs;
     private short width;
     private short height;
 
@@ -105,12 +110,15 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
         if (running) stop();
         running = true;
         waitingKeyFrame = true;
+        debugVideoFrames = 0;
+        firstVideoFrameNs = 0;
         videoQueue.clear();
         stats = new BenchmarkStats(getForcedCodec());
         stats.markStarted(System.nanoTime());
         decoderThread = new Thread(this::decodeLoop, "LOW_LATENCY_DECODER");
         decoderThread.start();
 
+        processBoundToVpn = VpnNetworkBinder.bindProcessToVpn(context);
         client = new Client(context);
         channel = client.registerCallback(this);
         Log.i(TAG, "open rtsp: " + url);
@@ -144,6 +152,10 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
                 Log.w(TAG, "close client failed", e);
             }
         }
+        if (processBoundToVpn) {
+            VpnNetworkBinder.clearProcessBinding(context);
+            processBoundToVpn = false;
+        }
     }
 
     @Override
@@ -160,13 +172,32 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
         }
         if (frameInfo.width == 0 || frameInfo.height == 0) return;
         long receivedNs = System.nanoTime();
+        if (firstVideoFrameNs == 0) firstVideoFrameNs = receivedNs;
+        debugVideoFrames++;
+        if (debugVideoFrames <= 12 || debugVideoFrames % 300 == 0) {
+            Log.i(TAG, "video frame #" + debugVideoFrames
+                    + " codec=" + frameInfo.codec
+                    + " type=" + frameInfo.type
+                    + " size=" + frameInfo.width + "x" + frameInfo.height
+                    + " len=" + frameInfo.length
+                    + " nal=" + describeNalTypes(frameInfo)
+                    + " head=" + hexPrefix(frameInfo.buffer, frameInfo.offset, frameInfo.length)
+                    + " waitingKey=" + waitingKeyFrame);
+        }
         stats.recordFrameReceived(receivedNs);
         if (frameInfo.width != width || frameInfo.height != height) {
             width = frameInfo.width;
             height = frameInfo.height;
             callback.onVideoSize(width, height);
         }
-        if (waitingKeyFrame && frameInfo.type != 1) return;
+        boolean syncFrame = isSyncFrame(frameInfo);
+        if (waitingKeyFrame && !syncFrame) return;
+        if (waitingKeyFrame) {
+            Log.i(TAG, "first key frame after "
+                    + Math.round((receivedNs - firstVideoFrameNs) / 1_000_000.0)
+                    + "ms, type=" + frameInfo.type
+                    + ", len=" + frameInfo.length);
+        }
         waitingKeyFrame = false;
         offerLatest(new FrameSample(frameInfo, receivedNs));
     }
@@ -370,6 +401,14 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
     private static byte[] findNal(byte[] data, int offset, int length, int type) {
         int end = offset + length;
         int start = findStartCode(data, offset, end);
+        if (start < 0) {
+            if (offset < end && (data[offset] & 0x1f) == type) {
+                byte[] out = new byte[length];
+                System.arraycopy(data, offset, out, 0, out.length);
+                return out;
+            }
+            return null;
+        }
         while (start >= 0) {
             int header = start + startCodeLength(data, start);
             int next = findStartCode(data, header + 1, end);
@@ -382,6 +421,92 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
             start = next;
         }
         return null;
+    }
+
+    private static String describeNalTypes(Client.FrameInfo frame) {
+        if (frame.buffer == null || frame.length <= 0) return "-";
+        if (frame.codec == VIDEO_CODEC_H264) {
+            return describeH264NalTypes(frame.buffer, frame.offset, frame.length);
+        }
+        if (frame.codec == VIDEO_CODEC_H265) {
+            return describeHevcNalTypes(frame.buffer, frame.offset, frame.length);
+        }
+        return "-";
+    }
+
+    private static String describeH264NalTypes(byte[] data, int offset, int length) {
+        int end = offset + length;
+        int start = findStartCode(data, offset, end);
+        if (start < 0) return offset < end ? String.valueOf(data[offset] & 0x1f) : "-";
+        StringBuilder sb = new StringBuilder();
+        while (start >= 0 && sb.length() < 24) {
+            int header = start + startCodeLength(data, start);
+            if (header < end) {
+                if (sb.length() > 0) sb.append(',');
+                sb.append(data[header] & 0x1f);
+            }
+            start = findStartCode(data, header + 1, end);
+        }
+        return sb.length() == 0 ? "-" : sb.toString();
+    }
+
+    private static String describeHevcNalTypes(byte[] data, int offset, int length) {
+        int end = offset + length;
+        int start = findStartCode(data, offset, end);
+        if (start < 0) return offset + 1 < end ? String.valueOf((data[offset] >> 1) & 0x3f) : "-";
+        StringBuilder sb = new StringBuilder();
+        while (start >= 0 && sb.length() < 24) {
+            int header = start + startCodeLength(data, start);
+            if (header + 1 < end) {
+                if (sb.length() > 0) sb.append(',');
+                sb.append((data[header] >> 1) & 0x3f);
+            }
+            start = findStartCode(data, header + 2, end);
+        }
+        return sb.length() == 0 ? "-" : sb.toString();
+    }
+
+    private static String hexPrefix(byte[] data, int offset, int length) {
+        if (data == null || length <= 0) return "-";
+        int count = Math.min(length, 12);
+        StringBuilder sb = new StringBuilder(count * 3);
+        for (int i = 0; i < count; i++) {
+            if (i > 0) sb.append(' ');
+            int v = data[offset + i] & 0xff;
+            if (v < 16) sb.append('0');
+            sb.append(Integer.toHexString(v));
+        }
+        return sb.toString();
+    }
+
+    static boolean isSyncFrame(Client.FrameInfo frame) {
+        if (frame.type == 1) return true;
+        if (frame.buffer == null || frame.length <= 0) return false;
+        if (frame.codec == VIDEO_CODEC_H264) {
+            return findNal(frame.buffer, frame.offset, frame.length, 5) != null
+                    || findNal(frame.buffer, frame.offset, frame.length, 7) != null;
+        }
+        if (frame.codec == VIDEO_CODEC_H265) {
+            return hasHevcSyncNal(frame.buffer, frame.offset, frame.length);
+        }
+        return false;
+    }
+
+    private static boolean hasHevcSyncNal(byte[] data, int offset, int length) {
+        int end = offset + length;
+        int start = findStartCode(data, offset, end);
+        while (start >= 0) {
+            int header = start + startCodeLength(data, start);
+            int next = findStartCode(data, header + 2, end);
+            if (header + 1 < end) {
+                int type = (data[header] >> 1) & 0x3f;
+                if ((type >= 16 && type <= 21) || type == 32 || type == 33 || type == 34) {
+                    return true;
+                }
+            }
+            start = next;
+        }
+        return false;
     }
 
     private static byte[] findHevcConfig(byte[] data, int offset, int length) {

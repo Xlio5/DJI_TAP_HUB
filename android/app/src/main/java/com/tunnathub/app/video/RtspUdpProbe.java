@@ -27,11 +27,13 @@ public final class RtspUdpProbe {
 
     private static Result runInternal(String rtspUrl, int receiveSeconds, String mode, String bindAddress, boolean protectUdp) {
         long startMs = System.currentTimeMillis();
+        boolean boundToVpn = TunNatVpnService.isVpnRunningForJava();
         Socket rtsp = new Socket();
         DatagramSocket rtp = null;
         DatagramSocket rtcp = null;
         String session = null;
         try {
+            if (boundToVpn) TunNatVpnService.bindProcessToVpnNetwork();
             URI uri = URI.create(rtspUrl);
             String host = uri.getHost();
             int port = uri.getPort() > 0 ? uri.getPort() : 554;
@@ -100,6 +102,7 @@ public final class RtspUdpProbe {
                 rtsp.close();
             } catch (IOException ignored) {
             }
+            if (boundToVpn) TunNatVpnService.clearProcessNetworkBinding();
         }
     }
 

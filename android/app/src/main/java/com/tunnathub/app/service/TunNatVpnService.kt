@@ -34,6 +34,7 @@ import com.tunnathub.app.MainActivity
 import com.tunnathub.app.R
 import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
+import com.tunnathub.app.video.VpnNetworkBinder
 import kotlinx.coroutines.*
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
@@ -61,6 +62,21 @@ class TunNatVpnService : VpnService() {
 
         /** 当前 VpnService 实例（供 protectSocket 静态调用） */
         @Volatile private var instance: TunNatVpnService? = null
+
+        @JvmStatic
+        fun isVpnRunningForJava(): Boolean = isRunning
+
+        @JvmStatic
+        fun bindProcessToVpnNetwork(): Boolean {
+            val ctx = instance?.applicationContext ?: return false
+            return VpnNetworkBinder.bindProcessToVpn(ctx)
+        }
+
+        @JvmStatic
+        fun clearProcessNetworkBinding() {
+            val ctx = instance?.applicationContext ?: return
+            VpnNetworkBinder.clearProcessBinding(ctx)
+        }
 
         /** 静态 protect UDP socket，供外部（如 MainActivity 延迟测试）使用 */
         fun protectSocket(socket: java.net.DatagramSocket): Boolean {
