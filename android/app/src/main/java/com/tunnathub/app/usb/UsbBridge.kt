@@ -273,7 +273,9 @@ class UsbBridge(
         while (coroutineContext.isActive && isConnected) {
             try {
                 val conn = usbConnection ?: break   // M1: 捕获局部引用, 避免与 disconnect 竞态 NPE
-                val n = conn.bulkTransfer(epIn, buf, buf.size, USB_TIMEOUT_MS)
+                val epInL = epIn ?: break           // M1: 与 tunToUsbLoop 保持一致, 补 epIn 局部引用
+                val epOutL = epOut ?: break
+                val n = conn.bulkTransfer(epInL, buf, buf.size, USB_TIMEOUT_MS)
 
                 if (n < 0) {
                     // USB timeout/busy — no data available, keep waiting
@@ -286,7 +288,7 @@ class UsbBridge(
                     is FrameCodec.UnpackResult.Data -> tunOutput.write(result.payload)
                     is FrameCodec.UnpackResult.Heartbeat -> {
                         if (firstPacket) { AppLog.d(TAG, "USB→TUN 首帧: 心跳 PONG"); firstPacket = false }
-                        conn.bulkTransfer(epOut, PONG_FRAME, 0, PONG_FRAME.size, 100)
+                        conn.bulkTransfer(epOutL, PONG_FRAME, 0, PONG_FRAME.size, 100)
                     }
                     is FrameCodec.UnpackResult.Credit -> {} // Phase 3
                     is FrameCodec.UnpackResult.MagicMismatch -> {

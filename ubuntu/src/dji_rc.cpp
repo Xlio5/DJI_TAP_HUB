@@ -247,7 +247,7 @@ static void pb6_auto_switch(bool grounded, const char *out_dev, char out_mode,
         ::usleep(200000);   /* 200ms, 等 getty 释放 ttyS0 */
         if (g_out_fd.load() < 0) {
             bool even2 = (g_out_mode.load() == 's') && g_sbus_std;   /* 用全局, 避免参数过期 */
-            g_out_fd.store(uart_open_out(out_dev, out_baud, even2));
+            g_out_fd.store(uart_open_out(out_dev, g_out_baud.load(), even2));   // 复审: 用 atomic g_out_baud, 避免过时参数
         }
         if (g_out_mode.load() == 'c' && g_crsf_telem && g_out_fd.load() >= 0 && !t3.joinable()) {
             g_crsf_stop.store(false);
@@ -669,7 +669,8 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
         (long long)ts_us);
 
     // atomic write: tmp → rename
-    // H: snprintf 返回值可能超过 sizeof(buf), clamp 避免越界写
+    // H: snprintf 返回值可能超过 sizeof(buf) 或为负, clamp 避免越界写
+    if (w < 0) w = 0;                       // 复审: 负值(编码错误) → 0
     if (w > (int)sizeof(buf)) w = (int)sizeof(buf);
     int fd = ::open("/var/log/rc_state.json.tmp", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) {
@@ -873,7 +874,8 @@ static void write_telem_file(const crsf_telem_t &t)
         t.batt_capacity_mAh, t.batt_remaining_pct,
         t.has_att ? 1 : 0, t.att_pitch_deg100, t.att_roll_deg100, t.att_yaw_deg100,
         (long long)t.vario_cms, t.flight_mode);
-    // H: snprintf 返回值可能超过 sizeof(buf), clamp 避免越界写
+    // H: snprintf 返回值可能超过 sizeof(buf) 或为负, clamp 避免越界写
+    if (w < 0) w = 0;                       // 复审: 负值(编码错误) → 0
     if (w > (int)sizeof(buf)) w = (int)sizeof(buf);
     int fd = ::open("/var/log/rc_telem.json.tmp", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) {

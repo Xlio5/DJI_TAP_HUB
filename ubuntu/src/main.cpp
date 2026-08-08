@@ -59,8 +59,11 @@ static void tcpPingServer() {
 
     while (gRunning) {
         int cli = accept(srv, nullptr, nullptr);
-        if (cli >= 0) close(cli);  // 只测 TCP 握手 RTT，不接受数据
-        // 超时返回 (EAGAIN) → 循环重新检查 gRunning
+        if (cli >= 0) { close(cli); continue; }  // 只测 TCP 握手 RTT，不接受数据
+        // 超时返回 (EAGAIN/EINTR) → 循环重新检查 gRunning
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
+        // 硬错误 (EBADF/ENOTSOCK) → 退出, 避免死循环吃满 CPU
+        break;
     }
     close(srv);
 }

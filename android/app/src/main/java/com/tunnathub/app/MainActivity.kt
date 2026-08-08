@@ -530,10 +530,10 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     /** 启动 RTSP 播放 (receiver/autoSyncSubnet 已定义, 无前向引用) */
     fun doStartPlayback() {
         val sv = surfaceViewRef ?: return
-        // H2: 先释放旧播放器, 避免自动重连时 native 解码器泄漏
-        playerRef?.stop()
-        playerRef = null
+        // H2: 先释放旧播放器, 避免自动重连时 native 解码器泄漏。
+        // 注意: 只用 playerHolder 做权威清理 (与 onDestroy 一致), 避免对同一实例双重 stop 触发 native 崩溃
         playerHolder.getAndSet(null)?.stop()
+        playerRef = null
         try {
             prefs.edit().putString("rtsp_url", rtspUrl).apply()
             autoSyncSubnet(rtspUrl)
@@ -1214,16 +1214,30 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     Button(onClick = {
                                         if (!testing && vpnRunning) {
                                             testing = true; latencyText = "测试中..."
-                                            // M5: 用协程替代裸 Thread, 生命周期随组合管理
+                                            // M5: 协程替代裸 Thread, socket 用 use 保证关闭, state 切主线程写
                                             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                                                 val rtts = mutableListOf<Double>(); var drops = 0
                                                 try {
-                                                    for (i in 0 until 10) { try { val t0 = System.nanoTime(); val s = java.net.Socket(); s.connect(java.net.InetSocketAddress("10.0.0.1", 9999), 3000); rtts.add((System.nanoTime() - t0) / 1_000_000.0); s.close() } catch (_: Exception) { drops++ } }
-                                                    if (rtts.isNotEmpty()) { rtts.sort(); latencyText = "%.1f/%.1f/%.1f ms (丢$drops)".format(rtts.average(), rtts[rtts.size / 2], rtts[(rtts.size * 0.95).toInt()]) } else latencyText = "全部丢包 ($drops/10)"
+                                                    for (i in 0 until 10) {
+                                                        try {
+                                                            val t0 = System.nanoTime()
+                                                            java.net.Socket().use { s ->
+                                                                s.connect(java.net.InetSocketAddress("10.0.0.1", 9999), 3000)
+                                                                rtts.add((System.nanoTime() - t0) / 1_000_000.0)
+                                                            }
+                                                        } catch (_: Exception) { drops++ }
+                                                    }
+                                                    val result = if (rtts.isNotEmpty()) {
+                                                        rtts.sort()
+                                                        "%.1f/%.1f/%.1f ms (丢$drops)".format(rtts.average(), rtts[rtts.size / 2], rtts[(rtts.size * 0.95).toInt()])
+                                                    } else "全部丢包 ($drops/10)"
+                                                    withContext(kotlinx.coroutines.Dispatchers.Main) { latencyText = result }
                                                 } catch (e: kotlinx.coroutines.CancellationException) {
                                                     throw e
-                                                } catch (_: Exception) { latencyText = "失败" }
-                                                testing = false
+                                                } catch (_: Exception) {
+                                                    withContext(kotlinx.coroutines.Dispatchers.Main) { latencyText = "失败" }
+                                                }
+                                                withContext(kotlinx.coroutines.Dispatchers.Main) { testing = false }
                                             }
                                         }
                                     }, enabled = vpnRunning && !testing, modifier = Modifier.height(28.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))) { Text(if (testing) "⏳" else "⏱", fontSize = 11.sp) }
