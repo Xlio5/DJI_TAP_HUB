@@ -197,10 +197,44 @@ class TunNatVpnService : VpnService() {
             }
         }
 
+        // 注册 USB 拔出广播: 收到 DETACHED → 触发重连 (不停止服务)
+        registerUsbDetachReceiver()
+
         // 首次连接
         scope.launch { doReconnect() }
 
         return START_STICKY
+    }
+
+    /**
+     * 注册 ACTION_USB_DEVICE_DETACHED 广播。
+     * 修复: USB 拔出时 usbToTunLoop 阻塞在 bulkTransfer 上检测不到断开,
+     * 这里用 Android 官方广播作为断开信号 → 触发 doReconnect 轮询重连。
+     */
+    private fun registerUsbDetachReceiver() {
+        unregisterReconnectReceiver()  // 先注销旧的, 避免重复注册
+        reconnectReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                val action = intent.action ?: return
+                if (action == android.hardware.usb.UsbManager.ACTION_USB_DEVICE_DETACHED) {
+                    val device = intent.getParcelableExtra<android.hardware.usb.UsbDevice>(
+                        android.hardware.usb.UsbManager.EXTRA_DEVICE)
+                    if (device != null && device.vendorId == com.tunnathub.app.usb.UsbBridge.USB_VID &&
+                        device.productId == com.tunnathub.app.usb.UsbBridge.USB_PID) {
+                        Log.w(TAG, "USB 拔出广播, 触发重连")
+                        AppLog.w(TAG, "USB 拔出广播, 触发重连")
+                        isRunning = false
+                        if (isStarted) reconnectScope.launch { doReconnect() }
+                    }
+                }
+            }
+        }
+        try {
+            registerReceiver(reconnectReceiver, IntentFilter(android.hardware.usb.UsbManager.ACTION_USB_DEVICE_DETACHED),
+                Context.RECEIVER_NOT_EXPORTED)
+        } catch (e: Exception) {
+            Log.e(TAG, "注册 USB 拔出广播失败: ${e.message}")
+        }
     }
 
     override fun onDestroy() {
