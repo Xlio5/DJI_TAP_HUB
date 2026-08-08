@@ -301,9 +301,10 @@ static Config loadConfig() {
     ssize_t r = ::read(fd, &len, 2);
     if (r != 2 || len == 0 || len > CFG_MAX) { ::close(fd); return cfg; }
     std::vector<char> buf(len + 1);
-    ::read(fd, buf.data(), len);
-    buf[len] = '\0';
+    ssize_t got = ::read(fd, buf.data(), len);
     ::close(fd);
+    if (got != (ssize_t)len) return cfg;   // H: 读不满 → 配置损坏, 用默认
+    buf[len] = '\0';
     std::string json(buf.data(), len);
 
     auto v = jsonStr(json, "rtsp_url");
@@ -435,10 +436,13 @@ static void saveConfig(const Config& cfg) {
     if (fd < 0) { std::cerr << "[cfg] ERROR: cannot open " << CFG_DEV << std::endl; return; }
     uint16_t len = (uint16_t)json.size();
     ::lseek(fd, CFG_OFFSET, SEEK_SET);
-    ::write(fd, &len, 2);
-    ::write(fd, json.c_str(), len);
+    // H: 检查写返回值, 写失败报错 (SPI flash 磨损/坏块)
+    ssize_t w1 = ::write(fd, &len, 2);
+    ssize_t w2 = ::write(fd, json.c_str(), len);
     ::close(fd);
     sync();
+    if (w1 != 2 || w2 != (ssize_t)len)
+        std::cerr << "[cfg] WARN: 配置写入不完整 (" << w1 << "+" << w2 << "/" << len << ")" << std::endl;
     std::cout << "[cfg] saved " << len << " bytes to " << CFG_DEV << " @0x" << std::hex << CFG_OFFSET << std::dec << std::endl;
 }
 
@@ -1197,9 +1201,11 @@ static Response handleRequest(const Request& req) {
 static std::string readLine(int fd) {
     std::string line;
     char c;
+    const size_t MAX_LINE = 8192;   // H: 限制单行长度, 防恶意超长行耗尽内存
     while (::recv(fd, &c, 1, 0) > 0) {
         if (c == '\r') continue;
         if (c == '\n') break;
+        if (line.size() >= MAX_LINE) return line;  // 超长: 返回已有内容, 连接将被上层关闭
         line += c;
     }
     return line;
@@ -1217,6 +1223,10 @@ static void handleFirmwareUpload(int fd) {
     Response resp;
     resp.contentType = "application/json";
     std::cout << "[fw] === UPGRADE START ===" << std::endl;
+    // C4: 设置 socket 接收超时 (30s), 防恶意客户端发 Content-Length 后停止发送导致永久阻塞
+    struct timeval rcvTv;
+    rcvTv.tv_sec = 30; rcvTv.tv_usec = 0;
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcvTv, sizeof(rcvTv));
     std::string reqLine = readLine(fd);
     if (reqLine.find("POST") == std::string::npos) {
         std::cout << "[fw] ERR: not POST" << std::endl;

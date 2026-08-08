@@ -52,9 +52,15 @@ static void tcpPingServer() {
     if (listen(srv, 8) < 0) { perror("listen"); close(srv); return; }
     std::cout << "[PING] TCP 延迟测试端口 10.0.0.1:9999" << std::endl;
 
+    // C5: accept 设置 1s 超时, 周期性返回检查 gRunning, 避免 SIGTERM 后无法 join
+    struct timeval accTv;
+    accTv.tv_sec = 1; accTv.tv_usec = 0;
+    ::setsockopt(srv, SOL_SOCKET, SO_RCVTIMEO, &accTv, sizeof(accTv));
+
     while (gRunning) {
         int cli = accept(srv, nullptr, nullptr);
         if (cli >= 0) close(cli);  // 只测 TCP 握手 RTT，不接受数据
+        // 超时返回 (EAGAIN) → 循环重新检查 gRunning
     }
     close(srv);
 }
@@ -219,6 +225,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // 关闭顺序: TUN readPacket 是阻塞读, 必须先 close 唤醒阻塞的线程再 join (否则 join 永久等待)
         tun.close();
         if (fd >= 0) ::close(fd);
         t1.join(); t2.join(); t3.join();

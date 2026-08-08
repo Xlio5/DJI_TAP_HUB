@@ -134,7 +134,7 @@ class TunNatVpnService : VpnService() {
     private var usbBridge: UsbBridge? = null
     private var isStarted = false
     private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val reconnectScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var reconnectScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onCreate() {
         super.onCreate()
@@ -281,6 +281,8 @@ class TunNatVpnService : VpnService() {
         if (!isStarted || !reconnecting.compareAndSet(false, true)) return
         usbBridge?.disconnect()
         isReconnectingState.value = true
+        // 连接尚未建立成功, 状态应为 false (H1: isRunning 反映真实连接状态)
+        isRunning = false
 
         try {
             var retries = 0
@@ -291,10 +293,14 @@ class TunNatVpnService : VpnService() {
                     usbBridge!!.start(scope)
                     AppLog.i(TAG, "USB 连接成功 (第${retries}次)")
                     isReconnectingState.value = false
+                    // Connected 回调已设 isRunning=true, 这里兜底
+                    isRunning = true
                     return
                 } catch (e: Exception) {
                     AppLog.w(TAG, "USB 连接失败 (第${retries}次): ${e.message}")
                     updateNotification("USB 重连中... ($retries)")
+                    // H1: 连接失败 → isRunning 保持 false (UI 显示"连接"可重连)
+                    isRunning = false
                 }
                 // 轮询重试: 设备一直插着也能重连, 不依赖插入广播
                 delay(RECONNECT_DELAY)
@@ -323,6 +329,9 @@ class TunNatVpnService : VpnService() {
         // 取消旧协程 (TUN→USB / USB→TUN), 避免下次启动时旧协程占着 TUN/USB fd
         scope.cancel()
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        // M2: 同时取消 reconnectScope, 避免残留 doReconnect 的 usbBridge!! NPE
+        reconnectScope.cancel()
+        reconnectScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
         try {
             tunFd?.close()

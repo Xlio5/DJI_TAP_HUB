@@ -337,6 +337,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 conn.setRequestProperty("Content-Type", "application/json")
                 conn.outputStream.write(body.toByteArray())
                 conn.inputStream.close()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 android.util.Log.e("TunNatHub", "API POST $path 失败: ${e.javaClass.simpleName} ${e.message}")
             }
@@ -376,6 +378,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     prevRx = rx
                     prevAt = nowMs
                     hbCount++
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (_: Exception) { hbDaemon = false; hbTty = false; hbTun = false }
             }
             kotlinx.coroutines.delay(1000)
@@ -408,6 +412,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         AppLog.w("TunNatHub", "网段不同步! V3s=$rs/$rp → 自动同步")
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (_: Exception) {}
         }
     }
@@ -454,6 +460,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         break
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (_: Exception) {
                 rcConnected = false
             } finally {
@@ -522,6 +530,10 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     /** 启动 RTSP 播放 (receiver/autoSyncSubnet 已定义, 无前向引用) */
     fun doStartPlayback() {
         val sv = surfaceViewRef ?: return
+        // H2: 先释放旧播放器, 避免自动重连时 native 解码器泄漏
+        playerRef?.stop()
+        playerRef = null
+        playerHolder.getAndSet(null)?.stop()
         try {
             prefs.edit().putString("rtsp_url", rtspUrl).apply()
             autoSyncSubnet(rtspUrl)
@@ -1158,6 +1170,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                                 val upQ = jsonString(t, "up_quality") ?: "-"
                                                 val dnQ = jsonString(t, "dn_quality") ?: "-"
                                                 tlText = "链路 上行${upQ}% 下行${dnQ}% · 电量 ${rem}% · GPS lat=$lat"
+                                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                                throw e
                                             } catch (_: Exception) { tlText = "回传不可用" }
                                             kotlinx.coroutines.delay(2000)
                                         }
@@ -1200,14 +1214,17 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     Button(onClick = {
                                         if (!testing && vpnRunning) {
                                             testing = true; latencyText = "测试中..."
-                                            Thread {
+                                            // M5: 用协程替代裸 Thread, 生命周期随组合管理
+                                            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                                                 val rtts = mutableListOf<Double>(); var drops = 0
                                                 try {
                                                     for (i in 0 until 10) { try { val t0 = System.nanoTime(); val s = java.net.Socket(); s.connect(java.net.InetSocketAddress("10.0.0.1", 9999), 3000); rtts.add((System.nanoTime() - t0) / 1_000_000.0); s.close() } catch (_: Exception) { drops++ } }
                                                     if (rtts.isNotEmpty()) { rtts.sort(); latencyText = "%.1f/%.1f/%.1f ms (丢$drops)".format(rtts.average(), rtts[rtts.size / 2], rtts[(rtts.size * 0.95).toInt()]) } else latencyText = "全部丢包 ($drops/10)"
+                                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                                    throw e
                                                 } catch (_: Exception) { latencyText = "失败" }
                                                 testing = false
-                                            }.start()
+                                            }
                                         }
                                     }, enabled = vpnRunning && !testing, modifier = Modifier.height(28.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))) { Text(if (testing) "⏳" else "⏱", fontSize = 11.sp) }
                                 }

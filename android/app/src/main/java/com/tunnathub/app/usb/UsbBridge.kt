@@ -59,9 +59,9 @@ class UsbBridge(
 
     var onLinkStateChange: ((LinkState) -> Unit)? = null
 
-    private var usbConnection: UsbDeviceConnection? = null
-    private var epOut: UsbEndpoint? = null  // Bulk-OUT: Android → RK3588
-    private var epIn: UsbEndpoint? = null   // Bulk-IN:  RK3588 → Android
+    @Volatile private var usbConnection: UsbDeviceConnection? = null
+    @Volatile private var epOut: UsbEndpoint? = null  // Bulk-OUT: Android → RK3588
+    @Volatile private var epIn: UsbEndpoint? = null   // Bulk-IN:  RK3588 → Android
 
     /** 断开通知去重标志: 双协程任一退出即置 isConnected=false + 触发 Disconnected, 只通知一次 */
     private val disconnectedNotified = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -231,13 +231,15 @@ class UsbBridge(
 
         while (coroutineContext.isActive && isConnected) {
             try {
+                val conn = usbConnection ?: break   // M1: 捕获局部引用, 避免与 disconnect 竞态 NPE
+                val epOutL = epOut ?: break
                 // 直接读入 buf[4..]，省去一次拷贝
                 val n = tunInput.read(buf, FrameCodec.FRAME_HEADER_LEN, FrameCodec.FRAME_MAX_PAYLOAD)
                 if (n <= 0) { if (n < 0) break; delay(1); continue }
 
                 // 原地写帧头（零拷贝）
                 val frameLen = FrameCodec.writeHeader(buf, n)
-                val written = usbConnection!!.bulkTransfer(epOut, buf, 0, frameLen, USB_TIMEOUT_MS)
+                val written = conn.bulkTransfer(epOutL, buf, 0, frameLen, USB_TIMEOUT_MS)
 
                 if (firstPacket) { AppLog.d(TAG, "TUN→USB 首包: ${n}B → bulkTransfer wrote=$written"); firstPacket = false }
                 if (written < 0) {
@@ -270,7 +272,8 @@ class UsbBridge(
 
         while (coroutineContext.isActive && isConnected) {
             try {
-                val n = usbConnection!!.bulkTransfer(epIn, buf, buf.size, USB_TIMEOUT_MS)
+                val conn = usbConnection ?: break   // M1: 捕获局部引用, 避免与 disconnect 竞态 NPE
+                val n = conn.bulkTransfer(epIn, buf, buf.size, USB_TIMEOUT_MS)
 
                 if (n < 0) {
                     // USB timeout/busy — no data available, keep waiting
@@ -283,7 +286,7 @@ class UsbBridge(
                     is FrameCodec.UnpackResult.Data -> tunOutput.write(result.payload)
                     is FrameCodec.UnpackResult.Heartbeat -> {
                         if (firstPacket) { AppLog.d(TAG, "USB→TUN 首帧: 心跳 PONG"); firstPacket = false }
-                        usbConnection!!.bulkTransfer(epOut, PONG_FRAME, 0, PONG_FRAME.size, 100)
+                        conn.bulkTransfer(epOut, PONG_FRAME, 0, PONG_FRAME.size, 100)
                     }
                     is FrameCodec.UnpackResult.Credit -> {} // Phase 3
                     is FrameCodec.UnpackResult.MagicMismatch -> {
