@@ -38,6 +38,9 @@ class UsbBridge(
         const val USB_PID = 0x8812
         private const val USB_TIMEOUT_MS = 10  // 10ms 超低延迟
 
+        /** USB 写连续失败多少次才判定链路断开 (滤掉瞬时抖动) */
+        private const val MAX_USB_WRITE_FAILS = 5
+
         /** 预分配的 PONG 缓冲区（避免重复分配） */
         private val PONG_FRAME: ByteArray = run {
             val b = ByteArray(FrameCodec.FRAME_HEADER_LEN)
@@ -45,6 +48,11 @@ class UsbBridge(
             b
         }
     }
+
+    /** 已成功 openDevice 过的设备标识 (VID:PID)。
+     *  DJI RC 会对 0BDA:8812 反复重枚举 → hasPermission 变 false → 每次 requestPermission 弹窗。
+     *  一旦授权过就记住, 重连时跳过重复授权, 直接 openDevice。 */
+    private val grantedDevices = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 
     @Volatile var isConnected = false
         private set
@@ -54,6 +62,9 @@ class UsbBridge(
     private var usbConnection: UsbDeviceConnection? = null
     private var epOut: UsbEndpoint? = null  // Bulk-OUT: Android → RK3588
     private var epIn: UsbEndpoint? = null   // Bulk-IN:  RK3588 → Android
+
+    /** 断开通知去重标志: 双协程任一退出即置 isConnected=false + 触发 Disconnected, 只通知一次 */
+    private val disconnectedNotified = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private val bufferPool = ConcurrentLinkedQueue<ByteArray>()
 
@@ -72,34 +83,29 @@ class UsbBridge(
         val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
         AppLog.i(TAG, "找到 USB 设备: VID=0x${USB_VID.toString(16)} PID=0x${USB_PID.toString(16)}")
 
-        // 检查 USB 权限，没有则请求（冷启后权限可能丢失）
-        if (!usbManager.hasPermission(device)) {
-            Log.w(TAG, "USB 权限未授予，正在请求...")
-            AppLog.w(TAG, "USB 权限未授予，正在请求...")
-            val latch = CountDownLatch(1)
-            val permAction = "com.tunnathub.app.USB_PERM"
-            val receiver = object : BroadcastReceiver() {
-                override fun onReceive(ctx: Context, intent: Intent) {
-                    if (permAction == intent.action) {
-                        val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                        Log.i(TAG, "USB 权限结果: $granted")
-                        AppLog.i(TAG, "USB 权限${if (granted) "已" else "未"}授予")
-                        latch.countDown()
-                    }
-                }
-            }
-            context.registerReceiver(receiver, IntentFilter(permAction), Context.RECEIVER_NOT_EXPORTED)
-            val pi = PendingIntent.getBroadcast(context, 0,
-                Intent(permAction).setPackage(context.packageName),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-            usbManager.requestPermission(device, pi)
-            // 等待权限授予（device_filter.xml 匹配时自动授予，无弹窗）
-            latch.await(2, TimeUnit.SECONDS)
-            try { context.unregisterReceiver(receiver) } catch (_: Exception) {}
+        // 检查 USB 权限。
+        // 修复: DJI RC 会反复重枚举 0BDA:8812 → hasPermission 变 false → 每次都 requestPermission 弹权限框。
+        // 已成功 openDevice 过的设备 (VID:PID) 跳过 requestPermission, 直接尝试 openDevice。
+        val deviceKey = "${device.vendorId}:${device.productId}"
+        val alreadyGranted = grantedDevices.containsKey(deviceKey)
+        if (!alreadyGranted && !usbManager.hasPermission(device)) {
+            requestPermissionBlocking(device)
         }
 
-        usbConnection = usbManager.openDevice(device)
+        // 打开设备; 若已授权过但系统重枚举后仍误判未授权, openDevice 抛 SecurityException → 回退请求一次
+        val conn = try {
+            usbManager.openDevice(device)
+        } catch (e: SecurityException) {
+            AppLog.w(TAG, "openDevice 权限异常, 回退请求权限: ${e.message}")
+            requestPermissionBlocking(device)
+            usbManager.openDevice(device)
+        }
+        usbConnection = conn
             ?: throw IllegalStateException("无法打开 USB 设备，请重新插拔 USB 线并授权")
+        // 记录已授权, 后续重连 (DJI 重枚举) 不再弹窗
+        grantedDevices[deviceKey] = true
+        // 新连接周期: 重置断开通知标志 (同实例重连时)
+        disconnectedNotified.set(false)
         AppLog.i(TAG, "USB openDevice 成功")
 
         // 遍历所有接口找 Bulk 端点
@@ -132,6 +138,36 @@ class UsbBridge(
     }
 
     /**
+     * 阻塞请求 USB 权限 (最多等 2s)。
+     * 仅在设备首次连接或已授权集合外才调用, 避免 DJI 重枚举导致反复弹窗。
+     */
+    private fun requestPermissionBlocking(device: UsbDevice) {
+        val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+        Log.w(TAG, "USB 权限未授予，正在请求...")
+        AppLog.w(TAG, "USB 权限未授予，正在请求...")
+        val latch = CountDownLatch(1)
+        val permAction = "com.tunnathub.app.USB_PERM"
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
+                if (permAction == intent.action) {
+                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                    Log.i(TAG, "USB 权限结果: $granted")
+                    AppLog.i(TAG, "USB 权限${if (granted) "已" else "未"}授予")
+                    latch.countDown()
+                }
+            }
+        }
+        context.registerReceiver(receiver, IntentFilter(permAction), Context.RECEIVER_NOT_EXPORTED)
+        val pi = PendingIntent.getBroadcast(context, 0,
+            Intent(permAction).setPackage(context.packageName),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        usbManager.requestPermission(device, pi)
+        // 等待权限授予（device_filter.xml 匹配时自动授予，无弹窗）
+        latch.await(2, TimeUnit.SECONDS)
+        try { context.unregisterReceiver(receiver) } catch (_: Exception) {}
+    }
+
+    /**
      * CDC ACM 设备有两个接口：
      *   Interface 0: Communication (control)
      *   Interface 1: Data (bulk endpoints)
@@ -160,6 +196,19 @@ class UsbBridge(
     }
 
     /**
+     * 任一转发协程退出时统一通知断开 (去重)。
+     * 修复: 之前只有 usbToTunLoop 触发 Disconnected; tunToUsbLoop 写失败退出时
+     * 不通知 → isRunning 不变 → UI 卡在"断开"无法重连。
+     */
+    private fun notifyDisconnected(reason: String) {
+        if (disconnectedNotified.compareAndSet(false, true)) {
+            isConnected = false
+            onLinkStateChange?.invoke(LinkState.Disconnected)
+            AppLog.w(TAG, "USB Bridge 已断开 ($reason)")
+        }
+    }
+
+    /**
      * 通过 USB Control Transfer 发送 DTR/RTS 信号。
      * g_serial 的 TTY 层需要 DTR 才能开始传输数据。
      * 即使在 use_acm=0 模式下，gs_tty 驱动也会检查 DTR 信号。
@@ -178,6 +227,7 @@ class UsbBridge(
     private suspend fun tunToUsbLoop(tunInput: FileInputStream) {
         val buf = acquireBuffer()
         var firstPacket = true
+        var consecutiveFails = 0   // 连续 USB 写失败计数 (滤掉瞬时抖动, 避免误触发重连)
 
         while (coroutineContext.isActive && isConnected) {
             try {
@@ -190,13 +240,25 @@ class UsbBridge(
                 val written = usbConnection!!.bulkTransfer(epOut, buf, 0, frameLen, USB_TIMEOUT_MS)
 
                 if (firstPacket) { AppLog.d(TAG, "TUN→USB 首包: ${n}B → bulkTransfer wrote=$written"); firstPacket = false }
-                if (written < 0) { Log.e(TAG, "USB write 失败"); AppLog.e(TAG, "USB bulkTransfer(OUT) 失败"); break }
+                if (written < 0) {
+                    // 修复: 单次负值可能是瞬时抖动, 连续 MAX_USB_WRITE_FAILS 次才判定链路断开
+                    consecutiveFails++
+                    if (consecutiveFails >= MAX_USB_WRITE_FAILS) {
+                        Log.e(TAG, "USB write 连续失败 $consecutiveFails 次, 判定断开")
+                        AppLog.e(TAG, "USB bulkTransfer(OUT) 连续失败 $consecutiveFails 次")
+                        break
+                    }
+                    delay(5)
+                    continue
+                }
+                consecutiveFails = 0
             } catch (e: Exception) {
                 if (coroutineContext.isActive) Log.e(TAG, "TUN→USB 异常", e)
                 break
             }
         }
         releaseBuffer(buf)
+        notifyDisconnected("TUN→USB 退出")
         Log.i(TAG, "TUN→USB 退出")
     }
 
@@ -235,10 +297,8 @@ class UsbBridge(
             }
         }
         releaseBuffer(buf)
-        isConnected = false
-        onLinkStateChange?.invoke(LinkState.Disconnected)
+        notifyDisconnected("USB→TUN 退出")
         Log.i(TAG, "USB→TUN 退出")
-        AppLog.w(TAG, "USB Bridge 已断开")
     }
 
     private fun findDevice(): UsbDevice? {
@@ -256,8 +316,7 @@ class UsbBridge(
     private fun releaseBuffer(buf: ByteArray) { bufferPool.offer(buf) }
 
     fun disconnect() {
-        isConnected = false
-        onLinkStateChange?.invoke(LinkState.Disconnected)
+        notifyDisconnected("disconnect()")
         try { usbConnection?.close() } catch (_: Exception) {}
         usbConnection = null
     }

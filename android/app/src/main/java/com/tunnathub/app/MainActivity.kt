@@ -146,8 +146,23 @@ class MainActivity : ComponentActivity() {
                 connectionState = pollState,
                 usbPollCount = pollCount,
                 onVpnTap = {
-                    if (TunNatVpnService.isRunningState.value) stopTunService()
-                    else if (usbDevice != null) startAuthFlow()
+                    if (TunNatVpnService.isRunningState.value) {
+                        // VPN 正在运行 → 断开
+                        stopTunService()
+                    } else {
+                        // VPN 未运行 → 尝试连接。
+                        // 注意: 若服务进程还在但 USB 断开 (isRunning=false), 直接 startAuthFlow
+                        // 可能因 onStartCommand 的 isStarted 残留走"强制重启", 这里先 stop 再 start 保证干净重启
+                        if (TunNatVpnService.isStartedForUi) {
+                            // 服务在但 USB 断了 → 重启服务强制重连
+                            stopTunService()
+                            Handler(Looper.getMainLooper()).postDelayed({
+                                startAuthFlow()
+                            }, 500)
+                        } else if (usbDevice != null) {
+                            startAuthFlow()
+                        }
+                    }
                 },
                 onReconnect = {
                     stopTunService()
@@ -219,6 +234,9 @@ private enum class Tab { VIDEO, REMOTE, CONFIG }
 fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCount: Int = 0, onVpnTap: () -> Unit, onReconnect: (() -> Unit)? = null) {
     val ctx = LocalContext.current
     val prefs = ctx.getSharedPreferences("tun_nat_hub", Context.MODE_PRIVATE)
+    // 视频自动重连常量 (局部, 供 scheduleAutoReconnect 使用)
+    val MAX_AUTO_RECONNECT = 5
+    val AUTO_RECONNECT_DELAY_MS = 3000L
     // 响应式订阅 VPN 运行状态: isRunningState 变化时触发重组,
     // 使下方 LaunchedEffect(vpnRunning) 在 VPN 启动后真正执行
     val vpnRunning by TunNatVpnService.isRunningState
@@ -249,6 +267,11 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var resolutionText by remember { mutableStateOf("") }
     var surfaceViewRef by remember { mutableStateOf<SurfaceView?>(null) }
     var playerRef by remember { mutableStateOf<EasyPlayerClient?>(null) }
+    var autoReconnectCount by remember { mutableStateOf(0) }   // 自动重连计数
+    var autoReconnectActive by remember { mutableStateOf(false) } // 自动重连开关(手动停止后关闭)
+    // 函数引用 (打破 receiver→schedule→start→receiver 循环引用, 定义后赋值)
+    lateinit var startPlaybackFn: () -> Unit
+    lateinit var scheduleAutoReconnectFn: () -> Unit
 
     // ── 心跳状态 ──
     var hbDaemon by remember { mutableStateOf(false) }
@@ -439,6 +462,17 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         }
     }
 
+    fun togglePlay() {
+        if (isPlaying) {
+            playerRef?.stop(); playerRef = null; isPlaying = false; statusText = "已停止"
+            playerHolder.set(null)
+            autoReconnectActive = false  // 手动停止 → 关闭自动重连
+        } else {
+            autoReconnectActive = true   // 手动播放 → 开启自动重连
+            startPlaybackFn()
+        }
+    }
+
     val receiver = remember {
         object : ResultReceiver(Handler(ctx.mainLooper)) {
             override fun onReceiveResult(code: Int, data: Bundle?) {
@@ -449,14 +483,28 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                             else if ((data?.getInt(EasyPlayerClient.KEY_VIDEO_DECODE_TYPE, -1) ?: -1) == 1) "MediaCodec"
                             else "SW"
                         statusText = "播放中 [$ts]"; isPlaying = true
+                        autoReconnectCount = 0  // 播放成功 → 重置自动重连计数
                         AppLog.i("Player", "解码器: $ts")
                     }
                     EasyPlayerClient.RESULT_VIDEO_SIZE -> {
                         resolutionText = "${data?.getInt(EasyPlayerClient.EXTRA_VIDEO_WIDTH, 0)}x${data?.getInt(EasyPlayerClient.EXTRA_VIDEO_HEIGHT, 0)}"
                     }
-                    EasyPlayerClient.RESULT_TIMEOUT -> { statusText = "连接超时"; isPlaying = false }
-                    EasyPlayerClient.RESULT_UNSUPPORTED_VIDEO -> { statusText = "编码不支持"; isPlaying = false }
+                    EasyPlayerClient.RESULT_TIMEOUT -> { statusText = "连接超时"; isPlaying = false; scheduleAutoReconnectFn() }
+                    EasyPlayerClient.RESULT_UNSUPPORTED_VIDEO -> { statusText = "编码不支持"; isPlaying = false; scheduleAutoReconnectFn() }
                 }
+            }
+        }
+    }
+
+    // ── 自动播放: VPN 连上且未在播放时, 自动播放保存的 RTSP ──
+    LaunchedEffect(vpnRunning) {
+        if (vpnRunning && !isPlaying && rtspUrl.isNotBlank()) {
+            AppLog.i("Player", "VPN 已连接, 自动播放")
+            autoReconnectActive = true
+            // 等 surface 就绪后播放
+            kotlinx.coroutines.delay(1000)
+            if (vpnRunning && !isPlaying && surfaceViewRef != null) {
+                startPlaybackFn()
             }
         }
     }
@@ -471,23 +519,41 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         }
     }
 
-    fun togglePlay() {
-        if (isPlaying) {
-            playerRef?.stop(); playerRef = null; isPlaying = false; statusText = "已停止"
-            playerHolder.set(null)
-        } else {
-            val sv = surfaceViewRef ?: return
-            try {
-                prefs.edit().putString("rtsp_url", rtspUrl).apply()
-                autoSyncSubnet(rtspUrl)
-                val client = EasyPlayerClient(ctx, sv.holder.surface, receiver)
-                client.start(rtspUrl, Client.TRANSTYPE_TCP, 1,
-                    Client.EASY_SDK_VIDEO_FRAME_FLAG or Client.EASY_SDK_AUDIO_FRAME_FLAG, "", "", null)
-                playerRef = client; isPlaying = true; statusText = "连接中..."
-                playerHolder.set(client)
-            } catch (e: Exception) { Log.e("TunNatHub", "播放失败", e); statusText = "播放失败" }
-        }
+    /** 启动 RTSP 播放 (receiver/autoSyncSubnet 已定义, 无前向引用) */
+    fun doStartPlayback() {
+        val sv = surfaceViewRef ?: return
+        try {
+            prefs.edit().putString("rtsp_url", rtspUrl).apply()
+            autoSyncSubnet(rtspUrl)
+            val client = EasyPlayerClient(ctx, sv.holder.surface, receiver)
+            client.start(rtspUrl, Client.TRANSTYPE_TCP, 1,
+                Client.EASY_SDK_VIDEO_FRAME_FLAG or Client.EASY_SDK_AUDIO_FRAME_FLAG, "", "", null)
+            playerRef = client; isPlaying = true; statusText = "连接中..."
+            playerHolder.set(client)
+        } catch (e: Exception) { Log.e("TunNatHub", "播放失败", e); statusText = "播放失败" }
     }
+
+    /** 自动重连: 播放失败后延迟重试 (限次, 手动停止后不触发) */
+    fun doScheduleReconnect() {
+        if (!autoReconnectActive) return                     // 手动停止 → 不重连
+        if (isPlaying) return                                // 已在播 → 不重连
+        if (autoReconnectCount >= MAX_AUTO_RECONNECT) {      // 达到上限 → 停止
+            statusText = "自动重连已达上限, 请手动重试"
+            AppLog.w("Player", "自动重连达上限 ($autoReconnectCount)")
+            return
+        }
+        autoReconnectCount++
+        AppLog.i("Player", "自动重连 (${autoReconnectCount}/$MAX_AUTO_RECONNECT)")
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (autoReconnectActive && !isPlaying && surfaceViewRef != null) {
+                startPlaybackFn()
+            }
+        }, AUTO_RECONNECT_DELAY_MS)
+    }
+
+    // 函数引用赋值 (打破循环引用)
+    startPlaybackFn = { doStartPlayback() }
+    scheduleAutoReconnectFn = { doScheduleReconnect() }
 
     @Composable
     fun RcPanelContent() {

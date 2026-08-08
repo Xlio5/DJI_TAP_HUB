@@ -55,6 +55,10 @@ class TunNatVpnService : VpnService() {
         /** 是否正在重连 USB */
         val isReconnectingState = mutableStateOf(false)
 
+        /** VPN 服务进程是否存活 (与 isRunning 区分: 服务在但 USB 断开时 isRunning=false) */
+        @Volatile var isStartedForUi: Boolean = false
+            private set
+
         /** 当前 VpnService 实例（供 protectSocket 静态调用） */
         @Volatile private var instance: TunNatVpnService? = null
 
@@ -129,7 +133,7 @@ class TunNatVpnService : VpnService() {
     private var tunFd: ParcelFileDescriptor? = null
     private var usbBridge: UsbBridge? = null
     private var isStarted = false
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val reconnectScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onCreate() {
@@ -151,6 +155,7 @@ class TunNatVpnService : VpnService() {
             usbBridge = null
         }
         isStarted = true
+        isStartedForUi = true
         isRunning = true
 
         // 前台服务
@@ -174,10 +179,15 @@ class TunNatVpnService : VpnService() {
             when (state) {
                 com.tunnathub.app.usb.LinkState.Connected -> {
                     isReconnectingState.value = false
+                    // 状态联动: USB 转发活跃 → isRunning=true (UI 显示连接/运行)
+                    isRunning = true
                     updateNotification("已连接 (USB Bulk)")
                 }
                 com.tunnathub.app.usb.LinkState.Disconnected -> {
                     isReconnectingState.value = true
+                    // 状态联动: USB 转发断开 → isRunning=false (UI 显示"连接"可点击重连)
+                    // 服务进程保持存活, 重连协程继续后台静默恢复
+                    isRunning = false
                     updateNotification("USB 已断开")
                     AppLog.w(TAG, "USB 链路断开，等待设备重新连接...")
                     // 启动重连协程
@@ -271,9 +281,14 @@ class TunNatVpnService : VpnService() {
      */
     private fun stopVpn() {
         isStarted = false
+        isStartedForUi = false
         isRunning = false
         usbBridge?.disconnect()
         usbBridge = null
+
+        // 取消旧协程 (TUN→USB / USB→TUN), 避免下次启动时旧协程占着 TUN/USB fd
+        scope.cancel()
+        scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
         try {
             tunFd?.close()
