@@ -104,7 +104,8 @@ class MainActivity : ComponentActivity() {
             var pollCount by remember { mutableIntStateOf(0) }
             var autoConnected by remember { mutableStateOf(false) }
 
-            LaunchedEffect(pollState) {
+            // H-1: key 用 Unit 而非 pollState, 避免 118 行 pollState="found" 触发 LaunchedEffect 重启 → 重复 startAuthFlow
+            LaunchedEffect(Unit) {
                 val um = this@MainActivity.getSystemService(Context.USB_SERVICE) as UsbManager
                 var count = 0
                 while (count < USB_POLL_MAX && !autoConnected) {
@@ -1021,10 +1022,19 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 LaunchedEffect(vpnRunning, roReload) {
                                     if (!vpnRunning) return@LaunchedEffect
                                     roMsg = "读取中..."
-                                    try {
-                                        val text = java.net.URL("http://10.0.0.1:8080/api/rc/output").openConnection()
-                                            .apply { connectTimeout = 3000; readTimeout = 3000 }
-                                            .getInputStream().bufferedReader().readText()
+                                    // H-3: 网络请求放 IO 线程, 避免阻塞主线程 (ANR 风险)
+                                    val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        try {
+                                            val text = java.net.URL("http://10.0.0.1:8080/api/rc/output").openConnection()
+                                                .apply { connectTimeout = 3000; readTimeout = 3000 }
+                                                .getInputStream().bufferedReader().readText()
+                                            Pair(text, "")  // (内容, 错误)
+                                        } catch (e: Exception) {
+                                            Pair("", "读取失败, 点刷新重试")
+                                        }
+                                    }
+                                    val text = result.first
+                                    if (text.isNotEmpty()) {
                                         roMode = jsonString(text, "mode") ?: "sbus"
                                         roBaud = jsonString(text, "baud") ?: "auto"
                                         roPreset = jsonString(text, "map_preset") ?: "default"
@@ -1032,8 +1042,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                         roSbusStd = (jsonString(text, "sbus_std") ?: "true") == "true"
                                         roSources = (jsonString(text, "sources") ?: "").split(",").filter { it.isNotEmpty() }
                                         roMsg = if (roReload > 0) "已读取配置" else ""
-                                    } catch (_: Exception) {
-                                        roMsg = "读取失败, 点刷新重试"
+                                    } else {
+                                        roMsg = result.second
                                     }
                                 }
 
@@ -1161,18 +1171,25 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     LaunchedEffect(roMode, roReload) {
                                         if (roMode != "crsf") return@LaunchedEffect
                                         while (true) {
-                                            try {
-                                                val t = java.net.URL("http://10.0.0.1:8080/api/rc/telemetry").openConnection()
-                                                    .apply { connectTimeout = 1500; readTimeout = 1500 }
-                                                    .getInputStream().bufferedReader().readText()
-                                                val lat = jsonString(t, "lat") ?: "-"
-                                                val rem = jsonString(t, "remaining_pct") ?: "-"
-                                                val upQ = jsonString(t, "up_quality") ?: "-"
-                                                val dnQ = jsonString(t, "dn_quality") ?: "-"
+                                            // H-4: 网络请求放 IO 线程, 避免阻塞主线程
+                                            val res = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                try {
+                                                    java.net.URL("http://10.0.0.1:8080/api/rc/telemetry").openConnection()
+                                                        .apply { connectTimeout = 1500; readTimeout = 1500 }
+                                                        .getInputStream().bufferedReader().readText()
+                                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                                    throw e
+                                                } catch (_: Exception) { "" }
+                                            }
+                                            if (res.isNotEmpty()) {
+                                                val lat = jsonString(res, "lat") ?: "-"
+                                                val rem = jsonString(res, "remaining_pct") ?: "-"
+                                                val upQ = jsonString(res, "up_quality") ?: "-"
+                                                val dnQ = jsonString(res, "dn_quality") ?: "-"
                                                 tlText = "链路 上行${upQ}% 下行${dnQ}% · 电量 ${rem}% · GPS lat=$lat"
-                                            } catch (e: kotlinx.coroutines.CancellationException) {
-                                                throw e
-                                            } catch (_: Exception) { tlText = "回传不可用" }
+                                            } else {
+                                                tlText = "回传不可用"
+                                            }
                                             kotlinx.coroutines.delay(2000)
                                         }
                                     }
@@ -1190,7 +1207,13 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 var codecList by remember { mutableStateOf(listOf("auto")) }
                                 var codecDropdown by remember { mutableStateOf(false) }
                                 var codecSaved by remember { mutableStateOf(false) }
-                                LaunchedEffect(Unit) { try { codecList = listOf("auto") + EasyPlayerClient.listAvailableDecoders() } catch (_: Exception) {} }
+                                // H-5: JNI 原生调用放 IO 线程, 避免阻塞主线程
+                                LaunchedEffect(Unit) {
+                                    val decoders = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        try { EasyPlayerClient.listAvailableDecoders() } catch (_: Exception) { emptyList() }
+                                    }
+                                    codecList = listOf("auto") + decoders
+                                }
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                     Box(modifier = Modifier.weight(1f)) {
                                         Row(modifier = Modifier.fillMaxWidth().height(32.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).clickable { codecDropdown = !codecDropdown }.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {

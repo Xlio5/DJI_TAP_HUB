@@ -846,25 +846,29 @@ static std::string apiStats() {
     // 格式: [统计] TX=123/456B RX=789/012B err=0
     uint64_t txPkts=0, txBytes=0, rxPkts=0, rxBytes=0, err=0;
 
+    // CRIT#6: 安全解析数字, 日志损坏时 stoull 抛异常会终止进程
+    auto safeStoull = [](const std::string& s) -> uint64_t {
+        try { return std::stoull(s); } catch (...) { return 0; }
+    };
     std::istringstream iss(tail);
     std::string w;
     while (iss >> w) {
         if (w.rfind("TX=",0) == 0) {
             auto s = w.substr(3);
             auto slash = s.find('/');
-            txPkts = std::stoull(s.substr(0, slash));
+            txPkts = safeStoull(s.substr(0, slash));
             auto b = s.substr(slash+1);
             if (!b.empty() && b.back() == 'B') b.pop_back();
-            txBytes = b.empty() ? 0 : std::stoull(b);
+            txBytes = safeStoull(b);
         } else if (w.rfind("RX=",0) == 0) {
             auto s = w.substr(3);
             auto slash = s.find('/');
-            rxPkts = std::stoull(s.substr(0, slash));
+            rxPkts = safeStoull(s.substr(0, slash));
             auto b = s.substr(slash+1);
             if (!b.empty() && b.back() == 'B') b.pop_back();
-            rxBytes = b.empty() ? 0 : std::stoull(b);
+            rxBytes = safeStoull(b);
         } else if (w.rfind("err=",0) == 0) {
-            err = std::stoull(w.substr(4));
+            err = safeStoull(w.substr(4));
         }
     }
 
@@ -1236,7 +1240,16 @@ static void handleFirmwareUpload(int fd) {
     std::string headers;
     while (true) { std::string line = readLine(fd); if (line.empty()) break; headers += line + "\n"; }
     auto clStr = findHeader(headers, "Content-Length");
-    size_t contentLen = clStr.empty() ? 0 : std::stoull(clStr);
+    // CRIT#4: stoull 对非法值抛异常会终止进程, try-catch 防护
+    size_t contentLen = 0;
+    if (!clStr.empty()) {
+        try { contentLen = std::stoull(clStr); }
+        catch (...) {
+            std::cout << "[fw] ERR: bad Content-Length" << std::endl;
+            resp.code = 400; resp.body = R"({"ok":false,"error":"bad Content-Length"})";
+            sendClose(resp, fd); return;
+        }
+    }
     std::cout << "[fw] SIZE: " << contentLen << " bytes (" << (contentLen/1024) << "KB)" << std::endl;
     if (contentLen < 1024*1024 || contentLen > 8*1024*1024) {
         std::cout << "[fw] ERR: invalid size" << std::endl;
@@ -1254,7 +1267,13 @@ static void handleFirmwareUpload(int fd) {
     while (remaining > 0) {
         size_t chunk = remaining < sizeof(buf) ? remaining : sizeof(buf);
         ssize_t n = ::recv(fd, buf, chunk, 0); if (n <= 0) break;
-        ::write(fwFd, buf, n); remaining -= n;
+        ssize_t written = ::write(fwFd, buf, n);   // CRIT#5: 检查写返回值, 短写中止避免坏固件
+        if (written != n) {
+            std::cout << "[fw] ERR: write 短写 " << written << "/" << n << std::endl;
+            remaining = SIZE_MAX;  // 标记失败
+            break;
+        }
+        remaining -= n;
         if (contentLen - remaining - lastRpt >= 512*1024) {
             lastRpt = contentLen - remaining;
             std::cout << "[fw] RECV: " << (lastRpt/1024) << "/" << (contentLen/1024) << "KB" << std::endl;
@@ -1325,8 +1344,12 @@ static void handleFirmwareUpload(int fd) {
         uint8_t lastSlot = runningOnB ? 0x00 : 0xFF;     // B or A
         uint8_t tgtFlag  = runningOnB ? 0xFF : 0x00;     // A or B
         uint8_t ctl[6] = {tgtFlag, 0x00, 0x03, 0x01, lastSlot, 0x00};
-        ::lseek(slotFd, 0xFC000, SEEK_SET); ::write(slotFd, ctl, 6);
+        // CRIT#7: 检查 lseek/write 返回值, 写失败则报错 (ctl 损坏会启动失败)
+        off_t seekRc = ::lseek(slotFd, 0xFC000, SEEK_SET);
+        ssize_t ctlRc = (seekRc == (off_t)0xFC000) ? ::write(slotFd, ctl, 6) : -1;
         ::close(slotFd); sync();
+        if (ctlRc != 6)
+            std::cerr << "[fw] WARN: OTA ctl 写入失败 (" << ctlRc << "/6)" << std::endl;
         std::cout << "[fw] FLAG: target=" << (tgtFlag ? "A" : "B")
                   << " last=" << (lastSlot ? "A" : "B")
                   << " trial=3 retries" << std::endl;

@@ -78,8 +78,8 @@ static std::atomic<char> g_out_mode{'s'}; // 's' = SBUS, 'c' = CRSF
 static std::atomic<int>  g_out_baud{100000}; // 实际波特率 (SBUS标准=100000, SBUS非标=115200, CRSF=420000)
 static bool g_sbus_std = true;          // SBUS 标准模式: true=100k 8E2, false=115200 8N1
 static bool g_crsf_telem = true;        // CRSF 是否接收回传
-static bool g_ch_map_valid = false;     // 通道映射已从配置加载
-static uint8_t g_ch_map[CH_COUNT];      // 通道映射表
+static std::atomic<bool> g_ch_map_valid{false};  // CRIT#2: atomic, 主线程热重配写 + rx_thread 读
+static uint8_t g_ch_map[CH_COUNT];      // 通道映射表 (读写受 g_mtx 保护)
 static crsf_telem_t g_telem;            // 最近回传数据 (CRSF 回传线程写)
 static bool g_pb6_debug = false;        // PB6 接地=true → UART0 作为 debug 串口, 不输出协议
 
@@ -133,6 +133,8 @@ static bool pb6_grounded(void)
     const uintptr_t PAGE_OFF  = PIO_PHYS - BASE;      /* 0x800, 页内偏移 */
     const size_t    PG        = (size_t)sysconf(_SC_PAGESIZE);
 
+    // 注: 此函数需要 O_RDWR (154-162 行配置 PB6 为 input + pull-up), 功能必需。
+    // 风险缓解: 每次 open+mmap+munmap+close, 写窗口极短。
     int memfd = ::open("/dev/mem", O_RDWR | O_SYNC);
     if (memfd < 0) {
         std::fprintf(stderr, "[dji_rc] PB6 检测: 无法打开 /dev/mem (%s)\n", std::strerror(errno));
@@ -293,7 +295,8 @@ static void debug_log(const char *fmt, ...);
 static int64_t now_us() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+    // CRIT#1: 用 1000000LL, 避免 32-bit ARM 上 ts.tv_sec*1000000 (long) 35分钟溢出回卷
+    return (int64_t)ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
 }
 
 static void debug_uart0_open(const char *dev, int baud)
@@ -694,7 +697,8 @@ static void out_send(const rc_state_t &m)
     if (outFd < 0) return;
 
     uint16_t ch[CH_COUNT];
-    rc_map_build(&m, g_ch_map_valid ? g_ch_map : NULL, ch);
+    // CRIT#2: atomic load g_ch_map_valid; g_ch_map 在 g_mtx 保护下写入 (热重配), 读取此处
+    rc_map_build(&m, g_ch_map_valid.load() ? g_ch_map : NULL, ch);
 
     int n = 0;
     if (outMode == 'c') {
@@ -949,9 +953,11 @@ static bool load_rc_output_cfg(char &mode, int &baud, bool &sbus_std)
 
     auto presetS = cfg_json_str(obj, "map_preset");
     auto preset = rc_preset_parse(presetS.c_str());
+    // CRIT#2: g_ch_map 写入加锁 (out_send 读取), 防数据竞争
+    g_mtx.lock();
     if (preset != MAP_CUSTOM) {
         rc_map_apply_preset(preset, g_ch_map);
-        g_ch_map_valid = true;
+        g_ch_map_valid.store(true);
     } else {
         /* map: 逗号分隔 source 名, 如 "ch1,ch2,ch3,ch4,ch5,ch6,mode,rec,..." */
         std::string mapS = cfg_json_str(obj, "map");
@@ -967,9 +973,10 @@ static bool load_rc_output_cfg(char &mode, int &baud, bool &sbus_std)
                 if (comma == std::string::npos) break;
                 pos = comma + 1;
             }
-            if (idx >= CH_COUNT) g_ch_map_valid = true;
+            if (idx >= CH_COUNT) g_ch_map_valid.store(true);
         }
     }
+    g_mtx.unlock();
     return found;
 }
 
@@ -1061,7 +1068,7 @@ int main(int argc, char **argv)
         } else {
             std::printf("[dji_rc] 输出 %c: %s @%d %s fd=%d (通道映射 %s)\n",
                         out_mode, out_dev, out_baud, out_even2 ? "8E2" : "8N1", newFd,
-                        g_ch_map_valid ? "custom" : "default");
+                        g_ch_map_valid.load() ? "custom" : "default");
         }
     }
     sockaddr_in rcmsg_dst;
