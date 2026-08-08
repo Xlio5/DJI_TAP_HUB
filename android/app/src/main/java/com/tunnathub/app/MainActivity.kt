@@ -54,13 +54,16 @@ import com.tunnathub.app.BuildConfig
 import com.tunnathub.app.service.TunNatVpnService
 import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
+import com.tunnathub.app.video.Media3RtspProbePlayer
+import com.tunnathub.app.video.RtspPlaybackEngine
 import kotlinx.coroutines.*
 import org.easydarwin.video.BenchmarkStats
 import org.easydarwin.video.Client
 import org.easydarwin.video.LowLatencyRtspPlayer
+import org.easydarwin.video.RtspPlayerSession
 
 /** Activity 与 Compose 共享的播放器引用，用于 onDestroy 时释放 */
-private val playerHolder = java.util.concurrent.atomic.AtomicReference<LowLatencyRtspPlayer?>(null)
+private val playerHolder = java.util.concurrent.atomic.AtomicReference<RtspPlayerSession?>(null)
 
 class MainActivity : ComponentActivity() {
     companion object {
@@ -270,7 +273,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var statusText by remember { mutableStateOf("") }
     var resolutionText by remember { mutableStateOf("") }
     var surfaceViewRef by remember { mutableStateOf<SurfaceView?>(null) }
-    var playerRef by remember { mutableStateOf<LowLatencyRtspPlayer?>(null) }
+    var playerRef by remember { mutableStateOf<RtspPlayerSession?>(null) }
     var autoReconnectCount by remember { mutableStateOf(0) }   // 自动重连计数
     var autoReconnectActive by remember { mutableStateOf(false) } // 自动重连开关(手动停止后关闭)
     // 函数引用 (打破播放回调→schedule→start→播放回调循环引用, 定义后赋值)
@@ -321,6 +324,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var needVpnReconnect by remember { mutableStateOf(false) }
 
     // ── 解码器选择 ──
+    val savedPlaybackEngine = remember { RtspPlaybackEngine.fromPref(prefs.getString("playback_engine", null)) }
+    var playbackEngine by remember { mutableStateOf(savedPlaybackEngine) }
+    var playbackEngineDropdown by remember { mutableStateOf(false) }
     val savedCodec = remember {
         val codec = prefs.getString("forced_codec", null)
         if (codec.isNullOrBlank() || codec == "auto") LowLatencyRtspPlayer.DEFAULT_H264_CODEC else codec
@@ -575,10 +581,35 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         try {
             prefs.edit().putString("rtsp_url", rtspUrl).apply()
             autoSyncSubnet(rtspUrl)
-            val client = LowLatencyRtspPlayer(ctx, sv.holder.surface, playerCallback)
-            client.start(rtspUrl, Client.TRANSTYPE_TCP)
-            playerRef = client; isPlaying = true; statusText = "连接中..."
-            playerHolder.set(client)
+            val session: RtspPlayerSession = if (playbackEngine == RtspPlaybackEngine.MEDIA3_UDP) {
+                val media3 = Media3RtspProbePlayer(ctx, sv.holder.surface, object : Media3RtspProbePlayer.Callback {
+                    override fun onVideoDisplayed() {
+                        Handler(Looper.getMainLooper()).post {
+                            statusText = "播放中 [Media3]"
+                            isPlaying = true
+                            autoReconnectCount = 0
+                            AppLog.i("Player", "Media3 RTSP首帧显示")
+                        }
+                    }
+
+                    override fun onError(message: String?) {
+                        Handler(Looper.getMainLooper()).post {
+                            statusText = "Media3播放错误"
+                            isPlaying = false
+                            AppLog.e("Player", "Media3 RTSP错误: ${message ?: "unknown"}")
+                            scheduleAutoReconnectFn()
+                        }
+                    }
+                })
+                media3.start(rtspUrl)
+                media3
+            } else {
+                val client = LowLatencyRtspPlayer(ctx, sv.holder.surface, playerCallback)
+                client.start(rtspUrl, Client.TRANSTYPE_TCP)
+                client
+            }
+            playerRef = session; isPlaying = true; statusText = "连接中..."
+            playerHolder.set(session)
         } catch (e: Exception) { Log.e("TunNatHub", "播放失败", e); statusText = "播放失败" }
     }
 
@@ -1338,6 +1369,26 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("RC 遥控器")
                                 Text("已移到左侧栏“遥控”页，显示 CH1-CH16、raw_ch1-raw_ch6、C1/C2/BACK 等按键。", fontSize = 10.sp, color = Color(0xFF64748B), lineHeight = 15.sp)
+
+                                Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
+                                SectionHdr("播放引擎")
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    Row(modifier = Modifier.fillMaxWidth().height(32.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).clickable { playbackEngineDropdown = !playbackEngineDropdown }.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(playbackEngine.label(), fontSize = 10.sp, color = if (playbackEngine == RtspPlaybackEngine.LOW_LATENCY) Color(0xFF22C55E) else Color(0xFFF59E0B), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                        Text(if (playbackEngineDropdown) "▲" else "▼", fontSize = 9.sp, color = Color(0xFF64748B))
+                                    }
+                                    DropdownMenu(expanded = playbackEngineDropdown, onDismissRequest = { playbackEngineDropdown = false }, modifier = Modifier.background(Color(0xFF1E293B))) {
+                                        RtspPlaybackEngine.values().forEach { engine ->
+                                            DropdownMenuItem(text = { Text(engine.label(), fontSize = 10.sp, color = Color(0xFFE2E8F0)) }, onClick = {
+                                                playbackEngine = engine
+                                                playbackEngineDropdown = false
+                                                prefs.edit().putString("playback_engine", engine.prefValue()).apply()
+                                                AppLog.i("Player", "播放引擎切换: ${engine.prefValue()}")
+                                            }, modifier = Modifier.background(if (engine == playbackEngine) Color(0xFF334155) else Color(0xFF1E293B)))
+                                        }
+                                    }
+                                }
+                                Text(if (playbackEngine == RtspPlaybackEngine.MEDIA3_UDP) "Media3 默认 UDP 优先，用于验证摄像头/RTP UDP 是否可通。" else "默认低延迟硬解路径，固定 c2.qti.avc.decoder.low_latency。", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.padding(top = 3.dp))
 
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("解码器")

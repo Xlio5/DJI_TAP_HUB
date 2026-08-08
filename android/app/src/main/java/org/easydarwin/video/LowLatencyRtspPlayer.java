@@ -18,7 +18,7 @@ import java.util.Queue;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
+public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPlayerSession {
     public interface Callback {
         void onVideoDisplayed(String codecName);
         void onVideoSize(int width, int height);
