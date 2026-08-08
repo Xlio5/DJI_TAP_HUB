@@ -260,6 +260,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         return "%.1f".format(bytes * 8.0 / dtMs / 1000.0)
     }
 
+    // C-02: 协程 scope 随 composition 取消 — apiPost 使用, 避免 Activity 销毁后孤儿协程泄漏
+    val apiScope = androidx.compose.runtime.rememberCoroutineScope()
+
     val savedUrl = prefs.getString("rtsp_url", "rtsp://192.168.88.100:554/stream1")
         ?: "rtsp://192.168.88.100:554/stream1"
     var rtspUrl by remember { mutableStateOf(savedUrl) }
@@ -278,7 +281,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var hbDaemon by remember { mutableStateOf(false) }
     var hbTty by remember { mutableStateOf(false) }
     var hbTun by remember { mutableStateOf(false) }
-    var hbTime by remember { mutableStateOf("") }
     var hbCount by remember { mutableStateOf(0) }
     var hbBw by remember { mutableStateOf("0.0") }
     var hbTx by remember { mutableStateOf(0L) }
@@ -303,7 +305,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     // ── 摄像头列表 ──
     data class CamInfo(val name: String, val url: String)
     var cameras by remember { mutableStateOf(listOf<CamInfo>()) }
-    var selectedCam by remember { mutableStateOf(0) }
 
     // ── 端口转发 ──
     data class FwdInfo(val proto: String, val port: Int, val dest: String)
@@ -328,16 +329,22 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var testing by remember { mutableStateOf(false) }
 
     // ── HTTP POST ──
+    // C-02: 用 remember 的 apiScope (随 composition 取消), 避免每次调用创建孤儿协程
     fun apiPost(path: String, body: String) {
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+        apiScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val url = java.net.URL("http://10.0.0.1:8080$path")
                 val conn = url.openConnection() as java.net.HttpURLConnection
                 conn.connectTimeout = 3000; conn.readTimeout = 3000
                 conn.doOutput = true; conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json")
-                conn.outputStream.write(body.toByteArray())
-                conn.inputStream.close()
+                try {
+                    conn.outputStream.use { it.write(body.toByteArray()) }
+                    // H-04: 消费响应, use{} 保证异常路径也关闭流
+                    conn.inputStream.use { it.readBytes() }
+                } finally {
+                    conn.disconnect()
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -423,20 +430,20 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     LaunchedEffect(vpnRunning) {
         if (!vpnRunning) return@LaunchedEffect
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            var sock: java.net.DatagramSocket? = null
             try {
                 // 打开受保护的 UDP socket (绑定 10.0.0.2:65530), 内核才投递入站包
-                sock = TunNatVpnService.openProtectedPort(RcMsg.PORT)
+                // H-02: 捕获局部 val, 避免 !! (sock 是 var, 并发可能被重赋值)
+                val sock = TunNatVpnService.openProtectedPort(RcMsg.PORT)
                 if (sock == null) {
                     rcConnected = false
                     return@withContext
                 }
-                sock!!.soTimeout = 2000   // 避免 VPN 断开时永久阻塞
+                sock.soTimeout = 2000   // 避免 VPN 断开时永久阻塞
                 val buf = ByteArray(256)
                 val pkt = java.net.DatagramPacket(buf, buf.size)
                 while (vpnRunning) {
                     try {
-                        sock!!.receive(pkt)
+                        sock.receive(pkt)
                         val data = RcMsg.parse(pkt.data.copyOf(pkt.length))
                         if (data != null) {
                             rcConnected = true

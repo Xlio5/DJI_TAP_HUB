@@ -132,9 +132,11 @@ class TunNatVpnService : VpnService() {
 
     private var tunFd: ParcelFileDescriptor? = null
     private var usbBridge: UsbBridge? = null
-    private var isStarted = false
-    private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var reconnectScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    @Volatile private var isStarted = false   // M-05: 主线程写/IO线程读, 需可见性
+    // C-01: 主线程重建 (stopVpn), IO 线程读 (onLinkStateChange 触发 reconnectScope.launch),
+    // 无 @Volatile 可能读到已取消的旧 scope → 重连静默失败
+    @Volatile private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    @Volatile private var reconnectScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onCreate() {
         super.onCreate()
@@ -173,9 +175,10 @@ class TunNatVpnService : VpnService() {
         }
 
         // 启动 USB Bridge（带自动重试 + 回调更新通知）
-        usbBridge = UsbBridge(this, tunFd!!)
+        val fd = tunFd ?: return START_NOT_STICKY   // L-04: 避免 !!
+        usbBridge = UsbBridge(this, fd)
         // 无限重连 — USB 断开自动恢复，等 USB_DEVICE_ATTACHED 广播
-        usbBridge!!.onLinkStateChange = { state ->
+        usbBridge?.onLinkStateChange = { state ->
             when (state) {
                 com.tunnathub.app.usb.LinkState.Connected -> {
                     isReconnectingState.value = false
@@ -270,7 +273,6 @@ class TunNatVpnService : VpnService() {
     }
 
     private var reconnectReceiver: BroadcastReceiver? = null
-    private val reconnectLatch = java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CountDownLatch?>(null)
     private val reconnecting = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
@@ -290,12 +292,16 @@ class TunNatVpnService : VpnService() {
                 retries++
                 try {
                     updateNotification("USB 连接中... ($retries)")
-                    usbBridge!!.start(scope)
+                    // H-02: 局部变量安全检查, 避免与 stopVpn() 置 null 竞态 NPE
+                    val bridge = usbBridge ?: break
+                    bridge.start(scope)
                     AppLog.i(TAG, "USB 连接成功 (第${retries}次)")
                     isReconnectingState.value = false
                     // Connected 回调已设 isRunning=true, 这里兜底
                     isRunning = true
                     return
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e   // H-01: 协程取消必须传播, 避免 isRunning 被错误覆写
                 } catch (e: Exception) {
                     AppLog.w(TAG, "USB 连接失败 (第${retries}次): ${e.message}")
                     updateNotification("USB 重连中... ($retries)")
@@ -313,7 +319,6 @@ class TunNatVpnService : VpnService() {
     private fun unregisterReconnectReceiver() {
         reconnectReceiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }
         reconnectReceiver = null
-        reconnectLatch.set(null)
     }
 
     /**

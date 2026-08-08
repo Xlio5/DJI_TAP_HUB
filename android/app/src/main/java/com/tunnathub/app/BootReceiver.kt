@@ -70,9 +70,11 @@ class BootReceiver : BroadcastReceiver() {
                         // 检查并请求 USB 权限（冷启后可能丢失）
                         if (!usbManager.hasPermission(device)) {
                             Log.w(TAG, "USB 权限未授予，请求中...")
+                            // H-06: 用应用私有 action 接收权限回调 (不能复用系统广播 ACTION_USB_DEVICE_ATTACHED,
+                            // 该 action 的接收分支只查 EXTRA_DEVICE, 权限回调无此 extra → 结果被静默丢弃)
                             val pi = PendingIntent.getBroadcast(
                                 context, 0,
-                                Intent(UsbManager.ACTION_USB_DEVICE_ATTACHED).setPackage(context.packageName),
+                                Intent("com.tunnathub.app.USB_PERM").setPackage(context.packageName),
                                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
                             )
                             usbManager.requestPermission(device, pi)

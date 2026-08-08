@@ -115,8 +115,11 @@ class UsbBridge(
             throw IllegalStateException("未找到 Bulk 端点")
         }
 
-        Log.i(TAG, "USB 已连接: epOut=0x${epOut!!.address.toString(16)}, epIn=0x${epIn!!.address.toString(16)}")
-        AppLog.i(TAG, "USB 已连接 epOut=0x${epOut!!.address.toString(16)} epIn=0x${epIn!!.address.toString(16)}")
+        // H-01: 捕获局部引用, 避免在日志输出窗口与 disconnect() 置 null 的竞态 NPE
+        val outEp = epOut ?: throw IllegalStateException("epOut 为空")
+        val inEp = epIn ?: throw IllegalStateException("epIn 为空")
+        Log.i(TAG, "USB 已连接: epOut=0x${outEp.address.toString(16)}, epIn=0x${inEp.address.toString(16)}")
+        AppLog.i(TAG, "USB 已连接 epOut=0x${outEp.address.toString(16)} epIn=0x${inEp.address.toString(16)}")
 
         // 发送 DTR/RTS 激活 g_serial TTY 数据通道
         activateTty()
@@ -134,7 +137,12 @@ class UsbBridge(
         try {
             job1.join()
             job2.join()
-        } catch (_: CancellationException) {}
+        } catch (e: CancellationException) {
+            // H-01: 协程被取消时不吞异常, 重抛让调用方 (doReconnect) 感知取消,
+            // 避免 stopVpn() 后 isRunning 被错误覆写为 true
+            if (!coroutineContext.isActive) throw e
+            // 否则: 协程自己完成了, 忽略
+        }
     }
 
     /**
@@ -174,10 +182,12 @@ class UsbBridge(
      * 遍历所有接口和端点找到 Bulk IN/OUT
      */
     private fun findEndpoints(device: UsbDevice) {
+        // H-01: 捕获局部引用, 避免与 disconnect() 竞态
+        val conn = usbConnection ?: throw IllegalStateException("usbConnection 为空")
         for (i in 0 until device.interfaceCount) {
             val iface = device.getInterface(i)
             // 声明接口
-            if (!usbConnection!!.claimInterface(iface, true)) {
+            if (!conn.claimInterface(iface, true)) {
                 Log.w(TAG, "无法声明接口 $i")
                 continue
             }
