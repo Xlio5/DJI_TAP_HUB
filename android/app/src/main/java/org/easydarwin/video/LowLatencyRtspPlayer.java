@@ -11,8 +11,10 @@ import android.view.Surface;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Queue;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -23,6 +25,17 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
         void onTimeout();
         void onUnsupportedVideo();
         void onError(String message, Throwable error);
+        default void onStats(BenchmarkStats.Snapshot snapshot) {}
+    }
+
+    private static final class FrameSample {
+        final Client.FrameInfo frame;
+        final long receivedNs;
+
+        FrameSample(Client.FrameInfo frame, long receivedNs) {
+            this.frame = frame;
+            this.receivedNs = receivedNs;
+        }
     }
 
     private static final String TAG = "LowLatencyRtspPlayer";
@@ -33,11 +46,12 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
     private final Context context;
     private final Surface surface;
     private final Callback callback;
-    private final ArrayBlockingQueue<Client.FrameInfo> videoQueue = new ArrayBlockingQueue<>(1);
+    private final ArrayBlockingQueue<FrameSample> videoQueue = new ArrayBlockingQueue<>(1);
 
     private volatile boolean running;
     private Thread decoderThread;
     private Client client;
+    private BenchmarkStats stats = new BenchmarkStats("auto");
     private int channel;
     private boolean waitingKeyFrame = true;
     private short width;
@@ -64,12 +78,21 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
 
     public static List<String> listAvailableDecoders() {
         List<String> list = new ArrayList<>();
+        list.addAll(listAvailableDecoders("video/avc"));
+        for (String name : listAvailableDecoders("video/hevc")) {
+            if (!list.contains(name)) list.add(name);
+        }
+        return list;
+    }
+
+    public static List<String> listAvailableDecoders(String mimeType) {
+        List<String> list = new ArrayList<>();
         int numCodecs = MediaCodecList.getCodecCount();
         for (int i = 0; i < numCodecs; i++) {
             MediaCodecInfo codecInfo = MediaCodecList.getCodecInfoAt(i);
             if (codecInfo.isEncoder()) continue;
             for (String type : codecInfo.getSupportedTypes()) {
-                if ("video/avc".equalsIgnoreCase(type) || "video/hevc".equalsIgnoreCase(type)) {
+                if (mimeType.equalsIgnoreCase(type)) {
                     if (!list.contains(codecInfo.getName())) list.add(codecInfo.getName());
                 }
             }
@@ -82,6 +105,8 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
         running = true;
         waitingKeyFrame = true;
         videoQueue.clear();
+        stats = new BenchmarkStats(getForcedCodec());
+        stats.markStarted(System.nanoTime());
         decoderThread = new Thread(this::decodeLoop, "LOW_LATENCY_DECODER");
         decoderThread.start();
 
@@ -133,6 +158,8 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
             return;
         }
         if (frameInfo.width == 0 || frameInfo.height == 0) return;
+        long receivedNs = System.nanoTime();
+        stats.recordFrameReceived(receivedNs);
         if (frameInfo.width != width || frameInfo.height != height) {
             width = frameInfo.width;
             height = frameInfo.height;
@@ -140,7 +167,7 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
         }
         if (waitingKeyFrame && frameInfo.type != 1) return;
         waitingKeyFrame = false;
-        offerLatest(frameInfo);
+        offerLatest(new FrameSample(frameInfo, receivedNs));
     }
 
     @Override
@@ -160,10 +187,15 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
     public void sendSeiData(byte[] sei) {
     }
 
-    private void offerLatest(Client.FrameInfo frameInfo) {
-        while (!videoQueue.offer(frameInfo)) {
+    private void offerLatest(FrameSample sample) {
+        while (!videoQueue.offer(sample)) {
             videoQueue.poll();
+            stats.recordInputDropped();
         }
+    }
+
+    public BenchmarkStats.Snapshot snapshotStats() {
+        return stats.snapshot(System.nanoTime());
     }
 
     private void decodeLoop() {
@@ -171,10 +203,12 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
         String codecName = "";
         long firstStampUs = 0;
         boolean displayed = false;
+        Queue<Long> inputTimesNs = new ArrayDeque<>();
         try {
             while (running) {
-                Client.FrameInfo frame = videoQueue.poll(100, TimeUnit.MILLISECONDS);
-                if (frame == null) continue;
+                FrameSample sample = videoQueue.poll(100, TimeUnit.MILLISECONDS);
+                if (sample == null) continue;
+                Client.FrameInfo frame = sample.frame;
                 if (codec == null) {
                     String mime = frame.codec == VIDEO_CODEC_H264 ? "video/avc" : "video/hevc";
                     MediaFormat format = MediaFormat.createVideoFormat(mime, frame.width, frame.height);
@@ -183,6 +217,8 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
                     MediaCodecInfo codecInfo = selectCodec(mime);
                     if (codecInfo == null) throw new IllegalStateException("no decoder for " + mime);
                     codecName = codecInfo.getName();
+                    stats = new BenchmarkStats(codecName);
+                    stats.markStarted(System.nanoTime());
                     codec = MediaCodec.createByCodecName(codecName);
                     Log.w("TUN_DECODER", "LOW_LATENCY USING CODEC: " + codecName);
                     codec.configure(format, surface, null, 0);
@@ -190,12 +226,13 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
                     codec.start();
                 }
                 if (firstStampUs == 0) firstStampUs = frame.stamp;
-                queueInput(codec, frame, frame.stamp - firstStampUs);
-                displayed |= drainOutput(codec, codecName, displayed);
+                queueInput(codec, sample, frame.stamp - firstStampUs, inputTimesNs);
+                displayed |= drainOutput(codec, codecName, displayed, inputTimesNs);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (Throwable t) {
+            stats.recordError(t.getMessage());
             callback.onError(t.getMessage(), t);
             Log.e(TAG, "decoder failed", t);
         } finally {
@@ -209,7 +246,7 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
         }
     }
 
-    private boolean drainOutput(MediaCodec codec, String codecName, boolean displayed) {
+    private boolean drainOutput(MediaCodec codec, String codecName, boolean displayed, Queue<Long> inputTimesNs) {
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
         boolean rendered = displayed;
         while (true) {
@@ -221,23 +258,33 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack {
             }
             if (index >= 0) {
                 codec.releaseOutputBuffer(index, true);
+                Long inputQueuedNs = inputTimesNs.poll();
+                stats.recordRendered(System.nanoTime(), inputQueuedNs == null ? 0 : inputQueuedNs);
                 if (!rendered) {
                     callback.onVideoDisplayed(codecName);
                     rendered = true;
                 }
+                callback.onStats(snapshotStats());
             }
         }
     }
 
-    private void queueInput(MediaCodec codec, Client.FrameInfo frame, long presentationTimeUs) {
+    private void queueInput(MediaCodec codec, FrameSample sample, long presentationTimeUs, Queue<Long> inputTimesNs) {
         int index = codec.dequeueInputBuffer(0);
-        if (index < 0) return;
+        if (index < 0) {
+            stats.recordInputUnavailable();
+            return;
+        }
         ByteBuffer buffer = codec.getInputBuffer(index);
         if (buffer == null) return;
         buffer.clear();
+        Client.FrameInfo frame = sample.frame;
         int length = Math.min(frame.length, buffer.remaining());
         buffer.put(frame.buffer, frame.offset, length);
         codec.queueInputBuffer(index, 0, length, Math.max(0, presentationTimeUs), 0);
+        long nowNs = System.nanoTime();
+        inputTimesNs.offer(nowNs);
+        stats.recordInputQueued(nowNs, sample.receivedNs);
     }
 
     private static MediaCodecInfo selectCodec(String mimeType) {

@@ -55,6 +55,7 @@ import com.tunnathub.app.service.TunNatVpnService
 import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
 import kotlinx.coroutines.*
+import org.easydarwin.video.BenchmarkStats
 import org.easydarwin.video.Client
 import org.easydarwin.video.LowLatencyRtspPlayer
 
@@ -326,6 +327,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     // 延迟测试
     var latencyText by remember { mutableStateOf("") }
     var testing by remember { mutableStateOf(false) }
+    var codecBenchmarkRunning by remember { mutableStateOf(false) }
+    var codecBenchmarkText by remember { mutableStateOf("") }
 
     // ── HTTP POST ──
     // C-02: 用 remember 的 apiScope (随 composition 取消), 避免每次调用创建孤儿协程
@@ -571,6 +574,108 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             playerRef = client; isPlaying = true; statusText = "连接中..."
             playerHolder.set(client)
         } catch (e: Exception) { Log.e("TunNatHub", "播放失败", e); statusText = "播放失败" }
+    }
+
+    fun formatBenchSnapshot(rank: Int, snapshot: BenchmarkStats.Snapshot, error: String?): String {
+        val err = error ?: snapshot.error
+        val prefix = if (rank > 0) "${rank}. " else ""
+        val suffix = if (err.isNullOrBlank()) "" else " err=$err"
+        return prefix + snapshot.codecName +
+            " first=${snapshot.firstFrameMs}ms" +
+            " dec=${snapshot.decodeAvgMs}/${snapshot.decodeP50Ms}/${snapshot.decodeP95Ms}ms" +
+            " cb=${snapshot.callbackToInputAvgMs}/${snapshot.callbackToInputP95Ms}ms" +
+            " frames=${snapshot.outputRendered}" +
+            " drop=${snapshot.inputDropped}" + suffix
+    }
+
+    fun doRunCodecBenchmark() {
+        val sv = surfaceViewRef ?: run {
+            codecBenchmarkText = "Surface 未就绪"
+            return
+        }
+        if (codecBenchmarkRunning) return
+        val url = rtspUrl
+        codecBenchmarkRunning = true
+        codecBenchmarkText = "准备测试..."
+        apiScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val originalCodec = LowLatencyRtspPlayer.getForcedCodec()
+            val candidates = (listOf("auto") + LowLatencyRtspPlayer.listAvailableDecoders("video/avc")).distinct()
+            val results = mutableListOf<Pair<BenchmarkStats.Snapshot, String?>>()
+            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                autoReconnectActive = false
+                playerHolder.getAndSet(null)?.stop()
+                playerRef = null
+                isPlaying = false
+                statusText = "解码器测试中..."
+            }
+            try {
+                candidates.forEachIndexed { index, codecName ->
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        codecBenchmarkText = "(${index + 1}/${candidates.size}) 测试 $codecName"
+                    }
+                    LowLatencyRtspPlayer.setForcedCodec(codecName)
+                    val firstFrame = java.util.concurrent.CountDownLatch(1)
+                    val errorRef = java.util.concurrent.atomic.AtomicReference<String?>(null)
+                    val callback = object : LowLatencyRtspPlayer.Callback {
+                        override fun onVideoDisplayed(codecName: String) {
+                            firstFrame.countDown()
+                        }
+
+                        override fun onVideoSize(width: Int, height: Int) {}
+
+                        override fun onTimeout() {
+                            errorRef.compareAndSet(null, "timeout")
+                            firstFrame.countDown()
+                        }
+
+                        override fun onUnsupportedVideo() {
+                            errorRef.compareAndSet(null, "unsupported")
+                            firstFrame.countDown()
+                        }
+
+                        override fun onError(message: String?, error: Throwable?) {
+                            errorRef.compareAndSet(null, message ?: error?.javaClass?.simpleName ?: "error")
+                            firstFrame.countDown()
+                        }
+                    }
+                    val testPlayer = LowLatencyRtspPlayer(ctx, sv.holder.surface, callback)
+                    try {
+                        testPlayer.start(url, Client.TRANSTYPE_TCP)
+                        val displayed = firstFrame.await(4, java.util.concurrent.TimeUnit.SECONDS)
+                        if (displayed && errorRef.get() == null) {
+                            Thread.sleep(6000)
+                        } else {
+                            Thread.sleep(1000)
+                        }
+                    } catch (e: Exception) {
+                        errorRef.compareAndSet(null, e.javaClass.simpleName)
+                    } finally {
+                        val snapshot = testPlayer.snapshotStats()
+                        testPlayer.stop()
+                        results.add(snapshot to errorRef.get())
+                        val live = results.mapIndexed { i, item -> formatBenchSnapshot(i + 1, item.first, item.second) }
+                            .joinToString("\n")
+                        withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            codecBenchmarkText = live
+                        }
+                    }
+                }
+            } finally {
+                LowLatencyRtspPlayer.setForcedCodec(originalCodec)
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    codecBenchmarkRunning = false
+                    val ranked = results.sortedWith(
+                        compareBy<Pair<BenchmarkStats.Snapshot, String?>> { it.second != null || it.first.firstFrameMs < 0 }
+                            .thenBy { it.first.firstFrameMs }
+                            .thenBy { it.first.decodeP95Ms }
+                    )
+                    codecBenchmarkText = ranked.mapIndexed { i, item -> formatBenchSnapshot(i + 1, item.first, item.second) }
+                        .joinToString("\n")
+                    statusText = "解码器测试完成"
+                    AppLog.i("PlayerBench", "解码器测试完成\n$codecBenchmarkText")
+                }
+            }
+        }
     }
 
     /** 自动重连: 播放失败后延迟重试 (限次, 手动停止后不触发) */
@@ -1256,6 +1361,16 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                         modifier = Modifier.height(30.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))) { Text("应用", fontSize = 10.sp) }
                                 }
                                 if (codecSaved) Text("解码器已切换, 重启播放生效", fontSize = 9.sp, color = Color(0xFFF59E0B), modifier = Modifier.padding(top = 2.dp))
+                                Spacer(Modifier.height(6.dp))
+                                Button(onClick = { doRunCodecBenchmark() }, enabled = !codecBenchmarkRunning && vpnRunning,
+                                    modifier = Modifier.fillMaxWidth().height(30.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E))) {
+                                    Text(if (codecBenchmarkRunning) "测试中..." else "自动测试 H264 解码器", fontSize = 10.sp)
+                                }
+                                if (codecBenchmarkText.isNotEmpty()) {
+                                    Text(codecBenchmarkText, fontSize = 9.sp, color = Color(0xFF38BDF8), lineHeight = 13.sp, modifier = Modifier.padding(top = 4.dp))
+                                }
 
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("诊断")
