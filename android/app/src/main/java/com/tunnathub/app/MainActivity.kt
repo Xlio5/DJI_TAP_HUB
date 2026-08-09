@@ -277,6 +277,12 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var resolutionText by remember { mutableStateOf("") }
     var surfaceViewRef by remember { mutableStateOf<SurfaceView?>(null) }
     var glSurfaceRef by remember { mutableStateOf<com.tunnathub.app.video.GlLowLatencySurface?>(null) }
+    // Surface 是否已就绪 (surfaceCreated 回调后为 true)。
+    // 回前台时 SurfaceView 的 Surface 重建是异步的, 未就绪就播放会拿到已释放的 Surface
+    // → render 线程 lockCanvas 每帧报 "Surface has already been released" → 画面卡死 (流量仍在跑)。
+    var surfaceReady by remember { mutableStateOf(false) }
+    // 挂起标记: Surface 未就绪时收到了播放请求, 等 surfaceCreated 回调后再真正启动
+    var pendingPlayAfterSurface by remember { mutableStateOf(false) }
     var playerRef by remember { mutableStateOf<RtspPlayerSession?>(null) }
     var autoReconnectCount by remember { mutableStateOf(0) }   // 自动重连计数
     var autoReconnectActive by remember { mutableStateOf(false) } // 自动重连开关(手动停止后关闭)
@@ -508,6 +514,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             playerRef?.stop(); playerRef = null; isPlaying = false; statusText = "已停止"
             playerHolder.set(null)
             autoReconnectActive = false  // 手动停止 → 关闭自动重连
+            pendingPlayAfterSurface = false  // 停止后不再等待 Surface, 防止 surfaceCreated 意外启动
         } else {
             autoReconnectActive = true   // 手动播放 → 开启自动重连
             startPlaybackFn()
@@ -587,12 +594,11 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     }
                 }
                 androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
-                    // 回前台: VPN 连且未播放, 等 Surface 重建后自动恢复
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        if (vpnRunning && !isPlaying && rtspUrl.isNotBlank() && surfaceViewRef != null) {
-                            startPlaybackFn()
-                        }
-                    }, 800)
+                    // 回前台: VPN 连且未播放, 恢复播放。
+                    // Surface 重建是异步的, 不一定在此刻就绪; 若未就绪 doStartPlayback 会挂起等 surfaceCreated。
+                    if (vpnRunning && !isPlaying && rtspUrl.isNotBlank() && surfaceViewRef != null) {
+                        startPlaybackFn()
+                    }
                 }
                 else -> {}
             }
@@ -645,6 +651,13 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         val glSrf = glSurfaceRef
         if (playbackEngine != RtspPlaybackEngine.QGC_SOFTWARE && sv == null) return
         if (playbackEngine == RtspPlaybackEngine.QGC_SOFTWARE && glSrf == null) return
+        // Surface 未就绪 (切后台回前台时 Surface 重建是异步的): 挂起等待 surfaceCreated 回调,
+        // 避免用已释放的 Surface 创建播放器 → render 每帧 "Surface has already been released" 画面卡死。
+        if (playbackEngine != RtspPlaybackEngine.QGC_SOFTWARE && !surfaceReady) {
+            pendingPlayAfterSurface = true
+            AppLog.w("Player", "播放请求挂起: Surface 未就绪, 等 surfaceCreated")
+            return
+        }
         // H2: 先释放旧播放器, 避免自动重连时 native 解码器泄漏。
         // 注意: 只用 playerHolder 做权威清理 (与 onDestroy 一致), 避免对同一实例双重 stop 触发 native 崩溃
         playerHolder.getAndSet(null)?.stop()
@@ -1212,7 +1225,25 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                             glSurfaceRef = gl
                                             gl.view
                                         } else {
-                                            SurfaceView(vctx).apply { surfaceViewRef = this }
+                                            SurfaceView(vctx).apply {
+                                                surfaceViewRef = this
+                                                // Surface 生命周期: 就绪才允许播放, 销毁标记失效。
+                                                // 修复回前台后 Surface 未重建完成就播放 → render 每帧失败画面卡死。
+                                                holder.addCallback(object : android.view.SurfaceHolder.Callback {
+                                                    override fun surfaceCreated(holder: android.view.SurfaceHolder) {
+                                                        surfaceReady = true
+                                                        // Surface 就绪了, 若之前有挂起的播放请求 (切后台回前台/自动播放), 立即启动
+                                                        if (pendingPlayAfterSurface && !isPlaying && vpnRunning) {
+                                                            pendingPlayAfterSurface = false
+                                                            startPlaybackFn()
+                                                        }
+                                                    }
+                                                    override fun surfaceChanged(holder: android.view.SurfaceHolder, format: Int, width: Int, height: Int) {}
+                                                    override fun surfaceDestroyed(holder: android.view.SurfaceHolder) {
+                                                        surfaceReady = false
+                                                    }
+                                                })
+                                            }
                                         }
                                     },
                                     modifier = Modifier.fillMaxWidth(0.94f).aspectRatio(16f / 9f),
