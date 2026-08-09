@@ -41,7 +41,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.3"   // 固件版本 — 改这里全局生效
+#define VERSION     "1.6.4"   // 固件版本 — 改这里全局生效
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
@@ -505,11 +505,16 @@ static std::vector<std::string> rtspCameraHosts(const Config& cfg) {
     return hosts;
 }
 
-static void applyRtspUdpRtpForward(const Config& cfg) {
+// 应用 RTSP UDP RTP 转发规则。
+// 返回 true = 已成功应用 (LAN IP 已就绪); false = 尚未就绪 (启动早期 eth0 可能还没拿到 IP),
+// 由主循环周期性重试, 直到应用成功为止 — 修复 V3s 重启后 DNAT 规则永久丢失问题。
+// 幂等: 每条规则先 `-C` 检查已存在, 存在则跳过不重复添加。
+static bool applyRtspUdpRtpForward(const Config& cfg) {
     std::string lanIp = detectLanIp();
     if (lanIp.empty()) {
-        std::cout << "[rtsp-udp] skip: no LAN ip on " << g_lanIface << std::endl;
-        return;
+        std::cout << "[rtsp-udp] skip: no LAN ip on " << g_lanIface
+                  << " (将重试)" << std::endl;
+        return false;
     }
 
     for (const auto& host : rtspCameraHosts(cfg)) {
@@ -535,6 +540,7 @@ static void applyRtspUdpRtpForward(const Config& cfg) {
         std::cout << "[rtsp-udp] " << host << " -> " << RTSP_RTP_TUN_CLIENT
                   << " via " << g_lanIface << " dport 10000:65535" << std::endl;
     }
+    return true;
 }
 
 static bool addForward(Config& cfg, const std::string& proto, int port, const std::string& dest) {
@@ -1491,7 +1497,9 @@ int main() {
     // H-3: 只在配置实际变化时写 SPI, 避免每次启动无条件擦写 NOR flash (磨损寿命)
     if (cfgChanged) saveConfig(cfg);
     applyAllForwards(cfg);
-    applyRtspUdpRtpForward(cfg);
+    // 启动时 eth0 可能尚未拿到 IP, applyRtspUdpRtpForward 会返回 false;
+    // 主循环每 2s 重试直到应用成功 (修复 V3s 重启后 DNAT 规则永久丢失)
+    bool rtspFwdApplied = applyRtspUdpRtpForward(cfg);
 
     // 创建监听 socket
     int srv = socket(AF_INET, SOCK_STREAM, 0);
@@ -1525,10 +1533,23 @@ int main() {
     };
     const int64_t IDLE_TIMEOUT_MS = 10000;   // 空闲连接 10s 后回收
 
+    // RTSP UDP 转发重试: LAN IP 就绪前每 2s 补一次规则, 直到应用成功
+    const int64_t RTSP_FWD_RETRY_MS = 2000;
+    int64_t lastRtspFwdRetryMs = 0;
+
     std::vector<Conn> conns;
     std::vector<struct pollfd> pfds;
 
     while (true) {
+        // RTSP UDP 转发重试: 启动时 eth0 IP 未就绪导致规则未应用时, 周期补齐直到成功
+        if (!rtspFwdApplied && (now_ms() - lastRtspFwdRetryMs) >= RTSP_FWD_RETRY_MS) {
+            lastRtspFwdRetryMs = now_ms();
+            if (applyRtspUdpRtpForward(cfg)) {
+                rtspFwdApplied = true;
+                std::cout << "[rtsp-udp] RTSP UDP 转发规则已补应用" << std::endl;
+            }
+        }
+
         pfds.clear();
         pfds.push_back({srv, POLLIN, 0});
         for (auto& c : conns) pfds.push_back({c.fd, POLLIN, 0});

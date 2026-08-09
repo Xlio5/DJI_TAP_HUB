@@ -97,7 +97,7 @@ PB = bank 1 → bank offset 0x24
 
 ## 六、输出格式
 
-- 固件版本 v1.6.2，App 版本 v1.4.1（当前分支 feature/crsf-elrs）
+- 固件版本 v1.6.4，App 版本 v1.5.2（当前分支 feature/crsf-elrs）
 - 代码引用用 markdown 链接 `[文件](路径:行号)`
 - 汇报用表格清晰呈现验证结果
 
@@ -254,6 +254,13 @@ PB = bank 1 → bank offset 0x24
 | web_server | `69f47711` |
 | rootfs_v5.squashfs（含 usb_tund 修复）| `c91ada62` |
 | spi_image_v5.bin（待烧录）| `17ba5b7a` |
+
+### v1.6.4（RTSP UDP DNAT 自动重试修复）
+
+| 文件 | md5 |
+|---|---|
+| web_server v1.6.4（DNAT 启动自动重试）| `35d997ec732cc34528d598b4dba3d3e3` |
+| rootfs_v164.squashfs（基于 v1.6.2 + 新 web_server）| `a112ca29c239eed916b2897ccdd20318` |
 
 ## 十六、Git 分支状态
 
