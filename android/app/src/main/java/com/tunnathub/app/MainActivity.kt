@@ -239,8 +239,11 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     val ctx = LocalContext.current
     val prefs = ctx.getSharedPreferences("tun_nat_hub", Context.MODE_PRIVATE)
     // 视频自动重连常量 (局部, 供 scheduleAutoReconnect 使用)
-    val MAX_AUTO_RECONNECT = 5
-    val AUTO_RECONNECT_DELAY_MS = 3000L
+    // V3s 重启后链路重建 (web_server DNAT 重试 + USB gadget 稳定) 可能需 1-2 分钟,
+    // 重连次数需足够覆盖该窗口, 否则链路刚就绪时 app 已放弃 → 手动点才恢复。
+    val MAX_AUTO_RECONNECT = 20
+    // 基础重连延迟: 第 n 次延迟 = min(3s * 2^n, 60s), 链路未稳时不急着重连, 避免反复失败
+    val AUTO_RECONNECT_BASE_DELAY_MS = 3000L
     // 响应式订阅 VPN 运行状态: isRunningState 变化时触发重组,
     // 使下方 LaunchedEffect(vpnRunning) 在 VPN 启动后真正执行
     val vpnRunning by TunNatVpnService.isRunningState
@@ -886,7 +889,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     fun doScheduleReconnect() {
         if (!autoReconnectActive) return                     // 手动停止 → 不重连
         if (isPlaying) return                                // 已在播 → 不重连
-        if (autoReconnectCount >= MAX_AUTO_RECONNECT) {      // 达到上限 → 停止
+        // VPN 已断 → 链路不存在, 不重连 (等 VPN 重新连上后自动播放会触发)
+        if (!vpnRunning) return
+        if (autoReconnectCount >= MAX_AUTO_RECONNECT) {      // 达到上限 → 停止 (不再手动点)
             statusText = "自动重连已达上限, 请手动重试"
             AppLog.w("Player", "自动重连达上限 ($autoReconnectCount)")
             playerHolder.getAndSet(null)?.stop()
@@ -895,12 +900,15 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             return
         }
         autoReconnectCount++
-        AppLog.i("Player", "自动重连 (${autoReconnectCount}/$MAX_AUTO_RECONNECT)")
+        // 指数退避: 第 n 次延迟 = min(3s * 2^n, 60s)。链路重建期 (V3s 重启) 前几次用短间隔,
+        // 后面拉长, 覆盖 DNAT 重试 + USB 稳定的完整窗口, 链路就绪后自动连上。
+        val delay = minOf(AUTO_RECONNECT_BASE_DELAY_MS * (1L shl autoReconnectCount), 60_000L)
+        AppLog.i("Player", "自动重连 (${autoReconnectCount}/$MAX_AUTO_RECONNECT) ${delay}ms后")
         Handler(Looper.getMainLooper()).postDelayed({
-            if (autoReconnectActive && !isPlaying && surfaceViewRef != null) {
+            if (autoReconnectActive && !isPlaying && surfaceViewRef != null && vpnRunning) {
                 startPlaybackFn()
             }
-        }, AUTO_RECONNECT_DELAY_MS)
+        }, delay)
     }
 
     // 函数引用赋值 (打破循环引用)
