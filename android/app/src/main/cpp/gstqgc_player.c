@@ -394,7 +394,16 @@ Java_com_tunnathub_app_video_GstQgcPlayer_nativeDestroy(JNIEnv *env, jclass claz
         g_thread_join(ctx->thread);
     }
     if (ctx->pipeline) {
+        // 确保 rtspsrc 走完状态机发送 TEARDOWN, 避免摄像头端旧 RTSP 会话残留。
+        // 残留会话会导致回前台新会话 2s 后冲突 (gst_rtspsrc_loop_udp System error),
+        // 摄像头拒绝重连直到旧会话超时释放 (表现为"切后台回前台画面卡死, 手动重开才好")。
+        // 不能直接 set_state(NULL) 后立即 unref: 状态切换是异步的, TEARDOWN 可能还没发出。
+        gst_element_set_state(ctx->pipeline, GST_STATE_PAUSED);
+        gst_element_get_state(ctx->pipeline, NULL, NULL, 2 * GST_SECOND);
+        gst_element_set_state(ctx->pipeline, GST_STATE_READY);
+        gst_element_get_state(ctx->pipeline, NULL, NULL, 2 * GST_SECOND);
         gst_element_set_state(ctx->pipeline, GST_STATE_NULL);
+        gst_element_get_state(ctx->pipeline, NULL, NULL, 2 * GST_SECOND);
         gst_object_unref(ctx->pipeline);
     }
     // 释放全局引用 (避免泄漏)
