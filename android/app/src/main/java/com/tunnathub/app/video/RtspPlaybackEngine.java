@@ -1,7 +1,6 @@
 package com.tunnathub.app.video;
 
 public enum RtspPlaybackEngine {
-    LOW_LATENCY("low_latency", "低延迟硬解"),
     UDP_SELF("udp_self", "自建UDP+PLI"),
     MEDIA3_UDP("media3_udp", "Media3 UDP探测");
 
@@ -25,6 +24,6 @@ public enum RtspPlaybackEngine {
         for (RtspPlaybackEngine engine : values()) {
             if (engine.prefValue.equals(value)) return engine;
         }
-        return LOW_LATENCY;
+        return UDP_SELF;
     }
 }

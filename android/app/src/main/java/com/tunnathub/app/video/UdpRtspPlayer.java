@@ -34,7 +34,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 自建 RTSP UDP 会话播放器：绕开 EasyRTSPClient 黑盒，全链路可控。
+ * 自建 RTSP UDP 会话播放器：RTSP/RTP/RTCP 全链路可控。
  *
  * <p>解决"有流量无画面"（摄像头不主动发关键帧）：
  * <ul>
@@ -104,6 +104,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
     // 解码状态
     private MediaCodec codec;
     private String codecName;
+    private BenchmarkStats stats = new BenchmarkStats("auto");
     private long firstStampUs;
     private boolean decoded;
     private final Queue<Long> inputTimesNs = new ArrayDeque<>();
@@ -156,6 +157,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
         cachedPps = null;
         firstStampUs = 0;
         decoded = false;
+        stats = new BenchmarkStats(LowLatencyRtspPlayer.getForcedCodec());
         resetReassembler();
         frameQueue.clear();
 
@@ -574,7 +576,9 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
         FrameSample sample = new FrameSample(data, rtpTimestamp, receivedNs);
         while (!frameQueue.offer(sample)) {
             frameQueue.poll();
+            stats.recordInputDropped();
         }
+        stats.recordFrameReceived(receivedNs);
     }
 
     private void maybeSendPli(long nowNs) {
@@ -671,6 +675,8 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
                     MediaCodecInfo info = LowLatencyRtspPlayer.selectCodec("video/avc");
                     if (info == null) throw new IllegalStateException("no decoder for video/avc");
                     codecName = info.getName();
+                    stats = new BenchmarkStats(codecName);
+                    stats.markStarted(sample.receivedNs);
                     Log.w("TUN_DECODER", "UDP_SELF USING CODEC: " + codecName);
                     codecLocal = MediaCodec.createByCodecName(codecName);
                     codecLocal.configure(format, surface, null, 0);
@@ -713,7 +719,9 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
         long ptsUs = (sample.rtpTimestamp - firstStampUs) / 90;  // RTP 90kHz → us
         if (ptsUs < 0) ptsUs = 0;
         codecLocal.queueInputBuffer(index, 0, length, ptsUs, 0);
-        inputTimesNs.offer(System.nanoTime());
+        long nowNs = System.nanoTime();
+        inputTimesNs.offer(nowNs);
+        stats.recordInputQueued(nowNs, sample.receivedNs);
     }
 
     private void drainOutput(MediaCodec codecLocal) {
@@ -734,7 +742,10 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
             }
             if (index >= 0) {
                 codecLocal.releaseOutputBuffer(index, true);
-                inputTimesNs.poll();
+                Long inputNs = inputTimesNs.poll();
+                if (inputNs != null) {
+                    stats.recordRendered(System.nanoTime(), inputNs);
+                }
                 if (!decoded) {
                     decoded = true;
                     callback.onVideoDisplayed(codecName == null ? "udp-self" : codecName);
@@ -808,6 +819,10 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
             } catch (IOException ignored) {
             }
         }
+    }
+
+    public BenchmarkStats.Snapshot snapshotStats() {
+        return stats.snapshot(System.nanoTime());
     }
 
     // ═══════════════════════════════════════════════════════════════

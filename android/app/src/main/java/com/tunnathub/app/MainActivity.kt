@@ -56,13 +56,10 @@ import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
 import com.tunnathub.app.video.Media3RtspProbePlayer
 import com.tunnathub.app.video.RtspPlaybackEngine
-import com.tunnathub.app.video.RtspKeyFrameRequester
-import com.tunnathub.app.video.RtspTransportPolicy
 import com.tunnathub.app.video.RtspUdpProbe
 import com.tunnathub.app.video.UdpRtspPlayer
 import kotlinx.coroutines.*
 import org.easydarwin.video.BenchmarkStats
-import org.easydarwin.video.Client
 import org.easydarwin.video.LowLatencyRtspPlayer
 import org.easydarwin.video.RtspPlayerSession
 
@@ -513,75 +510,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         }
     }
 
-    val playerCallback = remember {
-        object : LowLatencyRtspPlayer.Callback {
-            private val mainHandler = Handler(ctx.mainLooper)
-
-            override fun onVideoDisplayed(codecName: String) {
-                mainHandler.post {
-                    val ts = codecName.split(".").last().take(25)
-                    statusText = "播放中 [$ts]"
-                    isPlaying = true
-                    autoReconnectCount = 0
-                    AppLog.i("Player", "低延迟硬解: $codecName")
-                }
-            }
-
-            override fun onVideoSize(width: Int, height: Int) {
-                mainHandler.post { resolutionText = "${width}x${height}" }
-            }
-
-            override fun onTimeout() {
-                mainHandler.post {
-                    statusText = "连接超时"
-                    isPlaying = false
-                    scheduleAutoReconnectFn()
-                }
-            }
-
-            override fun onUnsupportedVideo() {
-                mainHandler.post {
-                    statusText = "编码不支持"
-                    isPlaying = false
-                    scheduleAutoReconnectFn()
-                }
-            }
-
-            override fun onError(message: String?, error: Throwable?) {
-                mainHandler.post {
-                    statusText = "播放错误"
-                    isPlaying = false
-                    AppLog.e("Player", "低延迟播放错误: ${message ?: error?.javaClass?.simpleName ?: "unknown"}")
-                    scheduleAutoReconnectFn()
-                }
-            }
-
-            override fun onWaitingKeyFrame(elapsedMs: Long, restarts: Int) {
-                mainHandler.post {
-                    statusText = "Waiting IDR ${elapsedMs}ms, restart=$restarts"
-                    isPlaying = true
-                    val now = System.currentTimeMillis()
-                    // 仅 LOW_LATENCY 引擎需要独立的 RtspKeyFrameRequester 补发 PLI；
-                    // UDP_SELF 引擎由播放器自己在主会话里发 PLI，避免双路干扰。
-                    if (playbackEngine == RtspPlaybackEngine.LOW_LATENCY
-                        && !rtcpFeedbackRunning && elapsedMs >= 1000 && now - lastRtcpFeedbackAt >= 2000) {
-                        lastRtcpFeedbackAt = now
-                        rtcpFeedbackRunning = true
-                        val url = rtspUrl
-                        apiScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                            val result = RtspKeyFrameRequester.request(url, 1200)
-                            AppLog.i("RtspKeyFrame", result.toDisplayString())
-                            withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                rtcpFeedbackText = result.toDisplayString()
-                                rtcpFeedbackRunning = false
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     /** UDP_SELF 自建会话播放器的回调（复用低延迟播放器的 UI 逻辑，PLI 计数不同语义）。 */
     val udpPlayerCallback = remember {
         object : UdpRtspPlayer.Callback {
@@ -702,8 +630,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 })
                 media3.start(rtspUrl)
                 media3
-            } else if (playbackEngine == RtspPlaybackEngine.UDP_SELF) {
-                // 自建 UDP 会话 + PLI 求关键帧：绕开 EasyRTSPClient 黑盒
+            } else {
+                // 自建 UDP 会话 + PLI 求关键帧
                 val udp = UdpRtspPlayer(ctx, sv.holder.surface, udpPlayerCallback)
                 val rc = udp.start(rtspUrl)
                 if (rc != 0) {
@@ -714,10 +642,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     return
                 }
                 udp
-            } else {
-                val client = LowLatencyRtspPlayer(ctx, sv.holder.surface, playerCallback)
-                client.start(rtspUrl, RtspTransportPolicy.lowLatencyTransportType())
-                client
             }
             playerRef = session; isPlaying = true; statusText = "连接中..."
             playerHolder.set(session)
@@ -767,7 +691,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     LowLatencyRtspPlayer.setForcedCodec(codecName)
                     val firstFrame = java.util.concurrent.CountDownLatch(1)
                     val errorRef = java.util.concurrent.atomic.AtomicReference<String?>(null)
-                    val callback = object : LowLatencyRtspPlayer.Callback {
+                    val callback = object : UdpRtspPlayer.Callback {
                         override fun onVideoDisplayed(codecName: String) {
                             firstFrame.countDown()
                         }
@@ -789,9 +713,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                             firstFrame.countDown()
                         }
                     }
-                    val testPlayer = LowLatencyRtspPlayer(ctx, sv.holder.surface, callback)
+                    val testPlayer = UdpRtspPlayer(ctx, sv.holder.surface, callback)
                     try {
-                        testPlayer.start(url, RtspTransportPolicy.lowLatencyTransportType())
+                        testPlayer.start(url)
                         val displayed = firstFrame.await(120, java.util.concurrent.TimeUnit.SECONDS)
                         if (displayed && errorRef.get() == null) {
                             Thread.sleep(60_000)
@@ -1509,7 +1433,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 SectionHdr("播放引擎")
                                 Box(modifier = Modifier.fillMaxWidth()) {
                                     Row(modifier = Modifier.fillMaxWidth().height(32.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).clickable { playbackEngineDropdown = !playbackEngineDropdown }.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Text(playbackEngine.label(), fontSize = 10.sp, color = if (playbackEngine == RtspPlaybackEngine.LOW_LATENCY) Color(0xFF22C55E) else Color(0xFFF59E0B), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                        Text(playbackEngine.label(), fontSize = 10.sp, color = if (playbackEngine == RtspPlaybackEngine.UDP_SELF) Color(0xFF22C55E) else Color(0xFFF59E0B), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                                         Text(if (playbackEngineDropdown) "▲" else "▼", fontSize = 9.sp, color = Color(0xFF64748B))
                                     }
                                     DropdownMenu(expanded = playbackEngineDropdown, onDismissRequest = { playbackEngineDropdown = false }, modifier = Modifier.background(Color(0xFF1E293B))) {
