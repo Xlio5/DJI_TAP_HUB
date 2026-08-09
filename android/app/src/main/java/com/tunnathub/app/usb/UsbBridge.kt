@@ -49,11 +49,6 @@ class UsbBridge(
         }
     }
 
-    /** 已成功 openDevice 过的设备标识 (VID:PID)。
-     *  DJI RC 会对 0BDA:8812 反复重枚举 → hasPermission 变 false → 每次 requestPermission 弹窗。
-     *  一旦授权过就记住, 重连时跳过重复授权, 直接 openDevice。 */
-    private val grantedDevices = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
-
     @Volatile var isConnected = false
         private set
 
@@ -85,26 +80,27 @@ class UsbBridge(
         AppLog.i(TAG, "找到 USB 设备: VID=0x${USB_VID.toString(16)} PID=0x${USB_PID.toString(16)}")
 
         // 检查 USB 权限。
-        // 修复: DJI RC 会反复重枚举 0BDA:8812 → hasPermission 变 false → 每次都 requestPermission 弹权限框。
-        // 已成功 openDevice 过的设备 (VID:PID) 跳过 requestPermission, 直接尝试 openDevice。
-        val deviceKey = "${device.vendorId}:${device.productId}"
-        val alreadyGranted = grantedDevices.containsKey(deviceKey)
-        if (!alreadyGranted && !usbManager.hasPermission(device)) {
-            requestPermissionBlocking(device)
+        // 修复: V3s/DJI RC 会反复重枚举 0BDA:8812 → 设备路径 (deviceName) 变化 → hasPermission 变 false。
+        // Android 的 hasPermission 按设备路径校验, 不能按 VID:PID 缓存跳权 (路径变了缓存失效),
+        // 否则跳过授权 → openDevice 抛 SecurityException → USB 隧道建不起来 → VPN 无路由 → 播放失败。
+        // 每次按 hasPermission 判定: false 则请求授权 (会弹窗或 device_filter 自动授予), 被拒则抛错让上层重试。
+        var granted = usbManager.hasPermission(device)
+        if (!granted) {
+            granted = requestPermissionBlocking(device)
+        }
+        if (!granted) {
+            throw IllegalStateException("USB 权限被拒绝, 无法打开设备 (可能需在系统设置重新授权)")
         }
 
-        // 打开设备; 若已授权过但系统重枚举后仍误判未授权, openDevice 抛 SecurityException → 回退请求一次
+        // 打开设备 (权限已确认, 正常不会 SecurityException; 万一仍抛则透传错误信息)
         val conn = try {
             usbManager.openDevice(device)
         } catch (e: SecurityException) {
-            AppLog.w(TAG, "openDevice 权限异常, 回退请求权限: ${e.message}")
-            requestPermissionBlocking(device)
-            usbManager.openDevice(device)
+            AppLog.w(TAG, "openDevice 权限异常: ${e.message}")
+            throw IllegalStateException("USB 设备打开被拒 (权限异常): ${e.message}", e)
         }
         usbConnection = conn
             ?: throw IllegalStateException("无法打开 USB 设备，请重新插拔 USB 线并授权")
-        // 记录已授权, 后续重连 (DJI 重枚举) 不再弹窗
-        grantedDevices[deviceKey] = true
         // 新连接周期: 重置断开通知标志 (同实例重连时)
         disconnectedNotified.set(false)
         activeNotified.set(false)
@@ -147,21 +143,24 @@ class UsbBridge(
     }
 
     /**
-     * 阻塞请求 USB 权限 (最多等 2s)。
-     * 仅在设备首次连接或已授权集合外才调用, 避免 DJI 重枚举导致反复弹窗。
+     * 阻塞请求 USB 权限 (最多等 3s), 返回是否被授予。
+     * 冷启/重枚举后设备路径变化, hasPermission 变 false, 需要重新请求授权。
+     * 返回 false 表示被拒或超时, 调用方抛错让上层重连循环重试。
      */
-    private fun requestPermissionBlocking(device: UsbDevice) {
+    private fun requestPermissionBlocking(device: UsbDevice): Boolean {
         val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
         Log.w(TAG, "USB 权限未授予，正在请求...")
         AppLog.w(TAG, "USB 权限未授予，正在请求...")
         val latch = CountDownLatch(1)
+        val grantedResult = java.util.concurrent.atomic.AtomicBoolean(false)
         val permAction = "com.tunnathub.app.USB_PERM"
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context, intent: Intent) {
                 if (permAction == intent.action) {
-                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                    Log.i(TAG, "USB 权限结果: $granted")
-                    AppLog.i(TAG, "USB 权限${if (granted) "已" else "未"}授予")
+                    val g = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                    grantedResult.set(g)
+                    Log.i(TAG, "USB 权限结果: $g")
+                    AppLog.i(TAG, "USB 权限${if (g) "已" else "未"}授予")
                     latch.countDown()
                 }
             }
@@ -170,10 +169,16 @@ class UsbBridge(
         val pi = PendingIntent.getBroadcast(context, 0,
             Intent(permAction).setPackage(context.packageName),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        usbManager.requestPermission(device, pi)
-        // 等待权限授予（device_filter.xml 匹配时自动授予，无弹窗）
-        latch.await(2, TimeUnit.SECONDS)
-        try { context.unregisterReceiver(receiver) } catch (_: Exception) {}
+        try {
+            usbManager.requestPermission(device, pi)
+            // 等待权限授予（device_filter.xml 匹配时自动授予，无弹窗）
+            latch.await(3, TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            AppLog.w(TAG, "requestPermission 异常: ${e.message}")
+        } finally {
+            try { context.unregisterReceiver(receiver) } catch (_: Exception) {}
+        }
+        return grantedResult.get()
     }
 
     /**
