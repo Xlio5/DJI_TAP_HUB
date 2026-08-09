@@ -26,6 +26,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Queue;
@@ -95,6 +96,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
     private int fuAccumLen;
     private int fuNalType = -1;
     private int fuNextSeq = -1;
+    private final H264AccessUnitAssembler accessUnitAssembler = new H264AccessUnitAssembler();
 
     // SPS/PPS 缓存（configure 时作为 csd）
     private byte[] cachedSps;
@@ -534,7 +536,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
                 fuNalType = -1;
                 fuAccumLen = 0;
                 if (fuNal == 5) diagIdrCompletePkts++;
-                emitFrame(frame, rtp.timestamp, System.nanoTime(), fuNal);
+                emitNal(frame, rtp.timestamp, System.nanoTime(), fuNal, rtp.marker);
             }
         } else if (nalType == 24) {   // STAP-A 聚合
             int i = 1;
@@ -546,39 +548,46 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
                 byte[] nal = new byte[nalLen + 4];
                 nal[0] = 0; nal[1] = 0; nal[2] = 0; nal[3] = 1;
                 System.arraycopy(rtp.payload, i, nal, 4, nalLen);
-                emitFrame(nal, rtp.timestamp, System.nanoTime(), n);
+                boolean marker = rtp.marker && i + nalLen >= rtp.payload.length;
+                emitNal(nal, rtp.timestamp, System.nanoTime(), n, marker);
                 i += nalLen;
             }
         } else {                       // 单 NAL
             byte[] nal = new byte[rtp.payload.length + 4];
             nal[0] = 0; nal[1] = 0; nal[2] = 0; nal[3] = 1;
             System.arraycopy(rtp.payload, 0, nal, 4, rtp.payload.length);
-            emitFrame(nal, rtp.timestamp, System.nanoTime(), nalType);
+            emitNal(nal, rtp.timestamp, System.nanoTime(), nalType, rtp.marker);
         }
     }
 
-    /** 输出一帧到解码队列；等关键帧时只在完整 IDR（nal=5）时解除等待。 */
-    private void emitFrame(byte[] data, long rtpTimestamp, long receivedNs, int nalInfo) {
+    /** 收集 NAL 到完整 Access Unit；等关键帧时只在完整 IDR AU 时解除等待。 */
+    private void emitNal(byte[] data, long rtpTimestamp, long receivedNs, int nalInfo, boolean marker) {
         if (!running) return;
-        // 缓存 SPS/PPS 作为 csd
-        if (nalInfo == 7) { cachedSps = data; return; }  // SPS 仅作 csd，不进帧队列
-        if (nalInfo == 8) { cachedPps = data; return; }  // PPS 仅作 csd，不进帧队列
-        boolean keyFrame = (nalInfo == 5);   // 只有完整 IDR 才算关键帧
+        if (nalInfo == 7) { cachedSps = data; return; }
+        if (nalInfo == 8) { cachedPps = data; return; }
+        List<H264AccessUnitAssembler.AccessUnit> units =
+                accessUnitAssembler.addNal(data, rtpTimestamp, receivedNs, nalInfo, marker);
+        for (H264AccessUnitAssembler.AccessUnit unit : units) {
+            emitAccessUnit(unit);
+        }
+    }
+
+    private void emitAccessUnit(H264AccessUnitAssembler.AccessUnit unit) {
         if (waitingKeyFrame) {
-            if (!keyFrame) {
-                maybeSendPli(receivedNs);
+            if (!unit.containsKeyFrame) {
+                maybeSendPli(unit.receivedNs);
                 return;
             }
             waitingKeyFrame = false;
-            callback.onRtpDiag("first key frame nal=" + nalInfo + " len=" + data.length
-                    + " after " + Math.round((receivedNs - keyFrameWaitStartNs) / 1_000_000.0) + "ms");
+            callback.onRtpDiag("first key AU len=" + unit.data.length
+                    + " after " + Math.round((unit.receivedNs - keyFrameWaitStartNs) / 1_000_000.0) + "ms");
         }
-        FrameSample sample = new FrameSample(data, rtpTimestamp, receivedNs);
+        FrameSample sample = new FrameSample(unit.data, unit.rtpTimestamp, unit.receivedNs);
         while (!frameQueue.offer(sample)) {
             frameQueue.poll();
             stats.recordInputDropped();
         }
-        stats.recordFrameReceived(receivedNs);
+        stats.recordFrameReceived(unit.receivedNs);
     }
 
     private void maybeSendPli(long nowNs) {
@@ -645,6 +654,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
 
     private void resetReassembler() {
         reorder.clear();
+        accessUnitAssembler.reset();
         lastFlushedSeq = -1;
         lastRtpTimestamp = -1;
         fuNalType = -1;
@@ -841,12 +851,14 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
         final int timestamp;
         final int ssrc;
         final byte[] payload;
+        final boolean marker;
 
-        RtpPacket(int seq, int timestamp, int ssrc, byte[] payload) {
+        RtpPacket(int seq, int timestamp, int ssrc, byte[] payload, boolean marker) {
             this.seq = seq;
             this.timestamp = timestamp;
             this.ssrc = ssrc;
             this.payload = payload;
+            this.marker = marker;
         }
     }
 
@@ -863,10 +875,11 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
                 | ((data[offset + 10] & 0xff) << 8)
                 | (data[offset + 11] & 0xff);
         int csrcCount = data[offset] & 0x0f;
+        boolean marker = (data[offset + 1] & 0x80) != 0;
         int headerLen = 12 + csrcCount * 4;
         if (headerLen > length) return null;
         byte[] payload = new byte[length - headerLen];
         System.arraycopy(data, offset + headerLen, payload, 0, payload.length);
-        return new RtpPacket(seq, timestamp, ssrc, payload);
+        return new RtpPacket(seq, timestamp, ssrc, payload, marker);
     }
 }
