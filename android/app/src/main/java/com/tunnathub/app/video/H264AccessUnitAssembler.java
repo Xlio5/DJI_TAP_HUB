@@ -14,12 +14,14 @@ final class H264AccessUnitAssembler {
     static final class AccessUnit {
         final byte[] data;
         final long rtpTimestamp;
-        final long receivedNs;
+        final long firstReceivedNs;   // AU 第一个 NAL 到达时刻
+        final long receivedNs;        // AU 完成（marker）时刻
         final boolean containsKeyFrame;
 
-        AccessUnit(byte[] data, long rtpTimestamp, long receivedNs, boolean containsKeyFrame) {
+        AccessUnit(byte[] data, long rtpTimestamp, long firstReceivedNs, long receivedNs, boolean containsKeyFrame) {
             this.data = data;
             this.rtpTimestamp = rtpTimestamp;
+            this.firstReceivedNs = firstReceivedNs;
             this.receivedNs = receivedNs;
             this.containsKeyFrame = containsKeyFrame;
         }
@@ -27,6 +29,7 @@ final class H264AccessUnitAssembler {
 
     private final ByteArrayOutputStream pending = new ByteArrayOutputStream(128 * 1024);
     private long pendingTimestamp = Long.MIN_VALUE;
+    private long firstReceivedNs;
     private long lastReceivedNs;
     private boolean pendingKeyFrame;
 
@@ -37,6 +40,7 @@ final class H264AccessUnitAssembler {
         }
         if (!hasPending()) {
             pendingTimestamp = rtpTimestamp;
+            firstReceivedNs = receivedNs;   // AU 第一个 NAL 到达时刻
         }
         pending.write(annexBNal, 0, annexBNal.length);
         lastReceivedNs = receivedNs;
@@ -55,6 +59,7 @@ final class H264AccessUnitAssembler {
     void reset() {
         pending.reset();
         pendingTimestamp = Long.MIN_VALUE;
+        firstReceivedNs = 0;
         lastReceivedNs = 0;
         pendingKeyFrame = false;
     }
@@ -67,6 +72,7 @@ final class H264AccessUnitAssembler {
         AccessUnit unit = new AccessUnit(
                 pending.toByteArray(),
                 pendingTimestamp,
+                firstReceivedNs,
                 lastReceivedNs,
                 pendingKeyFrame);
         reset();

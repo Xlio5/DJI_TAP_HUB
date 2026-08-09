@@ -71,6 +71,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
     private final Callback callback;
     private final String codecOverride;
     private final String profileName;
+    private final GlLowLatencySurface glSurface;
 
     private volatile boolean running;
     private Thread rtpThread;
@@ -137,26 +138,34 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
     private static final class FrameSample {
         final byte[] data;
         final long rtpTimestamp;
-        final long receivedNs;
+        final long firstReceivedNs;   // AU 首包到达时刻（真实 app 处理起点）
+        final long receivedNs;        // AU 完成时刻
 
-        FrameSample(byte[] data, long rtpTimestamp, long receivedNs) {
+        FrameSample(byte[] data, long rtpTimestamp, long firstReceivedNs, long receivedNs) {
             this.data = data;
             this.rtpTimestamp = rtpTimestamp;
+            this.firstReceivedNs = firstReceivedNs;
             this.receivedNs = receivedNs;
         }
     }
 
     public UdpRtspPlayer(Context context, Surface surface, Callback callback) {
-        this(context, surface, callback, null, "UDP_SELF");
+        this(context, surface, callback, null, "UDP_SELF", null);
     }
 
     public UdpRtspPlayer(Context context, Surface surface, Callback callback,
                          String codecOverride, String profileName) {
+        this(context, surface, callback, codecOverride, profileName, null);
+    }
+
+    public UdpRtspPlayer(Context context, Surface surface, Callback callback,
+                         String codecOverride, String profileName, GlLowLatencySurface glSurface) {
         this.context = context.getApplicationContext();
         this.surface = surface;
         this.callback = callback;
         this.codecOverride = normalizeCodec(codecOverride);
         this.profileName = (profileName == null || profileName.isBlank()) ? "UDP_SELF" : profileName;
+        this.glSurface = glSurface;
     }
 
     public synchronized int start(String url) {
@@ -462,7 +471,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
                         + " fuDisc=" + diagFuDiscards
                         + " reorderFlush=" + diagReorderFlush
                         + " waitingKey=" + waitingKeyFrame
-                        + " recv2render=" + renderLatencyMs(snap) + "ms"
+                        + " appLatency=" + renderLatencyMs(snap) + "ms"
                         + " dec=" + snap.decodeAvgMs + "ms"
                         + " cbIn=" + snap.callbackToInputAvgMs + "ms"
                         + " frames=" + snap.framesReceived
@@ -634,12 +643,12 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
             callback.onRtpDiag("first key AU len=" + unit.data.length
                     + " after " + Math.round((unit.receivedNs - keyFrameWaitStartNs) / 1_000_000.0) + "ms");
         }
-        FrameSample sample = new FrameSample(unit.data, unit.rtpTimestamp, unit.receivedNs);
+        FrameSample sample = new FrameSample(unit.data, unit.rtpTimestamp, unit.firstReceivedNs, unit.receivedNs);
         while (!frameQueue.offer(sample)) {
             frameQueue.poll();
             stats.recordInputDropped();
         }
-        stats.recordFrameReceived(unit.receivedNs);
+        stats.recordFrameReceived(unit.firstReceivedNs);   // 用首包时刻记录接收
     }
 
     private void maybeSendPli(long nowNs) {
@@ -749,12 +758,13 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
                     stats.markStarted(sample.receivedNs);
                     Log.w("TUN_DECODER", profileName + " USING CODEC: " + codecName);
                     codecLocal = MediaCodec.createByCodecName(codecName);
-                    // DEBUG: 验证 dec 构成。nullSurface=true → 不渲染，测纯解码时间；
-                    // 若 dec 大幅下降说明 SurfaceView 队列是大头(GL 有效)；
-                    // 若 dec 不变说明 B 帧 DPB 是大头(GL 收益有限)。
                     if (DEBUG_NO_SURFACE) {
                         codecLocal.configure(format, null, null, 0);
                         Log.w(TAG, "DEBUG: no-surface 模式(纯解码不渲染)");
+                    } else if (glSurface != null) {
+                        // GL 低延迟渲染：MediaCodec 输出到 SurfaceTexture，绕开 SurfaceView 队列
+                        codecLocal.configure(format, glSurface.getSurface(), null, 0);
+                        Log.w(TAG, "GL low-latency render surface");
                     } else {
                         codecLocal.configure(format, surface, null, 0);
                         codecLocal.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT);
@@ -813,7 +823,8 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
         long nowNs = System.nanoTime();
         // 用 PTS 精确关联 input/output，避免 poll() 错位导致 dec 虚高
         ptsToInputNs.put(ptsUs, nowNs);
-        stats.recordInputQueued(nowNs, sample.receivedNs);
+        // cbIn 从 AU 首包到达算起（真实 app 处理延迟，含 AU 聚合等待）
+        stats.recordInputQueued(nowNs, sample.firstReceivedNs);
     }
 
     private void drainOutput(MediaCodec codecLocal) {
@@ -844,7 +855,14 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
                 if (inputNs == null) {
                     inputNs = inputTimesNs.poll();  // 兜底
                 }
-                if (UdpLowLatencyPolicy.RENDER_ONLY_LATEST_OUTPUT) {
+                if (glSurface != null) {
+                    // GL 模式：交给 SurfaceTexture，onFrameAvailable 触发 GL 渲染最新帧（丢旧保新）
+                    codecLocal.releaseOutputBuffer(index, true);
+                    if (inputNs != null) {
+                        stats.recordRendered(System.nanoTime(), inputNs);
+                    }
+                    notifyFirstFrameDisplayed();
+                } else if (UdpLowLatencyPolicy.RENDER_ONLY_LATEST_OUTPUT) {
                     if (latestRenderableIndex >= 0) {
                         codecLocal.releaseOutputBuffer(latestRenderableIndex, false);
                     }
@@ -859,7 +877,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
                 }
             }
         }
-        if (latestRenderableIndex >= 0) {
+        if (glSurface == null && latestRenderableIndex >= 0) {
             codecLocal.releaseOutputBuffer(latestRenderableIndex, !DEBUG_NO_SURFACE);
             if (latestInputNs != 0) {
                 stats.recordRendered(System.nanoTime(), latestInputNs);

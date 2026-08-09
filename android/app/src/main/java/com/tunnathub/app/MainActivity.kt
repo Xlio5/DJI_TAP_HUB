@@ -273,6 +273,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var statusText by remember { mutableStateOf("") }
     var resolutionText by remember { mutableStateOf("") }
     var surfaceViewRef by remember { mutableStateOf<SurfaceView?>(null) }
+    var glSurfaceRef by remember { mutableStateOf<com.tunnathub.app.video.GlLowLatencySurface?>(null) }
     var playerRef by remember { mutableStateOf<RtspPlayerSession?>(null) }
     var autoReconnectCount by remember { mutableStateOf(0) }   // 自动重连计数
     var autoReconnectActive by remember { mutableStateOf(false) } // 自动重连开关(手动停止后关闭)
@@ -579,7 +580,13 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             // 等 surface 就绪后播放
             kotlinx.coroutines.delay(1000)
             try {
-                if (vpnRunning && !isPlaying && surfaceViewRef != null) {
+                // QGC_SOFTWARE 用 GLSurfaceView(glSurfaceRef)，其他用 SurfaceView(surfaceViewRef)
+                val viewReady = if (playbackEngine == RtspPlaybackEngine.QGC_SOFTWARE) {
+                    glSurfaceRef != null
+                } else {
+                    surfaceViewRef != null
+                }
+                if (vpnRunning && !isPlaying && viewReady) {
                     startPlaybackFn()
                 }
             } finally {
@@ -600,7 +607,11 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
 
     /** 启动 RTSP 播放 (playerCallback/autoSyncSubnet 已定义, 无前向引用) */
     fun doStartPlayback() {
-        val sv = surfaceViewRef ?: return
+        // QGC_SOFTWARE 用 GLSurfaceView（glSurfaceRef），其他引擎用 SurfaceView
+        val sv = surfaceViewRef
+        val glSrf = glSurfaceRef
+        if (playbackEngine != RtspPlaybackEngine.QGC_SOFTWARE && sv == null) return
+        if (playbackEngine == RtspPlaybackEngine.QGC_SOFTWARE && glSrf == null) return
         // H2: 先释放旧播放器, 避免自动重连时 native 解码器泄漏。
         // 注意: 只用 playerHolder 做权威清理 (与 onDestroy 一致), 避免对同一实例双重 stop 触发 native 崩溃
         playerHolder.getAndSet(null)?.stop()
@@ -610,7 +621,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             autoSyncSubnet(rtspUrl)
             val session: RtspPlayerSession = when (playbackEngine) {
                 RtspPlaybackEngine.MEDIA3_UDP -> {
-                val media3 = Media3RtspProbePlayer(ctx, sv.holder.surface, object : Media3RtspProbePlayer.Callback {
+                val media3 = Media3RtspProbePlayer(ctx, sv!!.holder.surface, object : Media3RtspProbePlayer.Callback {
                     override fun onVideoDisplayed() {
                         Handler(Looper.getMainLooper()).post {
                             statusText = "播放中 [Media3]"
@@ -640,7 +651,13 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         scheduleAutoReconnectFn()
                         return
                     }
-                    val udp = UdpRtspPlayer(ctx, sv.holder.surface, udpPlayerCallback, softwareCodec, "QGC_SOFTWARE")
+                    // QGC 风格：GL 渲染绕开 SurfaceView 队列。glSurfaceRef 在 UI factory 里创建。
+                    val glSrf = glSurfaceRef
+                    val udp = if (glSrf != null) {
+                        UdpRtspPlayer(ctx, glSrf.getSurface(), udpPlayerCallback, softwareCodec, "QGC_SOFTWARE", glSrf)
+                    } else {
+                        UdpRtspPlayer(ctx, glSrf?.getSurface() ?: sv?.holder?.surface, udpPlayerCallback, softwareCodec, "QGC_SOFTWARE")
+                    }
                     val rc = udp.start(rtspUrl)
                     if (rc != 0) {
                         statusText = "QGC风格播放启动失败"
@@ -654,7 +671,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 }
                 RtspPlaybackEngine.UDP_SELF -> {
                 // 自建 UDP 会话 + PLI 求关键帧
-                val udp = UdpRtspPlayer(ctx, sv.holder.surface, udpPlayerCallback)
+                val udp = UdpRtspPlayer(ctx, sv?.holder?.surface, udpPlayerCallback)
                 val rc = udp.start(rtspUrl)
                 if (rc != 0) {
                     statusText = "UDP播放启动失败"
@@ -736,7 +753,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                             firstFrame.countDown()
                         }
                     }
-                    val testPlayer = UdpRtspPlayer(ctx, sv.holder.surface, callback)
+                    val testPlayer = UdpRtspPlayer(ctx, sv?.holder?.surface, callback)
                     try {
                         testPlayer.start(url)
                         val displayed = firstFrame.await(120, java.util.concurrent.TimeUnit.SECONDS)
@@ -1107,8 +1124,18 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                             color = Color(0xFF020617), shape = RoundedCornerShape(8.dp)
                         ) {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                // QGC_SOFTWARE 引擎用 GLSurfaceView 低延迟渲染（绕开 SurfaceView 队列），
+                                // 其他引擎保持 SurfaceView。
                                 AndroidView(
-                                    factory = { SurfaceView(it).apply { surfaceViewRef = this } },
+                                    factory = { vctx ->
+                                        if (playbackEngine == RtspPlaybackEngine.QGC_SOFTWARE) {
+                                            val gl = com.tunnathub.app.video.GlLowLatencySurface(vctx)
+                                            glSurfaceRef = gl
+                                            gl.view
+                                        } else {
+                                            SurfaceView(vctx).apply { surfaceViewRef = this }
+                                        }
+                                    },
                                     modifier = Modifier.fillMaxWidth(0.94f).aspectRatio(16f / 9f),
                                     update = { sv -> sv.layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT).apply { gravity = android.view.Gravity.CENTER } })
                                 if (!isPlaying) {
