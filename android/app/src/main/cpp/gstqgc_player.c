@@ -1,10 +1,12 @@
 /*
  * gstqgc_player.c — GStreamer 播放引擎 native 层
  *
- * 参考 QGC GstVideoReceiver 的 pipeline 逻辑:
- *   rtspsrc(latency=低, drop-on-latency=TRUE, protocols=UDP|TCP)
- *     → decodebin3 (自动选解码器)
- *     → GL sink (sync=false)
+ * 参考 QGC GstVideoReceiver 的 pipeline 逻辑 (低延迟):
+ *   rtspsrc(latency=40ms, drop-on-latency=TRUE, protocols=UDP, port-range=10000+)
+ *     → rtph264depay → h264parse → openh264dec → videoconvert
+ *     → video/x-raw,format=RGBA → appsink(sync=false, 丢旧保新)
+ *
+ * appsink 通过 JNI 把解码帧(RGBA)传给 Java, 由 Java 渲染线程绘制到 Surface。
  *
  * JNI 导出:
  *   Java_com_tunnathub_app_video_GstQgcPlayer_nativeCreate
@@ -30,6 +32,9 @@ static gint g_frame_count = 0;
 static GstClockTime g_last_frame_pts = GST_CLOCK_TIME_NONE;
 static JavaVM *g_java_vm = NULL;
 static jobject g_java_instance = NULL;   // Java GstQgcPlayer 实例 (nativeOnFrame 回调用)
+static GMutex g_java_instance_lock;      // 保护 g_java_instance 的跨线程访问
+
+static gboolean restart_pipeline(gpointer user_data);   // 前向声明
 
 /* JNI_OnLoad: 保存 JavaVM 供 ANativeWindow_fromSurface 使用 */
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
@@ -38,6 +43,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
 }
 
 static gboolean g_frame_notified = FALSE;
+static jmethodID g_mid_nativeOnFrame = NULL;   // 缓存 nativeOnFrame 方法 id (避免每帧 GetMethodID)
 
 /* appsink new-sample: 收解码帧, 通过 JNI 通知 Java (首帧触发 onVideoDisplayed) */
 static GstFlowReturn on_new_sample(GstAppSink *sink, gpointer user_data) {
@@ -47,15 +53,18 @@ static GstFlowReturn on_new_sample(GstAppSink *sink, gpointer user_data) {
         GstClockTime pts = GST_BUFFER_PTS(buf);
         g_frame_count++;
         if (g_frame_count <= 5 || g_frame_count % 100 == 0) {
-            LOGI("appsink frame #%d pts=%" G_GUINT64_FORMAT " (interval=%dms)",
+            LOGI("appsink frame #%d pts=%" G_GUINT64_FORMAT " (interval=%ldms)",
                  g_frame_count, pts,
                  g_last_frame_pts != GST_CLOCK_TIME_NONE
-                     ? (int) GST_CLOCK_DIFF(g_last_frame_pts, pts) / GST_MSECOND : -1);
+                     ? (long) (GST_CLOCK_DIFF(g_last_frame_pts, pts) / GST_MSECOND) : -1L);
         }
         g_last_frame_pts = pts;
 
         // 通过 JNI 把帧传给 Java 渲染 (nativeOnFrame)
-        if (g_java_instance && g_java_vm) {
+        g_mutex_lock(&g_java_instance_lock);
+        jobject java_instance = g_java_instance;   // 持有引用供本次回调
+        g_mutex_unlock(&g_java_instance_lock);
+        if (java_instance && g_java_vm) {
             GstCaps *caps = gst_sample_get_caps(sample);
             int w = 0, h = 0;
             if (caps) {
@@ -67,19 +76,27 @@ static GstFlowReturn on_new_sample(GstAppSink *sink, gpointer user_data) {
             if (w > 0 && h > 0 && gst_buffer_map(buf, &map, GST_MAP_READ)) {
                 JNIEnv *env = NULL;
                 if ((*g_java_vm)->AttachCurrentThread(g_java_vm, &env, NULL) == JNI_OK) {
-                    jclass cls = (*env)->GetObjectClass(env, g_java_instance);
-                    jmethodID mid = (*env)->GetMethodID(env, cls, "nativeOnFrame", "([BII)V");
-                    if (mid) {
+                    // 缓存 jmethodID, 避免每帧 GetMethodID 开销
+                    if (!g_mid_nativeOnFrame) {
+                        jclass cls = (*env)->GetObjectClass(env, java_instance);
+                        g_mid_nativeOnFrame = (*env)->GetMethodID(env, cls, "nativeOnFrame", "([BII)V");
+                        (*env)->DeleteLocalRef(env, cls);
+                    }
+                    if (g_mid_nativeOnFrame) {
                         jbyteArray arr = (*env)->NewByteArray(env, map.size);
                         (*env)->SetByteArrayRegion(env, arr, 0, map.size, (const jbyte *) map.data);
-                        (*env)->CallVoidMethod(env, g_java_instance, mid, arr, w, h);
+                        (*env)->CallVoidMethod(env, java_instance, g_mid_nativeOnFrame, arr, w, h);
+                        // 检查并清除 pending exception, 避免 JNI env 损坏
+                        if ((*env)->ExceptionCheck(env)) {
+                            (*env)->ExceptionDescribe(env);
+                            (*env)->ExceptionClear(env);
+                        }
                         (*env)->DeleteLocalRef(env, arr);
                         if (!g_frame_notified) {
                             g_frame_notified = TRUE;
                             LOGI("首帧帧数据已传 Java (%dx%d, %lu bytes)", w, h, (unsigned long) map.size);
                         }
                     }
-                    (*env)->DeleteLocalRef(env, cls);
                     (*g_java_vm)->DetachCurrentThread(g_java_vm);
                 }
                 gst_buffer_unmap(buf, &map);
@@ -137,34 +154,10 @@ typedef struct _PlayerContext {
     gint width;
     gint height;
     gboolean running;
+    guint restart_source_id;   // 待触发的 restart timeout source id (用于取消)
     JNIEnv *env;
     jobject javaCallback;
 } PlayerContext;
-
-static void on_pad_added(GstElement *element, GstPad *pad, gpointer user_data) {
-    PlayerContext *ctx = (PlayerContext *) user_data;
-    GstCaps *caps = gst_pad_get_current_caps(pad);
-    if (!caps) {
-        caps = gst_pad_query_caps(pad, NULL);
-    }
-    if (!caps) {
-        return;
-    }
-    GstStructure *s = gst_caps_get_structure(caps, 0);
-    const gchar *name = gst_structure_get_name(s);
-    if (g_str_has_prefix(name, "video/")) {
-        // decodebin3 已由 auto-plug 处理, 这里只记录分辨率
-        int w = 0, h = 0;
-        gst_structure_get_int(s, "width", &w);
-        gst_structure_get_int(s, "height", &h);
-        if (w > 0 && h > 0) {
-            ctx->width = w;
-            ctx->height = h;
-            LOGI("video size %dx%d", w, h);
-        }
-    }
-    gst_caps_unref(caps);
-}
 
 static gboolean on_bus_message(GstBus *bus, GstMessage *msg, gpointer user_data) {
     PlayerContext *ctx = (PlayerContext *) user_data;
@@ -176,6 +169,16 @@ static gboolean on_bus_message(GstBus *bus, GstMessage *msg, gpointer user_data)
             LOGE("GStreamer error: %s (%s)", err->message, debug ? debug : "");
             g_error_free(err);
             g_free(debug);
+            // 链路中断: 重启 pipeline 自动恢复 (QGC udp-reconnect + watchdog 思路)
+            if (ctx->running) {
+                LOGI("pipeline error, restarting in 2s...");
+                // 先取消旧的 pending restart (避免多个堆积), 记录新 source id 供 stop 时取消
+                if (ctx->restart_source_id > 0) {
+                    g_source_remove(ctx->restart_source_id);
+                }
+                ctx->restart_source_id =
+                        g_timeout_add_seconds(2, (GSourceFunc) restart_pipeline, ctx);
+            }
             break;
         }
         case GST_MESSAGE_EOS:
@@ -187,8 +190,25 @@ static gboolean on_bus_message(GstBus *bus, GstMessage *msg, gpointer user_data)
     return TRUE;
 }
 
+/* 重启 pipeline: 停→重跑 (rtspsrc 重新握手, 恢复视频) */
+static gboolean restart_pipeline(gpointer user_data) {
+    PlayerContext *ctx = (PlayerContext *) user_data;
+    if (!ctx || !ctx->running || !ctx->pipeline) return G_SOURCE_REMOVE;
+    ctx->restart_source_id = 0;   // 本次回调执行, 清掉 source id
+    LOGI("restarting pipeline...");
+    gst_element_set_state(ctx->pipeline, GST_STATE_READY);
+    gst_element_set_state(ctx->pipeline, GST_STATE_PLAYING);
+    return G_SOURCE_REMOVE;
+}
+
 static gpointer player_thread(gpointer user_data) {
     PlayerContext *ctx = (PlayerContext *) user_data;
+    // bus watch 必须在跑 main loop 的线程添加, 否则 on_bus_message 永不触发
+    // (build_pipeline 里的 JNI 线程没有 GLib main loop 迭代)
+    GstBus *bus = gst_element_get_bus(ctx->pipeline);
+    gst_bus_add_watch(bus, on_bus_message, ctx);
+    gst_object_unref(bus);
+
     gst_element_set_state(ctx->pipeline, GST_STATE_PLAYING);
     g_main_loop_run(ctx->loop);
     gst_element_set_state(ctx->pipeline, GST_STATE_NULL);
@@ -198,14 +218,16 @@ static gpointer player_thread(gpointer user_data) {
 /**
  * 构建 pipeline:
  *   rtspsrc(location=url, latency=latencyMs, drop-on-latency=TRUE,
- *           protocols=UDP|TCP, do-rtcp=TRUE, tcp-timeout, udp-reconnect=TRUE)
- *     → decodebin3 (自动选解码器)
- *     → appsink (同步 false, 丢旧保新)
+ *           protocols=UDP, do-rtcp=TRUE, tcp-timeout, udp-reconnect=TRUE)
+ *     → rtph264depay → h264parse → openh264dec → videoconvert
+ *     → video/x-raw,format=RGBA → appsink (sync=false, 丢旧保新)
  *
- * 解码器优先级通过 GST_PLUGIN_FEATURE_RANK 环境变量控制 (androidmedia 优先/avdec_h264 兜底)
+ * 显式 pipeline (不用 decodebin3 自动协商, 更稳定)。
+ * surface 参数保留: 未来若用 glimagesink 直接渲染会用到, 当前用 appsink+JNI 方案忽略。
  */
 static PlayerContext *build_pipeline(const char *url, jobject surface,
                                      gint latency_ms, gboolean drop_on_latency) {
+    (void) surface;   // 保留参数供未来 glimagesink 使用, 当前 appsink 方案忽略
     PlayerContext *ctx = g_new0(PlayerContext, 1);
     ctx->running = TRUE;
 
@@ -258,11 +280,8 @@ static PlayerContext *build_pipeline(const char *url, jobject surface,
         gst_object_unref(videoSink);
     }
 
-    // bus 消息
-    GstBus *bus = gst_element_get_bus(ctx->pipeline);
-    gst_bus_add_watch(bus, on_bus_message, ctx);
-    gst_object_unref(bus);
-
+    // 注意: bus watch 必须在 player_thread (跑 main loop) 里添加,
+    // 这里只创建 loop。见 player_thread。
     ctx->loop = g_main_loop_new(NULL, FALSE);
     return ctx;
 }
@@ -275,14 +294,15 @@ Java_com_tunnathub_app_video_GstQgcPlayer_nativeCreate(JNIEnv *env, jclass clazz
     LOGI("nativeCreate url=%s pref=%d", url, decoder_pref);
 
     // 保存 Java 实例引用 (全局, 供 on_new_sample 回调 nativeOnFrame)
+    g_mutex_lock(&g_java_instance_lock);
     if (g_java_instance) (*env)->DeleteGlobalRef(env, g_java_instance);
     g_java_instance = (*env)->NewGlobalRef(env, jinstance);
+    g_mutex_unlock(&g_java_instance_lock);
 
     // 初始化 GStreamer + 注册静态插件 (rtspsrc 等)
     static gboolean gst_inited = FALSE;
     if (!gst_inited) {
-        // GST_DEBUG 必须在 gst_init 前设置才生效
-        g_setenv("GST_DEBUG", "GST_CAPS:5,GST_PADS:5,rtspsrc:5,udpsrc:5,decodebin3:5,rtp*:5", FALSE);
+        // GST_DEBUG 级别: 0=关闭 (生产). 排查问题时改为 5 并在 gst_init 前设置
         gst_init(NULL, NULL);   // gst_init 自动调用 gst_init_static_plugins() 注册静态插件
         gst_inited = TRUE;
         LOGI("GStreamer init (静态插件由 gst_init 自动注册)");
@@ -346,6 +366,11 @@ Java_com_tunnathub_app_video_GstQgcPlayer_nativeDestroy(JNIEnv *env, jclass claz
     PlayerContext *ctx = (PlayerContext *) handle;
     if (!ctx) return;
     ctx->running = FALSE;
+    // 先取消 pending restart timeout, 防止回调访问已释放的 ctx (use-after-free)
+    if (ctx->restart_source_id > 0) {
+        g_source_remove(ctx->restart_source_id);
+        ctx->restart_source_id = 0;
+    }
     if (ctx->loop) {
         g_main_loop_quit(ctx->loop);
     }
@@ -356,6 +381,13 @@ Java_com_tunnathub_app_video_GstQgcPlayer_nativeDestroy(JNIEnv *env, jclass claz
         gst_element_set_state(ctx->pipeline, GST_STATE_NULL);
         gst_object_unref(ctx->pipeline);
     }
+    // 释放全局引用 (避免泄漏)
+    g_mutex_lock(&g_java_instance_lock);
+    if (g_java_instance) {
+        (*env)->DeleteGlobalRef(env, g_java_instance);
+        g_java_instance = NULL;
+    }
+    g_mutex_unlock(&g_java_instance_lock);
     g_free(ctx);
 }
 
