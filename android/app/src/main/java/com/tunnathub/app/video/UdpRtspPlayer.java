@@ -68,6 +68,8 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
     private final Context context;
     private final Surface surface;
     private final Callback callback;
+    private final String codecOverride;
+    private final String profileName;
 
     private volatile boolean running;
     private Thread rtpThread;
@@ -142,9 +144,16 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
     }
 
     public UdpRtspPlayer(Context context, Surface surface, Callback callback) {
+        this(context, surface, callback, null, "UDP_SELF");
+    }
+
+    public UdpRtspPlayer(Context context, Surface surface, Callback callback,
+                         String codecOverride, String profileName) {
         this.context = context.getApplicationContext();
         this.surface = surface;
         this.callback = callback;
+        this.codecOverride = normalizeCodec(codecOverride);
+        this.profileName = (profileName == null || profileName.isBlank()) ? "UDP_SELF" : profileName;
     }
 
     public synchronized int start(String url) {
@@ -159,7 +168,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
         cachedPps = null;
         firstStampUs = 0;
         decoded = false;
-        stats = new BenchmarkStats(LowLatencyRtspPlayer.getForcedCodec());
+        stats = new BenchmarkStats(effectiveCodecLabel());
         resetReassembler();
         frameQueue.clear();
 
@@ -686,12 +695,16 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
                     LowLatencyRtspPlayer.configureLowLatency(format);
                     format.setByteBuffer("csd-0", ByteBuffer.wrap(cachedSps));
                     format.setByteBuffer("csd-1", ByteBuffer.wrap(cachedPps));
-                    MediaCodecInfo info = LowLatencyRtspPlayer.selectCodec("video/avc");
-                    if (info == null) throw new IllegalStateException("no decoder for video/avc");
-                    codecName = info.getName();
+                    if (codecOverride != null) {
+                        codecName = codecOverride;
+                    } else {
+                        MediaCodecInfo info = LowLatencyRtspPlayer.selectCodec("video/avc");
+                        if (info == null) throw new IllegalStateException("no decoder for video/avc");
+                        codecName = info.getName();
+                    }
                     stats = new BenchmarkStats(codecName);
                     stats.markStarted(sample.receivedNs);
-                    Log.w("TUN_DECODER", "UDP_SELF USING CODEC: " + codecName);
+                    Log.w("TUN_DECODER", profileName + " USING CODEC: " + codecName);
                     codecLocal = MediaCodec.createByCodecName(codecName);
                     codecLocal.configure(format, surface, null, 0);
                     codecLocal.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT);
@@ -845,6 +858,15 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
     // ═══════════════════════════════════════════════════════════════
     // RTP 解析
     // ═══════════════════════════════════════════════════════════════
+
+    private String effectiveCodecLabel() {
+        return codecOverride != null ? codecOverride : LowLatencyRtspPlayer.getForcedCodec();
+    }
+
+    private static String normalizeCodec(String name) {
+        if (name == null || name.isBlank() || "auto".equals(name)) return null;
+        return name;
+    }
 
     private static final class RtpPacket {
         final int seq;

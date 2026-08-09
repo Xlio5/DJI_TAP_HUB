@@ -608,7 +608,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         try {
             prefs.edit().putString("rtsp_url", rtspUrl).apply()
             autoSyncSubnet(rtspUrl)
-            val session: RtspPlayerSession = if (playbackEngine == RtspPlaybackEngine.MEDIA3_UDP) {
+            val session: RtspPlayerSession = when (playbackEngine) {
+                RtspPlaybackEngine.MEDIA3_UDP -> {
                 val media3 = Media3RtspProbePlayer(ctx, sv.holder.surface, object : Media3RtspProbePlayer.Callback {
                     override fun onVideoDisplayed() {
                         Handler(Looper.getMainLooper()).post {
@@ -630,7 +631,28 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 })
                 media3.start(rtspUrl)
                 media3
-            } else {
+                }
+                RtspPlaybackEngine.QGC_SOFTWARE -> {
+                    val softwareCodec = LowLatencyRtspPlayer.selectSoftwareH264CodecName()
+                    if (softwareCodec.isNullOrBlank()) {
+                        statusText = "未找到软件H264解码器"
+                        AppLog.e("Player", "QGC-style start failed: no software h264 decoder")
+                        scheduleAutoReconnectFn()
+                        return
+                    }
+                    val udp = UdpRtspPlayer(ctx, sv.holder.surface, udpPlayerCallback, softwareCodec, "QGC_SOFTWARE")
+                    val rc = udp.start(rtspUrl)
+                    if (rc != 0) {
+                        statusText = "QGC风格播放启动失败"
+                        AppLog.e("Player", "QGC-style UdpRtspPlayer start 失败 rc=$rc")
+                        playerHolder.set(null)
+                        scheduleAutoReconnectFn()
+                        return
+                    }
+                    AppLog.i("Player", "QGC-style software decoder: $softwareCodec")
+                    udp
+                }
+                RtspPlaybackEngine.UDP_SELF -> {
                 // 自建 UDP 会话 + PLI 求关键帧
                 val udp = UdpRtspPlayer(ctx, sv.holder.surface, udpPlayerCallback)
                 val rc = udp.start(rtspUrl)
@@ -642,6 +664,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     return
                 }
                 udp
+                }
             }
             playerRef = session; isPlaying = true; statusText = "连接中..."
             playerHolder.set(session)
@@ -1447,7 +1470,11 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                         }
                                     }
                                 }
-                                Text(if (playbackEngine == RtspPlaybackEngine.MEDIA3_UDP) "Media3 默认 UDP 优先，用于验证摄像头/RTP UDP 是否可通。" else "默认低延迟硬解路径，固定 c2.qti.avc.decoder.low_latency。", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.padding(top = 3.dp))
+                                Text(when (playbackEngine) {
+                                    RtspPlaybackEngine.MEDIA3_UDP -> "Media3 默认 UDP 优先，用于验证摄像头/RTP UDP 是否可通。"
+                                    RtspPlaybackEngine.QGC_SOFTWARE -> "QGC风格对照路径：自建UDP低缓冲 + Android软件H264解码。"
+                                    RtspPlaybackEngine.UDP_SELF -> "默认低延迟硬解路径，固定 c2.qti.avc.decoder.low_latency。"
+                                }, fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.padding(top = 3.dp))
 
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("解码器")

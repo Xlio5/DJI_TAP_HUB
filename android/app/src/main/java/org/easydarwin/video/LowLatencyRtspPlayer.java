@@ -72,6 +72,18 @@ public final class LowLatencyRtspPlayer {
         return list;
     }
 
+    public static String selectSoftwareH264CodecName() {
+        List<String> decoders = listAvailableDecoders("video/avc");
+        String firstSoftware = null;
+        for (String name : decoders) {
+            String lower = name.toLowerCase();
+            if (lower.equals("c2.android.avc.decoder")) return name;
+            if (lower.equals("omx.google.h264.decoder")) return name;
+            if (firstSoftware == null && isSoftwareCodecName(name)) firstSoftware = name;
+        }
+        return firstSoftware;
+    }
+
     public static MediaCodecInfo selectCodec(String mimeType) {
         List<MediaCodecInfo> candidates = new ArrayList<>();
         int numCodecs = MediaCodecList.getCodecCount();
@@ -195,6 +207,12 @@ public final class LowLatencyRtspPlayer {
             return codecInfo.isHardwareAccelerated();
         }
         String name = codecInfo.getName().toLowerCase();
-        return !name.startsWith("omx.google.") && !name.startsWith("c2.android.");
+        return !isSoftwareCodecName(name);
+    }
+
+    private static boolean isSoftwareCodecName(String name) {
+        String lower = name == null ? "" : name.toLowerCase();
+        return lower.startsWith("omx.google.") || lower.startsWith("c2.android.")
+                || lower.contains(".sw.") || lower.contains("software");
     }
 }
