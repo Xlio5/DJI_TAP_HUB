@@ -52,7 +52,9 @@ public final class GlLowLatencySurface implements GLSurfaceView.Renderer, Surfac
         glView = new GLSurfaceView(context);
         glView.setEGLContextClientVersion(2);
         glView.setRenderer(this);
-        glView.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);  // 有帧才渲染
+        // CONTINUOUSLY: 持续渲染, 保证 MediaCodec 输出 buffer 总是被及时 updateTexImage 释放,
+        // 避免解码器输出积压(DecBuffFrms 缓存)导致延迟。
+        glView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
     }
 
     /** MediaCodec configure 用的 Surface（指向 SurfaceTexture）。阻塞等待 GL 就绪。 */
@@ -108,17 +110,20 @@ public final class GlLowLatencySurface implements GLSurfaceView.Renderer, Surfac
 
     @Override
     public void onDrawFrame(GL10 gl) {
-        if (!frameAvailable.getAndSet(false)) {
-            return;
-        }
         SurfaceTexture st = surfaceTexture;
         if (st == null) {
             return;
         }
+        // 持续 updateTexImage: 及时释放 MediaCodec 输出 buffer, 避免解码器积压(DecBuffFrms)
+        // 即使无新帧也调用(可能抛异常), 保证输出通道畅通
+        boolean hasNew = false;
         try {
+            hasNew = true;
             st.updateTexImage();   // 拿最新视频帧，并通知 MediaCodec 释放该 buffer
         } catch (Exception e) {
-            Log.w(TAG, "updateTexImage failed", e);
+            hasNew = false;        // 无新帧(buffer 已被消费完), 保持通道畅通
+        }
+        if (!hasNew && !frameAvailable.getAndSet(false)) {
             return;
         }
         // 渲染最新纹理到屏幕（丢旧保新：只画最新帧）

@@ -3,6 +3,7 @@ package com.tunnathub.app.video;
 public enum RtspPlaybackEngine {
     UDP_SELF("udp_self", "自建UDP+硬解", false),
     QGC_SOFTWARE("qgc_software", "QGC风格软解", true),
+    GST_QGC("gst_qgc", "GStreamer(QGC逻辑)", false),
     MEDIA3_UDP("media3_udp", "Media3 UDP探测", false);
 
     private final String prefValue;

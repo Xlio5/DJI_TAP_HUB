@@ -1,0 +1,10 @@
+# GStreamer 静态库 (829MB, 靠下载/解压, 不提交)
+app/src/main/gstreamer_libs/
+
+# CMake 构建缓存
+app/.cxx/
+
+# Gradle
+.gradle/
+build/
+local.properties

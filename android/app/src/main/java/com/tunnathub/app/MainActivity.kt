@@ -682,6 +682,47 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 }
                 udp
                 }
+                RtspPlaybackEngine.GST_QGC -> {
+                    // GStreamer 引擎（参考 QGC GstVideoReceiver 逻辑）
+                    val gst = com.tunnathub.app.video.GstQgcPlayer(
+                        ctx, sv?.holder?.surface, object : com.tunnathub.app.video.GstQgcPlayer.Callback {
+                            override fun onVideoDisplayed(decoderName: String) {
+                                Handler(Looper.getMainLooper()).post {
+                                    statusText = "播放中 [GStreamer:$decoderName]"
+                                    isPlaying = true
+                                    autoReconnectCount = 0
+                                    AppLog.i("Player", "GStreamer 首帧: $decoderName")
+                                }
+                            }
+                            override fun onVideoSize(width: Int, height: Int) {
+                                Handler(Looper.getMainLooper()).post { resolutionText = "${width}x${height}" }
+                            }
+                            override fun onTimeout() {
+                                Handler(Looper.getMainLooper()).post { statusText = "连接超时"; isPlaying = false; scheduleAutoReconnectFn() }
+                            }
+                            override fun onError(message: String?, error: Throwable?) {
+                                Handler(Looper.getMainLooper()).post {
+                                    statusText = "GStreamer播放错误"
+                                    isPlaying = false
+                                    AppLog.e("Player", "GStreamer错误: ${message ?: error?.javaClass?.simpleName}")
+                                    scheduleAutoReconnectFn()
+                                }
+                            }
+                            override fun onDecoderChanged(decoderName: String) {
+                                AppLog.i("Player", "GStreamer 解码器: $decoderName")
+                            }
+                        }, rtspUrl
+                    )
+                    val rc = gst.start()
+                    if (rc != 0) {
+                        statusText = "GStreamer播放启动失败"
+                        AppLog.e("Player", "GstQgcPlayer start 失败 rc=$rc")
+                        playerHolder.set(null)
+                        scheduleAutoReconnectFn()
+                        return
+                    }
+                    gst
+                }
             }
             playerRef = session; isPlaying = true; statusText = "连接中..."
             playerHolder.set(session)
@@ -1500,6 +1541,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 Text(when (playbackEngine) {
                                     RtspPlaybackEngine.MEDIA3_UDP -> "Media3 默认 UDP 优先，用于验证摄像头/RTP UDP 是否可通。"
                                     RtspPlaybackEngine.QGC_SOFTWARE -> "QGC风格对照路径：自建UDP低缓冲 + Android软件H264解码。"
+                                    RtspPlaybackEngine.GST_QGC -> "GStreamer引擎：rtspsrc+decodebin3+GL sink，完全参考 QGC 逻辑。"
                                     RtspPlaybackEngine.UDP_SELF -> "默认低延迟硬解路径，固定 c2.qti.avc.decoder.low_latency。"
                                 }, fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.padding(top = 3.dp))
 
