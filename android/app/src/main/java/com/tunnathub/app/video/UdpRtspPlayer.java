@@ -109,6 +109,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
     private String codecName;
     private BenchmarkStats stats = new BenchmarkStats("auto");
     private long firstStampUs;
+    private long lastPtsUs;
     private boolean decoded;
     private final Queue<Long> inputTimesNs = new ArrayDeque<>();
     private final ArrayBlockingQueue<FrameSample> frameQueue =
@@ -167,6 +168,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
         cachedSps = null;
         cachedPps = null;
         firstStampUs = 0;
+        lastPtsUs = 0;
         decoded = false;
         stats = new BenchmarkStats(effectiveCodecLabel());
         resetReassembler();
@@ -457,6 +459,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
                         + " reorderFlush=" + diagReorderFlush
                         + " waitingKey=" + waitingKeyFrame);
             }
+            rtp.receivedNs = receivedNs;
             offerRtp(rtp);
             maybeSendPli(receivedNs);
         }
@@ -464,6 +467,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
 
     /** 收 RTP 进乱序缓冲，凑齐连续 seq 后按序出给重组器。 */
     private void offerRtp(RtpPacket rtp) {
+        long nowNs = System.nanoTime();
         // 首次收到包：从该包的 seq 开始期望连续，避免 lastFlushedSeq=-1 卡死（首包 seq 通常非 0）
         if (lastFlushedSeq < 0) {
             lastFlushedSeq = rtp.seq - 1;
@@ -478,7 +482,21 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
             lastFlushedSeq = next.seq;
             assembleRtp(next);
         }
-        // 缓冲超窗：说明中间有丢包（seq 空洞），跳过空洞继续——把已到达的包按序输出
+        // 时间窗口：超过 RTP_JITTER_MAX_DELAY 的乱序包视为迟到，跳过空洞继续。
+        // 这是 QGC rtpjitterbuffer 低延迟的核心——不等迟到的包，宁可丢。
+        long jitterDeadlineNs = nowNs - UdpLowLatencyPolicy.RTP_JITTER_MAX_DELAY_NS;
+        while (!reorder.isEmpty()) {
+            int lowest = reorder.firstKey();
+            RtpPacket oldest = reorder.get(lowest);
+            if (oldest.receivedNs < jitterDeadlineNs) {
+                // 迟到的乱序包：跳过空洞，从该包重新对齐连续
+                diagReorderFlush++;
+                lastFlushedSeq = lowest - 1;
+                break;
+            }
+            break;
+        }
+        // 缓冲超窗兜底：说明有长时间无法凑齐的空洞，跳过继续
         if (reorder.size() > UdpLowLatencyPolicy.REORDER_WINDOW_PACKETS) {
             diagReorderFlush++;
             int lowest = reorder.firstKey();
@@ -711,7 +729,6 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
                     codecLocal.start();
                     codec = codecLocal;
                 }
-                if (firstStampUs == 0) firstStampUs = sample.rtpTimestamp;
                 queueInput(codecLocal, sample);
                 drainOutput(codecLocal);
             }
@@ -732,6 +749,21 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
         }
     }
 
+    /**
+     * RTP timestamp (90kHz, 32bit) → 单调递增的 PTS (us)。
+     * 处理 32bit 回绕和异常跳变：保证给解码器的 PTS 单调不倒退，避免解码器 PTS 错乱。
+     */
+    private long monotonicPtsUs(long rtpTimestamp) {
+        if (firstStampUs == 0) firstStampUs = rtpTimestamp;
+        long ptsUs = (rtpTimestamp - firstStampUs) / 90;
+        if (ptsUs < 0) ptsUs = 0;
+        if (ptsUs < lastPtsUs) {
+            ptsUs = lastPtsUs;   // 保单调：回绕/跳变时不倒退
+        }
+        lastPtsUs = ptsUs;
+        return ptsUs;
+    }
+
     private void queueInput(MediaCodec codecLocal, FrameSample sample) {
         int index = codecLocal.dequeueInputBuffer(UdpLowLatencyPolicy.INPUT_DEQUEUE_TIMEOUT_US);
         if (index < 0) return;
@@ -743,8 +775,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
             Log.w(TAG, "input buffer 不足: need=" + sample.data.length + " have=" + buffer.remaining());
         }
         buffer.put(sample.data, 0, length);
-        long ptsUs = (sample.rtpTimestamp - firstStampUs) / 90;  // RTP 90kHz → us
-        if (ptsUs < 0) ptsUs = 0;
+        long ptsUs = monotonicPtsUs(sample.rtpTimestamp);   // RTP 90kHz → us，单调递增
         codecLocal.queueInputBuffer(index, 0, length, ptsUs, 0);
         long nowNs = System.nanoTime();
         inputTimesNs.offer(nowNs);
@@ -895,6 +926,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
         final int ssrc;
         final byte[] payload;
         final boolean marker;
+        long receivedNs;
 
         RtpPacket(int seq, int timestamp, int ssrc, byte[] payload, boolean marker) {
             this.seq = seq;
