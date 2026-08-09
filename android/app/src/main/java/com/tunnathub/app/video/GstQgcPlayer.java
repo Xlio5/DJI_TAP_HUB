@@ -77,20 +77,39 @@ public final class GstQgcPlayer implements RtspPlayerSession {
     public synchronized int start() {
         if (running) stop();
         running = true;
+        renderThreadStarted = false;
+        frameNotified = false;
         nativeHandle = nativeCreate(this, rtspUrl, surface, sDecoderPreference);
         if (nativeHandle == 0) {
             running = false;
             callback.onError("gstreamer native create failed", null);
             return -1;
         }
+        // 启动单一渲染线程 (长期存活, stop 时退出), 避免动态创建导致多线程并发
+        renderThreadStarted = true;
+        renderThread = new Thread(this::renderLoop, "GST_RENDER");
+        renderThread.setDaemon(true);
+        renderThread.start();
         return 0;
     }
 
     @Override
     public synchronized void stop() {
         running = false;
-        // 重置渲染线程/首帧标志, 否则 stop→start 循环后渲染线程不再创建,
-        // onVideoDisplayed 也不再触发 (画面冻结 + UI 不显示播放中)
+        // 唤醒渲染线程让它退出 (wait 超时兜底)
+        synchronized (renderLock) {
+            renderLock.notifyAll();
+        }
+        // 等渲染线程退出 (防 stop 后线程还访问 surface)
+        Thread rt = renderThread;
+        renderThread = null;
+        if (rt != null) {
+            try {
+                rt.join(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
         renderThreadStarted = false;
         frameNotified = false;
         if (nativeHandle != 0) {
@@ -111,6 +130,7 @@ public final class GstQgcPlayer implements RtspPlayerSession {
     private byte[] pendingRgba;                    // 最新待渲染帧 (丢旧保新)
     private int pendingW, pendingH;
     private volatile boolean renderThreadStarted;
+    private Thread renderThread;                   // 渲染线程 (start 时创建, stop 时停)
 
     // native 回调 Java: 收到解码帧 (RGBA), 只缓存最新帧, 渲染线程消费
     @SuppressWarnings("unused")
@@ -133,12 +153,7 @@ public final class GstQgcPlayer implements RtspPlayerSession {
             pendingH = height;
             renderLock.notifyAll();   // 唤醒渲染线程
         }
-        if (!renderThreadStarted) {
-            renderThreadStarted = true;
-            Thread t = new Thread(this::renderLoop, "GST_RENDER");
-            t.setDaemon(true);
-            t.start();
-        }
+        // start() 已创建渲染线程, 这里不再动态创建 (避免多线程并发 lockCanvas)
     }
 
     private int renderCount;   // 诊断: 渲染帧数
