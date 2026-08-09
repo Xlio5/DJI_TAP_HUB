@@ -36,7 +36,7 @@ class UsbBridge(
         private const val TAG = "UsbBridge"
         const val USB_VID = 0x0BDA
         const val USB_PID = 0x8812
-        private const val USB_TIMEOUT_MS = 10  // 10ms 超低延迟
+        private const val USB_TIMEOUT_MS = 50  // 50ms：突发(关键帧~160KB)时让 bulk 一次收满, 降低丢包
 
         /** USB 写连续失败多少次才判定链路断开 (滤掉瞬时抖动) */
         private const val MAX_USB_WRITE_FAILS = 5
@@ -286,36 +286,77 @@ class UsbBridge(
     /* ── Coroutine 2: USB → TUN ────────────────────────────── */
 
     private suspend fun usbToTunLoop(tunOutput: FileOutputStream) {
-        val buf = acquireBuffer()
+        // 读缓冲加大到 16KB：突发时一次 bulkTransfer 能收多个帧，减少读次数，降低内核缓冲溢出丢包
+        val buf = ByteArray(16 * 1024)
         var firstPacket = true
+
+        // 流式累积缓冲：bulkTransfer 一次读不保证对齐帧边界。
+        // 可能一次读到多个帧（粘包）或半个帧（跨 bulk 边界）。
+        // 这里累积数据，按帧头 Magic+Length 逐帧提取，剩余字节留待下次。
+        // 累积缓冲 ≥ 读缓冲，避免 arraycopy 越界
+        val accum = ByteArray(64 * 1024)
+        var accumLen = 0
 
         while (coroutineContext.isActive && isConnected) {
             try {
                 val conn = usbConnection ?: break   // M1: 捕获局部引用, 避免与 disconnect 竞态 NPE
                 val epInL = epIn ?: break           // M1: 与 tunToUsbLoop 保持一致, 补 epIn 局部引用
                 val epOutL = epOut ?: break
-                val n = conn.bulkTransfer(epInL, buf, buf.size, USB_TIMEOUT_MS)
 
+                // 先处理累积缓冲里已能凑齐的完整帧
+                var consumed = 0
+                while (consumed + FrameCodec.FRAME_HEADER_LEN <= accumLen) {
+                    // 帧头前 2 字节必须是 Magic，否则失步（丢弃 1 字节重新对齐）
+                    val magic = ((accum[consumed].toInt() and 0xFF) shl 8) or (accum[consumed + 1].toInt() and 0xFF)
+                    if (magic != FrameCodec.FRAME_MAGIC.toInt() and 0xFFFF) {
+                        consumed++
+                        continue
+                    }
+                    val payloadLen = ((accum[consumed + 2].toInt() and 0xFF) shl 8) or (accum[consumed + 3].toInt() and 0xFF)
+                    if (payloadLen > FrameCodec.FRAME_MAX_PAYLOAD) {
+                        consumed++  // 长度非法，丢弃该字节重新对齐
+                        continue
+                    }
+                    val frameLen = FrameCodec.FRAME_HEADER_LEN + payloadLen
+                    if (consumed + frameLen > accumLen) break  // 帧不完整，等更多数据
+                    when {
+                        payloadLen == 0 -> {  // 心跳
+                            if (firstPacket) { AppLog.d(TAG, "USB→TUN 首帧: 心跳 PONG"); firstPacket = false }
+                            conn.bulkTransfer(epOutL, PONG_FRAME, 0, PONG_FRAME.size, 100)
+                        }
+                        payloadLen == 2 -> {}  // Credit（Phase 3 忽略）
+                        else -> {  // 数据帧 → TUN
+                            val payload = ByteArray(payloadLen)
+                            System.arraycopy(accum, consumed + FrameCodec.FRAME_HEADER_LEN, payload, 0, payloadLen)
+                            tunOutput.write(payload)
+                        }
+                    }
+                    consumed += frameLen
+                }
+
+                // 处理完的字节移出累积缓冲（保留未消费的尾部）
+                if (consumed > 0) {
+                    val remaining = accumLen - consumed
+                    if (remaining > 0) System.arraycopy(accum, consumed, accum, 0, remaining)
+                    accumLen = remaining
+                }
+                notifyActive()
+
+                // 再读新的数据进累积缓冲
+                val n = conn.bulkTransfer(epInL, buf, buf.size, USB_TIMEOUT_MS)
                 if (n < 0) {
                     // USB timeout/busy — no data available, keep waiting
                     if (!isConnected) break
                     continue
                 }
                 if (n == 0) continue
-                notifyActive()
-
-                when (val result = FrameCodec.unpack(buf, n)) {
-                    is FrameCodec.UnpackResult.Data -> tunOutput.write(result.payload)
-                    is FrameCodec.UnpackResult.Heartbeat -> {
-                        if (firstPacket) { AppLog.d(TAG, "USB→TUN 首帧: 心跳 PONG"); firstPacket = false }
-                        conn.bulkTransfer(epOutL, PONG_FRAME, 0, PONG_FRAME.size, 100)
-                    }
-                    is FrameCodec.UnpackResult.Credit -> {} // Phase 3
-                    is FrameCodec.UnpackResult.MagicMismatch -> {
-                        // Skip corrupt byte and resync
-                    }
-                    is FrameCodec.UnpackResult.Error -> {} // Ignore
+                if (accumLen + n > accum.size) {
+                    // 累积缓冲满但没凑齐完整帧：说明帧损坏，清空重新同步
+                    accumLen = 0
+                    Log.w(TAG, "USB→TUN 累积缓冲溢出, 重新同步")
                 }
+                System.arraycopy(buf, 0, accum, accumLen, n)
+                accumLen += n
             } catch (e: Exception) {
                 if (coroutineContext.isActive) { Log.e(TAG, "USB→TUN 异常", e); AppLog.e(TAG, "USB→TUN 异常: ${e.message}", e) }
                 break

@@ -59,6 +59,7 @@ import com.tunnathub.app.video.RtspPlaybackEngine
 import com.tunnathub.app.video.RtspKeyFrameRequester
 import com.tunnathub.app.video.RtspTransportPolicy
 import com.tunnathub.app.video.RtspUdpProbe
+import com.tunnathub.app.video.UdpRtspPlayer
 import kotlinx.coroutines.*
 import org.easydarwin.video.BenchmarkStats
 import org.easydarwin.video.Client
@@ -560,7 +561,10 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     statusText = "Waiting IDR ${elapsedMs}ms, restart=$restarts"
                     isPlaying = true
                     val now = System.currentTimeMillis()
-                    if (!rtcpFeedbackRunning && elapsedMs >= 1000 && now - lastRtcpFeedbackAt >= 2000) {
+                    // 仅 LOW_LATENCY 引擎需要独立的 RtspKeyFrameRequester 补发 PLI；
+                    // UDP_SELF 引擎由播放器自己在主会话里发 PLI，避免双路干扰。
+                    if (playbackEngine == RtspPlaybackEngine.LOW_LATENCY
+                        && !rtcpFeedbackRunning && elapsedMs >= 1000 && now - lastRtcpFeedbackAt >= 2000) {
                         lastRtcpFeedbackAt = now
                         rtcpFeedbackRunning = true
                         val url = rtspUrl
@@ -574,6 +578,63 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /** UDP_SELF 自建会话播放器的回调（复用低延迟播放器的 UI 逻辑，PLI 计数不同语义）。 */
+    val udpPlayerCallback = remember {
+        object : UdpRtspPlayer.Callback {
+            private val mainHandler = Handler(ctx.mainLooper)
+
+            override fun onVideoDisplayed(codecName: String) {
+                mainHandler.post {
+                    val ts = codecName.split(".").last().take(25)
+                    statusText = "播放中 [UDP:$ts]"
+                    isPlaying = true
+                    autoReconnectCount = 0
+                    AppLog.i("Player", "自建UDP低延迟硬解: $codecName")
+                }
+            }
+
+            override fun onVideoSize(width: Int, height: Int) {
+                mainHandler.post { resolutionText = "${width}x${height}" }
+            }
+
+            override fun onTimeout() {
+                mainHandler.post {
+                    statusText = "连接超时"
+                    isPlaying = false
+                    scheduleAutoReconnectFn()
+                }
+            }
+
+            override fun onUnsupportedVideo() {
+                mainHandler.post {
+                    statusText = "编码不支持"
+                    isPlaying = false
+                    scheduleAutoReconnectFn()
+                }
+            }
+
+            override fun onError(message: String?, error: Throwable?) {
+                mainHandler.post {
+                    statusText = "播放错误"
+                    isPlaying = false
+                    AppLog.e("Player", "UDP播放错误: ${message ?: error?.javaClass?.simpleName ?: "unknown"}")
+                    scheduleAutoReconnectFn()
+                }
+            }
+
+            override fun onWaitingKeyFrame(elapsedMs: Long, pliSent: Int) {
+                mainHandler.post {
+                    statusText = "Waiting IDR ${elapsedMs}ms, PLI=$pliSent"
+                    isPlaying = true
+                }
+            }
+
+            override fun onRtpDiag(message: String) {
+                AppLog.i("UdpRtspPlayer", message)
             }
         }
     }
@@ -641,6 +702,18 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 })
                 media3.start(rtspUrl)
                 media3
+            } else if (playbackEngine == RtspPlaybackEngine.UDP_SELF) {
+                // 自建 UDP 会话 + PLI 求关键帧：绕开 EasyRTSPClient 黑盒
+                val udp = UdpRtspPlayer(ctx, sv.holder.surface, udpPlayerCallback)
+                val rc = udp.start(rtspUrl)
+                if (rc != 0) {
+                    statusText = "UDP播放启动失败"
+                    AppLog.e("Player", "UdpRtspPlayer start 失败 rc=$rc")
+                    playerHolder.set(null)
+                    scheduleAutoReconnectFn()
+                    return
+                }
+                udp
             } else {
                 val client = LowLatencyRtspPlayer(ctx, sv.holder.surface, playerCallback)
                 client.start(rtspUrl, RtspTransportPolicy.lowLatencyTransportType())

@@ -389,7 +389,7 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
         stats.recordInputQueued(nowNs, sample.receivedNs);
     }
 
-    private static MediaCodecInfo selectCodec(String mimeType) {
+    public static MediaCodecInfo selectCodec(String mimeType) {
         List<MediaCodecInfo> candidates = new ArrayList<>();
         int numCodecs = MediaCodecList.getCodecCount();
         for (int i = 0; i < numCodecs; i++) {
@@ -418,14 +418,14 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
         return best;
     }
 
-    private static boolean codecMatch(String mimeType, MediaCodecInfo codecInfo) {
+    public static boolean codecMatch(String mimeType, MediaCodecInfo codecInfo) {
         for (String type : codecInfo.getSupportedTypes()) {
             if (type.equalsIgnoreCase(mimeType)) return true;
         }
         return false;
     }
 
-    private static boolean supportsLowLatencyFeature(MediaCodecInfo codecInfo, String mimeType) {
+    public static boolean supportsLowLatencyFeature(MediaCodecInfo codecInfo, String mimeType) {
         if (Build.VERSION.SDK_INT < 30) return false;
         try {
             MediaCodecInfo.CodecCapabilities caps = codecInfo.getCapabilitiesForType(mimeType);
@@ -435,7 +435,7 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
         }
     }
 
-    private static void configureLowLatency(MediaFormat format) {
+    public static void configureLowLatency(MediaFormat format) {
         format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 0);
         if (Build.VERSION.SDK_INT >= 30) {
             put(format, "vendor.qti-ext-dec-low-latency.enable", 1);
@@ -449,7 +449,7 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
         }
     }
 
-    private static void put(MediaFormat format, String key, int value) {
+    public static void put(MediaFormat format, String key, int value) {
         try {
             format.setInteger(key, value);
         } catch (Exception ignored) {
@@ -549,7 +549,7 @@ public final class LowLatencyRtspPlayer implements Client.SourceCallBack, RtspPl
         return sb.toString();
     }
 
-    static boolean isSyncFrame(Client.FrameInfo frame) {
+    public static boolean isSyncFrame(Client.FrameInfo frame) {
         if (frame.type == 1) return true;
         if (frame.buffer == null || frame.length <= 0) return false;
         if (frame.codec == VIDEO_CODEC_H264) {
