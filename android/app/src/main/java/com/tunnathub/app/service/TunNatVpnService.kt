@@ -98,7 +98,17 @@ class TunNatVpnService : VpnService() {
          */
         fun openProtectedPort(port: Int): java.net.DatagramSocket? {
             val inst = instance ?: return null
-            protectedPorts[port]?.let { return it }   // 已存在则复用
+            // 复用前检查 socket 有效性: 若已被关闭 (fd 释放但 inode 残留, 孤儿 socket),
+            // 必须重建 — 否则 receive() 永远收不到数据 (摇杆/心跳丢失)。
+            protectedPorts[port]?.let { existing ->
+                if (existing.isClosed || !existing.isBound) {
+                    AppLog.w(TAG, "UDP端口保护: $port socket 失效, 重建")
+                    try { existing.close() } catch (_: Exception) {}
+                    protectedPorts.remove(port)
+                } else {
+                    return existing   // 有效, 复用
+                }
+            }
             return try {
                 val socket = java.net.DatagramSocket(null)
                 socket.reuseAddress = true
@@ -163,14 +173,24 @@ class TunNatVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "VpnService 启动")
 
-        // isStarted 残留 true (上次停止不彻底) 时强制重启:
-        // 否则 USB Bridge 不启动, 导致"开多次 App 才能连上"
+        // 修复: 退出 app 时 VPN 服务 (TunNatVpnService) 仍在后台运行, USB 隧道也还连着。
+        // 再进 app 时不应强制重启 VPN (stopVpn 会关 TUN+USB+受保护端口 incl. 65530 摇杆 socket,
+        // 重建后 RC effect 重新建 socket, 时序/投递易出问题 → 摇杆丢失)。
+        // 正确逻辑: 服务已启动且隧道健康 (isStarted=true, USB 连通 isRunning=true) → 直接复用, 不重建。
+        // 服务已启动但隧道断了 → 服务内部 doReconnect 会后台自动重连, 也不需强制重启。
+        // 只有服务确实未初始化 (isStarted=false) 才走完整启动流程。
         if (isStarted) {
-            Log.w(TAG, "VpnService 残留, 强制重启")
-            stopVpn()   // 停掉旧的 (TUN + USB + isStarted 复位)
-            // 重新初始化 USB Bridge (onDestroy 可能没跑, 这里补)
-            usbBridge?.disconnect()
-            usbBridge = null
+            // 服务已在跑: 隧道已连通则直接复用, 不打断 (保留受保护端口/摇杆 socket)。
+            if (isRunning) {
+                Log.i(TAG, "VPN 服务已在运行, 直接复用 (不重启, 保留摇杆/受保护端口)")
+                isStartedForUi = true
+                return START_STICKY
+            }
+            // 服务在但隧道断了: 不强制重启, 服务内部 doReconnect 会重连。
+            // 只补一下 UI 状态标记。
+            Log.w(TAG, "VPN 服务在但隧道未连, 交由 doReconnect 重连 (不强制重启)")
+            isStartedForUi = true
+            return START_STICKY
         }
         isStarted = true
         isStartedForUi = true
