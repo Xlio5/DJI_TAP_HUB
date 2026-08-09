@@ -163,6 +163,7 @@ typedef struct _PlayerContext {
     gint height;
     gboolean running;
     guint restart_source_id;   // 待触发的 restart timeout source id (用于取消)
+    gint restart_count;        // 连续重启计数 (限制无限重连)
     JNIEnv *env;
     jobject javaCallback;
 } PlayerContext;
@@ -178,8 +179,15 @@ static gboolean on_bus_message(GstBus *bus, GstMessage *msg, gpointer user_data)
             g_error_free(err);
             g_free(debug);
             // 链路中断: 重启 pipeline 自动恢复 (QGC udp-reconnect + watchdog 思路)
+            // 限制连续重启次数, 避免链路持续异常时无限重启消耗资源
             if (ctx->running) {
-                LOGI("pipeline error, restarting in 2s...");
+                ctx->restart_count++;
+                if (ctx->restart_count > 5) {
+                    LOGE("连续重启 %d 次仍失败, 停止自动重连 (等下次手动播放)", ctx->restart_count);
+                    ctx->restart_count = 0;
+                    break;
+                }
+                LOGI("pipeline error (重连 %d/5), restarting in 2s...", ctx->restart_count);
                 // 先取消旧的 pending restart (避免多个堆积), 记录新 source id 供 stop 时取消
                 if (ctx->restart_source_id > 0) {
                     g_source_remove(ctx->restart_source_id);
@@ -244,7 +252,7 @@ static PlayerContext *build_pipeline(const char *url, jobject surface,
     // rtspsrc 动态 pad → 用 caps 限制只取 video/rtp, 避免 audio pad 协商失败拖累
     // port-range=10000-65534: 强制 RTP client_port >= 10000, V3s DNAT 只转发 10000+
     char *launch_str = g_strdup_printf(
-        "rtspsrc location=%s latency=%d drop-on-latency=%s do-rtcp=TRUE "
+        "rtspsrc location=%s latency=%d drop-on-latency=%s do-rtcp=FALSE "
         "udp-reconnect=TRUE tcp-timeout=20000000 port-range=10000-65534 name=source "
         "source. "
         "! application/x-rtp,media=video "
