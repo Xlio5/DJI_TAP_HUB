@@ -754,10 +754,12 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
     private void drainOutput(MediaCodec codecLocal) {
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
         int drained = 0;
+        int latestRenderableIndex = -1;
+        long latestInputNs = 0;
         while (running && drained < UdpLowLatencyPolicy.OUTPUT_DRAIN_LIMIT) {
             int index = codecLocal.dequeueOutputBuffer(
                     info, UdpLowLatencyPolicy.OUTPUT_DEQUEUE_TIMEOUT_US);
-            if (index == MediaCodec.INFO_TRY_AGAIN_LATER) return;
+            if (index == MediaCodec.INFO_TRY_AGAIN_LATER) break;
             if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 MediaFormat fmt = codecLocal.getOutputFormat();
                 int w = fmt.getInteger(MediaFormat.KEY_WIDTH);
@@ -771,16 +773,35 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
             }
             if (index >= 0) {
                 drained++;
-                codecLocal.releaseOutputBuffer(index, true);
                 Long inputNs = inputTimesNs.poll();
-                if (inputNs != null) {
-                    stats.recordRendered(System.nanoTime(), inputNs);
-                }
-                if (!decoded) {
-                    decoded = true;
-                    callback.onVideoDisplayed(codecName == null ? "udp-self" : codecName);
+                if (UdpLowLatencyPolicy.RENDER_ONLY_LATEST_OUTPUT) {
+                    if (latestRenderableIndex >= 0) {
+                        codecLocal.releaseOutputBuffer(latestRenderableIndex, false);
+                    }
+                    latestRenderableIndex = index;
+                    latestInputNs = inputNs == null ? 0 : inputNs;
+                } else {
+                    codecLocal.releaseOutputBuffer(index, true);
+                    if (inputNs != null) {
+                        stats.recordRendered(System.nanoTime(), inputNs);
+                    }
+                    notifyFirstFrameDisplayed();
                 }
             }
+        }
+        if (latestRenderableIndex >= 0) {
+            codecLocal.releaseOutputBuffer(latestRenderableIndex, true);
+            if (latestInputNs != 0) {
+                stats.recordRendered(System.nanoTime(), latestInputNs);
+            }
+            notifyFirstFrameDisplayed();
+        }
+    }
+
+    private void notifyFirstFrameDisplayed() {
+        if (!decoded) {
+            decoded = true;
+            callback.onVideoDisplayed(codecName == null ? "udp-self" : codecName);
         }
     }
 

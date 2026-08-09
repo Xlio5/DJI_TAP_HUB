@@ -12,6 +12,7 @@ final class UdpLowLatencyPolicy {
     static final long INPUT_DEQUEUE_TIMEOUT_US = 1_000L;
     static final long OUTPUT_DEQUEUE_TIMEOUT_US = 0L;
     static final int OUTPUT_DRAIN_LIMIT = 8;
+    static final boolean RENDER_ONLY_LATEST_OUTPUT = true;
 
     private UdpLowLatencyPolicy() {
     }

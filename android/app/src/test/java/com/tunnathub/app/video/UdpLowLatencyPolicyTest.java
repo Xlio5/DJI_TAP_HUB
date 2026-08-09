@@ -4,6 +4,7 @@ public final class UdpLowLatencyPolicyTest {
     public static void main(String[] args) {
         usesShallowQueuesForLiveVideo();
         keepsReorderWindowBoundedBelowOneFrameBurst();
+        rendersOnlyLatestDecoderOutput();
     }
 
     private static void usesShallowQueuesForLiveVideo() {
@@ -18,6 +19,12 @@ public final class UdpLowLatencyPolicyTest {
         }
         if (UdpLowLatencyPolicy.REORDER_WINDOW_PACKETS < 16) {
             throw new AssertionError("reorder window should still tolerate small RTP bursts");
+        }
+    }
+
+    private static void rendersOnlyLatestDecoderOutput() {
+        if (!UdpLowLatencyPolicy.RENDER_ONLY_LATEST_OUTPUT) {
+            throw new AssertionError("live video should drop stale decoder output buffers");
         }
     }
 
