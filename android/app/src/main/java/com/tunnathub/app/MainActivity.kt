@@ -568,6 +568,36 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         }
     }
 
+    // ── 切后台/回前台: SurfaceView 的 Surface 在切后台销毁, 渲染线程 lockCanvas 会卡死
+    // ("Surface was already locked")。切后台停止播放, 回前台自动恢复。
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> {
+                    if (isPlaying) {
+                        playerHolder.getAndSet(null)?.stop()
+                        playerRef = null
+                        isPlaying = false
+                        statusText = "已停止 (切后台)"
+                        AppLog.i("Player", "切后台, 停止播放 (Surface 失效)")
+                    }
+                }
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
+                    // 回前台: VPN 连且未播放, 等 Surface 重建后自动恢复
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        if (vpnRunning && !isPlaying && rtspUrl.isNotBlank() && surfaceViewRef != null) {
+                            startPlaybackFn()
+                        }
+                    }, 800)
+                }
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     // ── 自动播放: VPN 连上且未在播放时, 自动播放保存的 RTSP ──
     LaunchedEffect(vpnRunning) {
         if (vpnRunning && !isPlaying && rtspUrl.isNotBlank()) {
