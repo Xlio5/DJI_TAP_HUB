@@ -281,6 +281,10 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     // 回前台时 SurfaceView 的 Surface 重建是异步的, 未就绪就播放会拿到已释放的 Surface
     // → render 线程 lockCanvas 每帧报 "Surface has already been released" → 画面卡死 (流量仍在跑)。
     var surfaceReady by remember { mutableStateOf(false) }
+    // 切后台前是否正在播放: 用于回前台时区分"恢复之前正在播的" vs "从未主动播放过"。
+    // 老大要求: 进 app 不要自动播放视频, 由用户手动点播放按钮。
+    // 回前台只恢复"切后台前正在播的", 不自动启动从未播过的会话。
+    var wasPlayingBeforePause by remember { mutableStateOf(false) }
     // 挂起标记: Surface 未就绪时收到了播放请求, 等 surfaceCreated 回调后再真正启动
     var pendingPlayAfterSurface by remember { mutableStateOf(false) }
     var playerRef by remember { mutableStateOf<RtspPlayerSession?>(null) }
@@ -356,9 +360,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var rtcpFeedbackText by remember { mutableStateOf("") }
     var rtcpFeedbackRunning by remember { mutableStateOf(false) }
     var lastRtcpFeedbackAt by remember { mutableLongStateOf(0L) }
-    var autoPlayInFlight by remember { mutableStateOf(false) }
-    var lastAutoPlayAt by remember { mutableLongStateOf(0L) }
-
     // ── HTTP POST ──
     // C-02: 用 remember 的 apiScope (随 composition 取消), 避免每次调用创建孤儿协程
     fun apiPost(path: String, body: String) {
@@ -585,6 +586,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             when (event) {
                 androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> {
+                    // 记录切后台前是否正在播 (供回前台判断是否恢复)。先记录再 stop。
+                    wasPlayingBeforePause = isPlaying
                     if (isPlaying) {
                         playerHolder.getAndSet(null)?.stop()
                         playerRef = null
@@ -594,9 +597,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     }
                 }
                 androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
-                    // 回前台: VPN 连且未播放, 恢复播放。
-                    // Surface 重建是异步的, 不一定在此刻就绪; 若未就绪 doStartPlayback 会挂起等 surfaceCreated。
-                    if (vpnRunning && !isPlaying && rtspUrl.isNotBlank() && surfaceViewRef != null) {
+                    // 回前台: 只在"切后台前正在播"时才恢复播放, 不自动启动从未主动播过的会话。
+                    // (老大要求: 进 app 不要自动播放视频, 由用户手动点播放按钮)
+                    if (wasPlayingBeforePause && vpnRunning && !isPlaying && rtspUrl.isNotBlank() && surfaceViewRef != null) {
                         startPlaybackFn()
                     }
                 }
@@ -607,32 +610,10 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // ── 自动播放: VPN 连上且未在播放时, 自动播放保存的 RTSP ──
-    LaunchedEffect(vpnRunning) {
-        if (vpnRunning && !isPlaying && rtspUrl.isNotBlank()) {
-            val now = System.currentTimeMillis()
-            if (autoPlayInFlight || now - lastAutoPlayAt < 2_000) return@LaunchedEffect
-            autoPlayInFlight = true
-            lastAutoPlayAt = now
-            AppLog.i("Player", "VPN 已连接, 自动播放")
-            autoReconnectActive = true
-            // 等 surface 就绪后播放
-            kotlinx.coroutines.delay(1000)
-            try {
-                // QGC_SOFTWARE 用 GLSurfaceView(glSurfaceRef)，其他用 SurfaceView(surfaceViewRef)
-                val viewReady = if (playbackEngine == RtspPlaybackEngine.QGC_SOFTWARE) {
-                    glSurfaceRef != null
-                } else {
-                    surfaceViewRef != null
-                }
-                if (vpnRunning && !isPlaying && viewReady) {
-                    startPlaybackFn()
-                }
-            } finally {
-                autoPlayInFlight = false
-            }
-        }
-    }
+    // ── 自动播放: 已禁用。老大要求进 app 不要自动播放视频, 由用户手动点播放按钮触发。
+    // 原逻辑: VPN 连上且未在播放时自动播放保存的 RTSP, 冷启动/链路重建时偶发
+    // not-linked/摄像头会话冲突 → 需要手动点一次, 现改为彻底不自动播, 消除这些时序问题。
+    // 挂起标记 (pendingPlayAfterSurface) 仍由手动播放/回前台恢复时使用, 这里保持无操作。
 
     fun autoSyncSubnet(url: String) {
         val ipMatch = Regex("rtsp://(\\d+\\.\\d+\\.\\d+)\\.\\d+").find(url) ?: return
