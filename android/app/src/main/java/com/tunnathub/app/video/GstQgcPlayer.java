@@ -111,8 +111,6 @@ public final class GstQgcPlayer implements RtspPlayerSession {
     private byte[] pendingRgba;                    // 最新待渲染帧 (丢旧保新)
     private int pendingW, pendingH;
     private volatile boolean renderThreadStarted;
-    private final java.util.concurrent.atomic.AtomicBoolean renderRequested =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
 
     // native 回调 Java: 收到解码帧 (RGBA), 只缓存最新帧, 渲染线程消费
     @SuppressWarnings("unused")
@@ -133,8 +131,8 @@ public final class GstQgcPlayer implements RtspPlayerSession {
             pendingRgba = rgba;
             pendingW = width;
             pendingH = height;
+            renderLock.notifyAll();   // 唤醒渲染线程
         }
-        renderRequested.set(true);
         if (!renderThreadStarted) {
             renderThreadStarted = true;
             Thread t = new Thread(this::renderLoop, "GST_RENDER");
@@ -147,17 +145,19 @@ public final class GstQgcPlayer implements RtspPlayerSession {
 
     private void renderLoop() {
         while (running) {
-            try {
-                Thread.sleep(5);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-            if (!renderRequested.getAndSet(false)) continue;
+            // 阻塞等待新帧 (nativeOnFrame notify), 避免忙轮询空转 CPU
             byte[] rgba;
             int w, h;
             synchronized (renderLock) {
-                if (pendingRgba == null) continue;
+                while (running && pendingRgba == null) {
+                    try {
+                        renderLock.wait(100);   // 100ms 超时兜底, 防止漏 notify
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+                if (!running || pendingRgba == null) continue;
                 rgba = pendingRgba;
                 w = pendingW;
                 h = pendingH;
@@ -174,7 +174,7 @@ public final class GstQgcPlayer implements RtspPlayerSession {
                     canvas.drawBitmap(renderBmp, 0, 0, null);
                     surface.unlockCanvasAndPost(canvas);
                     renderCount++;
-                    if (renderCount <= 3 || renderCount % 60 == 0) {
+                    if (renderCount <= 3 || renderCount % 300 == 0) {
                         Log.i(TAG, "render #" + renderCount + " " + w + "x" + h);
                     }
                 } else {

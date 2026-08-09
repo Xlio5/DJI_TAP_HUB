@@ -44,6 +44,10 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
 
 static gboolean g_frame_notified = FALSE;
 static jmethodID g_mid_nativeOnFrame = NULL;   // 缓存 nativeOnFrame 方法 id (避免每帧 GetMethodID)
+/* 复用的帧 buffer (避免每帧 8MB 分配)。注意: 当前 app 单播放器实例, 无并发;
+ * 若未来多实例需改 per-context 存储。 */
+static jbyteArray g_frame_array = NULL;
+static jsize g_frame_array_cap = 0;            // 当前 buffer 容量
 
 /* appsink new-sample: 收解码帧, 通过 JNI 通知 Java (首帧触发 onVideoDisplayed) */
 static GstFlowReturn on_new_sample(GstAppSink *sink, gpointer user_data) {
@@ -52,7 +56,7 @@ static GstFlowReturn on_new_sample(GstAppSink *sink, gpointer user_data) {
         GstBuffer *buf = gst_sample_get_buffer(sample);
         GstClockTime pts = GST_BUFFER_PTS(buf);
         g_frame_count++;
-        if (g_frame_count <= 5 || g_frame_count % 100 == 0) {
+        if (g_frame_count <= 5 || g_frame_count % 300 == 0) {
             LOGI("appsink frame #%d pts=%" G_GUINT64_FORMAT " (interval=%ldms)",
                  g_frame_count, pts,
                  g_last_frame_pts != GST_CLOCK_TIME_NONE
@@ -83,15 +87,19 @@ static GstFlowReturn on_new_sample(GstAppSink *sink, gpointer user_data) {
                         (*env)->DeleteLocalRef(env, cls);
                     }
                     if (g_mid_nativeOnFrame) {
-                        jbyteArray arr = (*env)->NewByteArray(env, map.size);
-                        (*env)->SetByteArrayRegion(env, arr, 0, map.size, (const jbyte *) map.data);
-                        (*env)->CallVoidMethod(env, java_instance, g_mid_nativeOnFrame, arr, w, h);
+                        // 复用帧 buffer: 容量不足才重建, 避免每帧 8MB 分配导致内存抖动
+                        if (g_frame_array == NULL || g_frame_array_cap < (jsize) map.size) {
+                            if (g_frame_array) (*env)->DeleteGlobalRef(env, g_frame_array);
+                            g_frame_array = (*env)->NewGlobalRef(env, (*env)->NewByteArray(env, map.size));
+                            g_frame_array_cap = (jsize) map.size;
+                        }
+                        (*env)->SetByteArrayRegion(env, g_frame_array, 0, (jsize) map.size, (const jbyte *) map.data);
+                        (*env)->CallVoidMethod(env, java_instance, g_mid_nativeOnFrame, g_frame_array, w, h);
                         // 检查并清除 pending exception, 避免 JNI env 损坏
                         if ((*env)->ExceptionCheck(env)) {
                             (*env)->ExceptionDescribe(env);
                             (*env)->ExceptionClear(env);
                         }
-                        (*env)->DeleteLocalRef(env, arr);
                         if (!g_frame_notified) {
                             g_frame_notified = TRUE;
                             LOGI("首帧帧数据已传 Java (%dx%d, %lu bytes)", w, h, (unsigned long) map.size);
@@ -388,6 +396,11 @@ Java_com_tunnathub_app_video_GstQgcPlayer_nativeDestroy(JNIEnv *env, jclass claz
         g_java_instance = NULL;
     }
     g_mutex_unlock(&g_java_instance_lock);
+    if (g_frame_array) {
+        (*env)->DeleteGlobalRef(env, g_frame_array);
+        g_frame_array = NULL;
+        g_frame_array_cap = 0;
+    }
     g_free(ctx);
 }
 
