@@ -59,6 +59,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
     }
 
     private static final String TAG = "UdpRtspPlayer";
+    private static final boolean DEBUG_NO_SURFACE = false;    // true=纯解码不渲染(实验)
     private static final String VPN_IP = "10.0.0.2";          // 手机 TUN 地址
     private static final int MIN_CLIENT_PORT = 10000;         // V3s DNAT 10000:65535
     private static final long KEY_FRAME_PLI_INTERVAL_NS = 1_500_000_000L;
@@ -112,6 +113,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
     private long lastPtsUs;
     private boolean decoded;
     private final Queue<Long> inputTimesNs = new ArrayDeque<>();
+    private final TreeMap<Long, Long> ptsToInputNs = new TreeMap<>();
     private final ArrayBlockingQueue<FrameSample> frameQueue =
             new ArrayBlockingQueue<>(UdpLowLatencyPolicy.FRAME_QUEUE_CAPACITY);
     private int width;
@@ -451,18 +453,41 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
             long nowNs = System.nanoTime();
             if (nowNs - diagLastLogNs >= 3_000_000_000L) {
                 diagLastLogNs = nowNs;
+                // 接收→渲染延迟 = 解码延迟(dec) + 接收→喂入延迟(cbIn)，BenchmarkStats 已统计
+                BenchmarkStats.Snapshot snap = stats.snapshot(nowNs);
                 Log.i(TAG, "diag rtp=" + diagRtpPkts
                         + " idrStart=" + diagIdrStartPkts
                         + " idrDone=" + diagIdrCompletePkts
                         + " gaps=" + diagSeqGaps
                         + " fuDisc=" + diagFuDiscards
                         + " reorderFlush=" + diagReorderFlush
-                        + " waitingKey=" + waitingKeyFrame);
+                        + " waitingKey=" + waitingKeyFrame
+                        + " recv2render=" + renderLatencyMs(snap) + "ms"
+                        + " dec=" + snap.decodeAvgMs + "ms"
+                        + " cbIn=" + snap.callbackToInputAvgMs + "ms"
+                        + " frames=" + snap.framesReceived
+                        + " fps=" + fpsEstimate());
             }
             rtp.receivedNs = receivedNs;
             offerRtp(rtp);
             maybeSendPli(receivedNs);
         }
+    }
+
+    /**
+     * 接收→渲染延迟：解码器输出渲染时刻 - 帧接收时刻。
+     * BenchmarkStats 拆成 dec（queueInput→render）+ cbIn（received→queueInput）两段。
+     */
+    private static long renderLatencyMs(BenchmarkStats.Snapshot snap) {
+        if (snap.decodeAvgMs < 0 || snap.callbackToInputAvgMs < 0) return -1;
+        return snap.decodeAvgMs + snap.callbackToInputAvgMs;
+    }
+
+    /** 帧率估计：基于已入队帧数和运行时长。 */
+    private long fpsEstimate() {
+        BenchmarkStats.Snapshot snap = stats.snapshot(System.nanoTime());
+        if (snap.elapsedMs <= 0) return 0;
+        return Math.round(snap.framesReceived * 1000.0 / snap.elapsedMs);
     }
 
     /** 收 RTP 进乱序缓冲，凑齐连续 seq 后按序出给重组器。 */
@@ -724,8 +749,16 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
                     stats.markStarted(sample.receivedNs);
                     Log.w("TUN_DECODER", profileName + " USING CODEC: " + codecName);
                     codecLocal = MediaCodec.createByCodecName(codecName);
-                    codecLocal.configure(format, surface, null, 0);
-                    codecLocal.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT);
+                    // DEBUG: 验证 dec 构成。nullSurface=true → 不渲染，测纯解码时间；
+                    // 若 dec 大幅下降说明 SurfaceView 队列是大头(GL 有效)；
+                    // 若 dec 不变说明 B 帧 DPB 是大头(GL 收益有限)。
+                    if (DEBUG_NO_SURFACE) {
+                        codecLocal.configure(format, null, null, 0);
+                        Log.w(TAG, "DEBUG: no-surface 模式(纯解码不渲染)");
+                    } else {
+                        codecLocal.configure(format, surface, null, 0);
+                        codecLocal.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT);
+                    }
                     codecLocal.start();
                     codec = codecLocal;
                 }
@@ -778,7 +811,8 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
         long ptsUs = monotonicPtsUs(sample.rtpTimestamp);   // RTP 90kHz → us，单调递增
         codecLocal.queueInputBuffer(index, 0, length, ptsUs, 0);
         long nowNs = System.nanoTime();
-        inputTimesNs.offer(nowNs);
+        // 用 PTS 精确关联 input/output，避免 poll() 错位导致 dec 虚高
+        ptsToInputNs.put(ptsUs, nowNs);
         stats.recordInputQueued(nowNs, sample.receivedNs);
     }
 
@@ -804,7 +838,12 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
             }
             if (index >= 0) {
                 drained++;
-                Long inputNs = inputTimesNs.poll();
+                // 用 output 的 PTS 查对应 input 时刻，精确计算真实解码延迟
+                long ptsKey = info.presentationTimeUs;
+                Long inputNs = ptsToInputNs.remove(ptsKey);
+                if (inputNs == null) {
+                    inputNs = inputTimesNs.poll();  // 兜底
+                }
                 if (UdpLowLatencyPolicy.RENDER_ONLY_LATEST_OUTPUT) {
                     if (latestRenderableIndex >= 0) {
                         codecLocal.releaseOutputBuffer(latestRenderableIndex, false);
@@ -821,11 +860,13 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
             }
         }
         if (latestRenderableIndex >= 0) {
-            codecLocal.releaseOutputBuffer(latestRenderableIndex, true);
+            codecLocal.releaseOutputBuffer(latestRenderableIndex, !DEBUG_NO_SURFACE);
             if (latestInputNs != 0) {
                 stats.recordRendered(System.nanoTime(), latestInputNs);
             }
-            notifyFirstFrameDisplayed();
+            if (!DEBUG_NO_SURFACE) {
+                notifyFirstFrameDisplayed();
+            }
         }
     }
 
