@@ -63,7 +63,6 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
     private static final long KEY_FRAME_PLI_INTERVAL_NS = 1_500_000_000L;
     private static final long WAIT_KEY_FRAME_TIMEOUT_NS = 10_000_000_000L;
     private static final int MAX_PLI_BEFORE_RESTART = 6;
-    private static final int REORDER_WINDOW = 256;         // RTP 乱序容忍窗口（覆盖完整 IDR 分片 ~110 个）
 
     private final Context context;
     private final Surface surface;
@@ -108,7 +107,8 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
     private long firstStampUs;
     private boolean decoded;
     private final Queue<Long> inputTimesNs = new ArrayDeque<>();
-    private final ArrayBlockingQueue<FrameSample> frameQueue = new ArrayBlockingQueue<>(4);
+    private final ArrayBlockingQueue<FrameSample> frameQueue =
+            new ArrayBlockingQueue<>(UdpLowLatencyPolicy.FRAME_QUEUE_CAPACITY);
     private int width;
     private int height;
 
@@ -468,7 +468,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
             assembleRtp(next);
         }
         // 缓冲超窗：说明中间有丢包（seq 空洞），跳过空洞继续——把已到达的包按序输出
-        if (reorder.size() > REORDER_WINDOW) {
+        if (reorder.size() > UdpLowLatencyPolicy.REORDER_WINDOW_PACKETS) {
             diagReorderFlush++;
             int lowest = reorder.firstKey();
             while (!reorder.isEmpty() && reorder.firstKey() <= lastFlushedSeq) {
@@ -660,7 +660,11 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
         MediaCodec codecLocal = null;
         try {
             while (running) {
-                FrameSample sample = frameQueue.poll(100, TimeUnit.MILLISECONDS);
+                if (codecLocal != null) {
+                    drainOutput(codecLocal);
+                }
+                FrameSample sample = frameQueue.poll(
+                        UdpLowLatencyPolicy.DECODER_POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
                 if (sample == null) continue;
                 if (codecLocal == null) {
                     // SPS/PPS 作为 csd（从当前会话缓存，非旧会话）
@@ -706,7 +710,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
     }
 
     private void queueInput(MediaCodec codecLocal, FrameSample sample) {
-        int index = codecLocal.dequeueInputBuffer(0);
+        int index = codecLocal.dequeueInputBuffer(UdpLowLatencyPolicy.INPUT_DEQUEUE_TIMEOUT_US);
         if (index < 0) return;
         ByteBuffer buffer = codecLocal.getInputBuffer(index);
         if (buffer == null) return;
@@ -726,8 +730,10 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
 
     private void drainOutput(MediaCodec codecLocal) {
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-        while (running) {
-            int index = codecLocal.dequeueOutputBuffer(info, 0);
+        int drained = 0;
+        while (running && drained < UdpLowLatencyPolicy.OUTPUT_DRAIN_LIMIT) {
+            int index = codecLocal.dequeueOutputBuffer(
+                    info, UdpLowLatencyPolicy.OUTPUT_DEQUEUE_TIMEOUT_US);
             if (index == MediaCodec.INFO_TRY_AGAIN_LATER) return;
             if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 MediaFormat fmt = codecLocal.getOutputFormat();
@@ -741,6 +747,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
                 continue;
             }
             if (index >= 0) {
+                drained++;
                 codecLocal.releaseOutputBuffer(index, true);
                 Long inputNs = inputTimesNs.poll();
                 if (inputNs != null) {
