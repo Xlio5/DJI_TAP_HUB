@@ -132,9 +132,25 @@ public final class LowLatencyRtspPlayer {
     public static void configureLowLatency(MediaFormat format) {
         if (Build.VERSION.SDK_INT >= 30) {
             format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+            format.setInteger(MediaFormat.KEY_OUTPUT_REORDER_DEPTH, 0);   // 无重排，立即输出
+            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 0);
         }
         format.setInteger(MediaFormat.KEY_PRIORITY, 0);
-        format.setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE);
+        // OPERATING_RATE 设实际帧率附近，避免过高导致解码器缓存多帧平滑
+        format.setInteger(MediaFormat.KEY_OPERATING_RATE, 90);
+        // Qualcomm 专用低延迟：减少解码器输出缓冲帧数（DecBuffFrms），直击 285ms 缓存延迟
+        putIfApi30(format, "vendor.qti-ext-dec-low-latency.enable", 1);
+        putIfApi30(format, "vendor.qti-ext-dec-low-latency.delay-tolerance", 10000);
+        putIfApi30(format, "vendor.qti-ext-dec-out-buf-count", 1);
+    }
+
+    private static void putIfApi30(MediaFormat format, String key, int value) {
+        if (Build.VERSION.SDK_INT < 30) return;
+        try {
+            format.setInteger(key, value);
+        } catch (Exception ignored) {
+            // 非高通设备/解码器不支持该 key，忽略
+        }
     }
 
     public static boolean isSyncFrame(FrameInfo frame) {

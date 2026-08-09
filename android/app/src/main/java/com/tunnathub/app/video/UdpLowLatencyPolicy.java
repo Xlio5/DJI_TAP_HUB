@@ -17,8 +17,10 @@ final class UdpLowLatencyPolicy {
     /** 乱序缓冲最大包数（兜底，防止时间窗口无限增长缓冲）。 */
     static final int REORDER_WINDOW_PACKETS = 48;
 
-    /** RTP 乱序容忍时间窗口：超过此时间的乱序包视为迟到，直接丢弃/跳过空洞。 */
-    static final long RTP_JITTER_MAX_DELAY_NS = 20_000_000L;   // 20ms，QGC 低延迟典型值
+    /** RTP 乱序容忍时间窗口：超过此时间的乱序包视为迟到，直接丢弃/跳过空洞。
+     *  实测 0 会导致偶发乱序触发 FU-A 丢帧（帧率 25→15），且 cbIn=2ms 证明 20ms 窗口几乎不等，
+     *  因此保持 20ms 平衡稳定与延迟。 */
+    static final long RTP_JITTER_MAX_DELAY_NS = 20_000_000L;   // 20ms，平衡稳定与低延迟
 
     /** 解码器 poll 帧队列超时。 */
     static final int DECODER_POLL_TIMEOUT_MS = 20;
