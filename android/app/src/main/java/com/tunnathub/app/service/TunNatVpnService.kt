@@ -56,6 +56,13 @@ class TunNatVpnService : VpnService() {
         /** 是否正在重连 USB */
         val isReconnectingState = mutableStateOf(false)
 
+        /**
+         * 强制重建 VPN 标志 (MainActivity 网段变更/手动重连时设置)。
+         * onStartCommand 看到此标志时强制 stopVpn+重建, 绕过"直接复用"逻辑,
+         * 使新的 lan_subnet 路由生效 (否则复用不重建, 旧路由残留)。
+         */
+        @Volatile var forceRestartRequested = false
+
         /** VPN 服务进程是否存活 (与 isRunning 区分: 服务在但 USB 断开时 isRunning=false) */
         @Volatile var isStartedForUi: Boolean = false
             private set
@@ -180,17 +187,25 @@ class TunNatVpnService : VpnService() {
         // 服务已启动但隧道断了 → 服务内部 doReconnect 会后台自动重连, 也不需强制重启。
         // 只有服务确实未初始化 (isStarted=false) 才走完整启动流程。
         if (isStarted) {
-            // 服务已在跑: 隧道已连通则直接复用, 不打断 (保留受保护端口/摇杆 socket)。
-            if (isRunning) {
+            // 强制重建标志 (网段变更/手动重连): 必须重建 VPN 让新路由生效。
+            if (forceRestartRequested) {
+                forceRestartRequested = false
+                Log.w(TAG, "强制重建 VPN (网段变更/手动重连)")
+                stopVpn()
+                usbBridge?.disconnect()
+                usbBridge = null
+            } else if (isRunning) {
+                // 服务已在跑: 隧道已连通则直接复用, 不打断 (保留受保护端口/摇杆 socket)。
                 Log.i(TAG, "VPN 服务已在运行, 直接复用 (不重启, 保留摇杆/受保护端口)")
                 isStartedForUi = true
                 return START_STICKY
+            } else {
+                // 服务在但隧道断了: 不强制重启, 服务内部 doReconnect 会重连。
+                // 只补一下 UI 状态标记。
+                Log.w(TAG, "VPN 服务在但隧道未连, 交由 doReconnect 重连 (不强制重启)")
+                isStartedForUi = true
+                return START_STICKY
             }
-            // 服务在但隧道断了: 不强制重启, 服务内部 doReconnect 会重连。
-            // 只补一下 UI 状态标记。
-            Log.w(TAG, "VPN 服务在但隧道未连, 交由 doReconnect 重连 (不强制重启)")
-            isStartedForUi = true
-            return START_STICKY
         }
         isStarted = true
         isStartedForUi = true

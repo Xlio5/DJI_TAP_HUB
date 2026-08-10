@@ -170,6 +170,9 @@ class MainActivity : ComponentActivity() {
                     }
                 },
                 onReconnect = {
+                    // 强制重建 VPN (网段变更/手动重连): 设标志让 onStartCommand 绕过"直接复用",
+                    // 使新的 lan_subnet 路由生效 (否则复用不重建, 旧路由残留 → 摄像头网段不通)。
+                    TunNatVpnService.forceRestartRequested = true
                     stopTunService()
                     Handler(Looper.getMainLooper()).postDelayed({
                         usbDevice = findUsbDevice()
@@ -1574,7 +1577,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 SectionHdr("播放引擎")
                                 Box(modifier = Modifier.fillMaxWidth()) {
                                     Row(modifier = Modifier.fillMaxWidth().height(32.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).clickable { playbackEngineDropdown = !playbackEngineDropdown }.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Text(playbackEngine.label(), fontSize = 10.sp, color = if (playbackEngine == RtspPlaybackEngine.UDP_SELF) Color(0xFF22C55E) else Color(0xFFF59E0B), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                        Text(playbackEngine.label(), fontSize = 10.sp, color = if (playbackEngine == RtspPlaybackEngine.GST_QGC) Color(0xFF22C55E) else Color(0xFFF59E0B), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                                         Text(if (playbackEngineDropdown) "▲" else "▼", fontSize = 9.sp, color = Color(0xFF64748B))
                                     }
                                     DropdownMenu(expanded = playbackEngineDropdown, onDismissRequest = { playbackEngineDropdown = false }, modifier = Modifier.background(Color(0xFF1E293B))) {

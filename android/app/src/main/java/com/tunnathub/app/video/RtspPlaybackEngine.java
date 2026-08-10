@@ -32,6 +32,8 @@ public enum RtspPlaybackEngine {
         for (RtspPlaybackEngine engine : values()) {
             if (engine.prefValue.equals(value)) return engine;
         }
-        return UDP_SELF;
+        // 默认 GST_QGC: GStreamer 引擎实测延迟最低 (220ms, 参考 QGC GstVideoReceiver)。
+        // 新装机/清数据后默认就用延迟最低的引擎。
+        return GST_QGC;
     }
 }
