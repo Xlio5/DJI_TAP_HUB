@@ -13,6 +13,7 @@ import android.util.Log
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 object CrsfBridge {
@@ -27,6 +28,9 @@ object CrsfBridge {
     private var socket: DatagramSocket? = null
     private var rxThread: Thread? = null
     private val running = AtomicBoolean(false)
+
+    /** 后台发送线程池 (sendFrame 可能被主线程调用, 避免 NetworkOnMainThread) */
+    private val sendExecutor = Executors.newSingleThreadExecutor()
 
     /** CRSF 帧接收回调 (App 收 UART0 上行的参数帧/遥测) */
     @Volatile
@@ -68,22 +72,30 @@ object CrsfBridge {
         }
     }
 
-    /** 发送 CRSF 帧到 V3s (App → UART0) */
+    /** 发送 CRSF 帧到 V3s (App → UART0), 后台线程执行 */
     fun sendFrame(frame: ByteArray) {
         if (frame.size > 62) return
         val sock = socket ?: return
+        val hostAddr = host
+        val pkt = ByteArray(4 + frame.size)
+        pkt[0] = (MAGIC and 0xFF).toByte()
+        pkt[1] = ((MAGIC shr 8) and 0xFF).toByte()
+        pkt[2] = ((MAGIC shr 16) and 0xFF).toByte()
+        pkt[3] = ((MAGIC shr 24) and 0xFF).toByte()
+        frame.copyInto(pkt, 4)
+        Log.d(TAG, "sendFrame type=0x${frame[2].toString(16)} to $hostAddr:$PORT pkt=${pkt.take(10).joinToString(" "){ "%02x".format(it) }}")
         try {
-            val pkt = ByteArray(4 + frame.size)
-            // magic "CRSF" little-endian
-            pkt[0] = (MAGIC and 0xFF).toByte()
-            pkt[1] = ((MAGIC shr 8) and 0xFF).toByte()
-            pkt[2] = ((MAGIC shr 16) and 0xFF).toByte()
-            pkt[3] = ((MAGIC shr 24) and 0xFF).toByte()
-            frame.copyInto(pkt, 4)
-            val addr = InetAddress.getByName(host)
-            sock.send(DatagramPacket(pkt, pkt.size, addr, PORT))
+            val addr = InetAddress.getByName(hostAddr)
+            sendExecutor.execute {
+                try {
+                    sock.send(DatagramPacket(pkt, pkt.size, addr, PORT))
+                    Log.d(TAG, "sendFrame sent OK")
+                } catch (e: Exception) {
+                    Log.w(TAG, "send err: $e")
+                }
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "send err: $e")
+            Log.w(TAG, "dns err: $e")
         }
     }
 

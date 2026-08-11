@@ -29,12 +29,13 @@ fun LuaParamScreen(
     onDown: () -> Unit,
     onEnter: () -> Unit,
     onExit: () -> Unit,
-    onReload: () -> Unit
+    onReload: () -> Unit,
+    title: String = "ELRS"
 ) {
     Column(Modifier.fillMaxSize().padding(8.dp)) {
         // 标题栏 + 操作按钮
         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("ELRS 参数", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Text(title.ifEmpty { "ELRS" }, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             TextButton(onClick = onReload) { Text("刷新") }
             TextButton(onClick = onExit) { Text("退出") }
         }

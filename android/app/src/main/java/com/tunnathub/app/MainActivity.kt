@@ -33,6 +33,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material3.*
@@ -231,11 +232,52 @@ class MainActivity : ComponentActivity() {
 // Tab 定义
 // ═══════════════════════════════════════════════════════
 
-private enum class Tab { VIDEO, REMOTE, CONFIG }
+private enum class Tab { VIDEO, REMOTE, RECEIVER, CONFIG }
 
 // ═══════════════════════════════════════════════════════
 // 顶层：状态栏 + 导航 + 内容区
 // ═══════════════════════════════════════════════════════
+
+/**
+ * 接收机页 — 内嵌 ELRS Lua 参数界面 (mock 假数据 / 真 V3s crsf-bridge)
+ */
+@Composable
+private fun LuaParamEmbed() {
+    val ctx = LocalContext.current
+    val activity = ctx as? ComponentActivity
+    val controller = remember { com.tunnathub.app.crsf.LuaParamController(ctx) }
+    var rows by remember { mutableStateOf<List<com.tunnathub.app.crsf.ParamRow>>(emptyList()) }
+    var title by remember { mutableStateOf("ELRS") }
+
+    DisposableEffect(controller) {
+        controller.onRowsChanged = {
+            val newRows = controller.getRows()
+            if (activity != null) activity.runOnUiThread { rows = newRows }
+            else rows = newRows
+        }
+        controller.onTitleChanged = {
+            if (activity != null) activity.runOnUiThread { title = it }
+            else title = it
+        }
+        // mock 模式 host 不影响; 真机时改为 V3s IP
+        controller.start("10.0.2.2")
+        onDispose {
+            controller.onRowsChanged = null
+            controller.onTitleChanged = null
+            controller.stop()
+        }
+    }
+
+    com.tunnathub.app.crsf.LuaParamScreen(
+        rows = rows,
+        title = title,
+        onUp = { controller.up() },
+        onDown = { controller.down() },
+        onEnter = { controller.enter() },
+        onExit = { controller.exit() },
+        onReload = { controller.reload() }
+    )
+}
 
 @Composable
 fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCount: Int = 0, onVpnTap: () -> Unit, onReconnect: (() -> Unit)? = null) {
@@ -1173,6 +1215,13 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         }
                         Text("遥控", fontSize = 9.sp, color = if (selectedTab == Tab.REMOTE) Color(0xFF38BDF8) else Color(0xFF475569))
                         Spacer(Modifier.height(12.dp))
+                        IconButton(onClick = { selectedTab = Tab.RECEIVER }, modifier = Modifier.size(40.dp)) {
+                            Icon(Icons.Filled.Radio, "接收机",
+                                tint = if (selectedTab == Tab.RECEIVER) Color(0xFF38BDF8) else Color(0xFF475569),
+                                modifier = Modifier.size(22.dp))
+                        }
+                        Text("接收机", fontSize = 9.sp, color = if (selectedTab == Tab.RECEIVER) Color(0xFF38BDF8) else Color(0xFF475569))
+                        Spacer(Modifier.height(12.dp))
                         IconButton(onClick = { selectedTab = Tab.CONFIG }, modifier = Modifier.size(40.dp)) {
                             Icon(Icons.Filled.Settings, "配置",
                                 tint = if (selectedTab == Tab.CONFIG) Color(0xFF38BDF8) else Color(0xFF475569),
@@ -1276,6 +1325,13 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     if (selectedTab == Tab.REMOTE) {
                         Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0F172A)) {
                             RcPanelContent()
+                        }
+                    }
+
+                    // 接收机页: 内嵌 ELRS Lua 参数界面 (当前 mock 假数据)
+                    if (selectedTab == Tab.RECEIVER) {
+                        Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0F172A)) {
+                            LuaParamEmbed()
                         }
                     }
 

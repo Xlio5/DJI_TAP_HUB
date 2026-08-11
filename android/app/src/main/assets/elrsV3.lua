@@ -384,6 +384,7 @@ local function changeDeviceId(devId) --change to selected device ID
   fields_count = device.fldcnt
   deviceIsELRS_TX = device.isElrs and devId == 0xEE or nil -- ELRS and ID is TX module
   handsetId = deviceIsELRS_TX and 0xEF or 0xEA -- Address ELRS_LUA vs RADIO_TRANSMITTER
+  print("[changeDeviceId] deviceId=" .. devId .. " fldcnt=" .. tostring(fields_count) .. " handsetId=" .. tostring(handsetId))
 
   allocateFields()
   reloadAllField()
@@ -396,6 +397,7 @@ end
 local function parseDeviceInfoMessage(data)
   local id = data[2]
   local newName, offset = fieldGetStrOrOpts(data, 3)
+  print("[devinfo] id=" .. id .. " name=" .. tostring(newName) .. " offset=" .. tostring(offset))
   local device = getDevice(id)
   if device == nil then
     device = { id = id }
@@ -404,6 +406,7 @@ local function parseDeviceInfoMessage(data)
   device.name = newName
   device.fldcnt = data[offset + 12]
   device.isElrs = fieldGetValue(data, offset, 4) == 0x454C5253 -- SerialNumber = 'E L R S'
+  print("[devinfo] fldcnt=" .. tostring(device.fldcnt) .. " isElrs=" .. tostring(device.isElrs))
 
   if deviceId == id then
     changeDeviceId(id)
@@ -436,9 +439,11 @@ local functions = {
 
 local function parseParameterInfoMessage(data)
   local fieldId = (fieldPopup and fieldPopup.id) or loadQ[#loadQ]
+  print("[param] fieldId=" .. tostring(fieldId) .. " data2=" .. tostring(data[2]) .. " data3=" .. tostring(data[3]) .. " len=" .. tostring(#data))
   if data[2] ~= deviceId or data[3] ~= fieldId then
     fieldData = nil
     fieldChunk = 0
+    print("[param] MISMATCH, return")
     return
   end
   local field = fields[fieldId]
@@ -528,6 +533,7 @@ end
 
 local function refreshNext(skipPush)
   local command, data, forceRedraw
+  print("[refreshNext] enter, time=" .. tostring(getTime()) .. " fieldTimeout=" .. tostring(fieldTimeout) .. " loadQ=" .. tostring(#loadQ) .. " fcnt=" .. tostring(fields_count))
   repeat
     command, data = crossfireTelemetryPop()
     if command == 0x29 then
@@ -571,6 +577,7 @@ local function refreshNext(skipPush)
     linkstatTimeout = time + 100
   elseif time > fieldTimeout and fields_count ~= 0 then
     if #loadQ > 0 then
+      print("[refreshNext] send Settings_Read field=" .. tostring(loadQ[#loadQ]) .. " loadQsize=" .. tostring(#loadQ))
       crossfireTelemetryPush(0x2C, { deviceId, handsetId, loadQ[#loadQ], fieldChunk })
       fieldTimeout = time + 500 -- 5s
     end
@@ -896,6 +903,7 @@ local function checkCrsfModule()
     local mod = model.getModule(modIdx)
     if mod and (mod.Type == nil or mod.Type == 5) then
       -- CRSF found
+      print("[checkCrsfModule] found CRSF module idx=" .. modIdx .. ", type=" .. tostring(mod.Type))
       checkCrsfModule = nil
       return 0
     end
@@ -937,7 +945,10 @@ end
 -- Main
 local function run(event, touchState)
   if event == nil then return 2 end
-  if checkCrsfModule then return checkCrsfModule() end
+  if checkCrsfModule then
+    print("[run] checkCrsfModule active")
+    return checkCrsfModule()
+  end
 
   event = (touch2evt and touch2evt(event, touchState)) or event
   -- If ENTER pressed, skip any pushing this loop to reserve queue for the save command
