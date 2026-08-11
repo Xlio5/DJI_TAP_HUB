@@ -839,17 +839,6 @@ static void crsf_rx_thread()
                             }
                         }
                     }
-                        /* 设备/参数请求 → 生成响应写回 UART0 上行 */
-                        if (type >= 0x28) {
-                            uint8_t resp[CRSF_FRAME_MAX];
-                            int rlen = crsf_handle_request(rx.buf, (uint8_t)r, &dev,
-                                                           g_crsf_params, g_crsf_n_params, resp);
-                            if (rlen > 0) {
-                                ssize_t w = ::write(g_out_fd, resp, (size_t)rlen);
-                                (void)w;
-                            }
-                        }
-                    }
                 }
             }
             g_mtx.lock();

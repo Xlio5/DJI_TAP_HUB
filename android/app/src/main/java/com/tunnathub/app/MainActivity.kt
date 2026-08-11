@@ -259,8 +259,9 @@ private fun LuaParamEmbed() {
             if (activity != null) activity.runOnUiThread { title = it }
             else title = it
         }
-        // mock 模式 host 不影响; 真机时改为 V3s IP
-        controller.start("10.0.2.2")
+        // mock(模拟器) host 用 NAT 网关; 真机走 V3s 隧道 IP 10.0.0.1 (crsf-bridge UDP 65532)
+        val v3sHost = if (com.tunnathub.app.crsf.LuaEngine.isEmulator()) "10.0.2.2" else "10.0.0.1"
+        controller.start(v3sHost)
         onDispose {
             controller.onRowsChanged = null
             controller.onTitleChanged = null

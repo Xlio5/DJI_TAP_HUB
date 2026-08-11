@@ -58,9 +58,25 @@ object LuaEngine {
     private var appContext: android.content.Context? = null
     private val msgQueue = ArrayDeque<Pair<Int, ByteArray>>()  // (command, payload[dest,orig,data...])
 
-    /** 模拟器假数据模式: getVersion 返回 -simu 结尾 → elrs.lua setMock() 加载 elrsmock.lua */
+    /** 模拟器假数据模式: getVersion 返回 -simu 结尾 → elrs.lua setMock() 加载 elrsmock.lua
+     * 默认自动判断: 模拟器 → true (离线调试), 真机 → false (走真实 V3s crsf-bridge) */
     @Volatile
-    var useMock = true
+    var useMock = false
+
+    /** 是否 Android 模拟器 (x86/emulator 特征) */
+    fun isEmulator(): Boolean {
+        val fp = android.os.Build.FINGERPRINT
+        val model = android.os.Build.MODEL
+        val mfr = android.os.Build.MANUFACTURER
+        val brand = android.os.Build.BRAND
+        val dev = android.os.Build.DEVICE
+        return (fp.startsWith("generic") || fp.startsWith("unknown") ||
+            model.contains("google_sdk") || model.contains("Emulator") ||
+            model.contains("Android SDK built for x86") ||
+            mfr.contains("Genymotion") ||
+            (brand.startsWith("generic") && dev.startsWith("generic")) ||
+            "google_sdk" == android.os.Build.PRODUCT)
+    }
 
     /** Lua → App 回调 */
     @Volatile
@@ -78,6 +94,8 @@ object LuaEngine {
     /** 初始化 Lua 环境 + 绑定 EdgeTX API */
     fun init(context: android.content.Context) {
         appContext = context.applicationContext
+        useMock = isEmulator()
+        Log.i(TAG, "useMock=$useMock (emulator=${isEmulator()})")
         try {
             val g = JsePlatform.standardGlobals()
             bindEdgeTxApi(g)
