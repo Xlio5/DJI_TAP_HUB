@@ -68,6 +68,14 @@
                 android:resource="@xml/device_filter" />
         </receiver>
 
+        <receiver
+            android:name=".video.RtspUdpProbeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.tunnathub.app.RTSP_UDP_PROBE" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
 </manifest>

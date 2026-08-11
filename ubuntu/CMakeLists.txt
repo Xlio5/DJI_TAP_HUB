@@ -41,23 +41,36 @@ target_link_libraries(usb_tund PRIVATE
 
 # 安装
 # Web 面板 (C++ 嵌入式 HTTP 服务, 替代 Python3)
+# apiRcOutput 依赖 rc_map (通道映射名 + 源解析), 必须链接
 add_executable(web_server
     src/web_server.cpp
+    src/rc_map.c
 )
 
 target_link_libraries(web_server PRIVATE
     Threads::Threads
 )
 
+add_executable(rtsp_nat_helper_test
+    tests/rtsp_nat_helper_test.cpp
+)
+
+target_include_directories(rtsp_nat_helper_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
 install(TARGETS usb_tund web_server DESTINATION /usr/local/bin)
 
 # DJI RC 双路串口解码守护进程
+# 注意: dji_rc.cpp 使用 crsf.c (CRSF 编解码/回传) 和 rc_map.c (通道映射), 必须链接
 add_executable(dji_rc
     src/dji_rc.cpp
     src/duml.c
     src/rc_decode.c
     src/chmap.c
     src/sbus.c
+    src/crsf.c
+    src/rc_map.c
 )
 
 target_link_libraries(dji_rc PRIVATE

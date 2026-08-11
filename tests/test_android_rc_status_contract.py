@@ -15,18 +15,21 @@ class AndroidRcStatusContractTest(unittest.TestCase):
     def test_remote_view_uses_sbus_range_and_raw_channels(self):
         src = MAIN.read_text(encoding="utf-8")
         self.assertIn("RcPanelContent(", src)
-        self.assertIn("真实输入 CH1-CH6", src)
-        self.assertIn("for (i in 1..6)", src)
-        self.assertIn("SBUS 输出映射", src)
-        self.assertIn("SbusMappingGrid(", src)
-        self.assertIn("raw_ch", src)
+        self.assertIn("SBUS CH1-CH16", src)
+        self.assertIn("SbusChannelGrid(", src)
+        # 原始通道 raw_ch 仍显示 (CH 值旁 "value/raw")
+        self.assertIn("rcRawChs", src)
+        self.assertIn("raw", src)
+        # 范围: 1000/1500/2000
         self.assertIn("1500", src)
         self.assertIn("1000f", src)
         self.assertIn("2000f", src)
 
-    def test_rc_polling_runs_at_50ms(self):
+    def test_rc_polling_uses_blocking_socket_receive(self):
         src = MAIN.read_text(encoding="utf-8")
-        self.assertIn("kotlinx.coroutines.delay(50)", src)
+        # 当前实现: RC 数据走阻塞 UDP receive (openProtectedPort 绑定 65530), 不轮询 delay
+        self.assertIn("openProtectedPort(RcMsg.PORT)", src)
+        self.assertIn("soTimeout", src)
 
     def test_remote_view_shows_switch_and_button_groups(self):
         src = MAIN.read_text(encoding="utf-8")

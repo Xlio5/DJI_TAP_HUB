@@ -72,13 +72,15 @@ static int g_debug_fd = -1;
 static int64_t g_last_debug_us = 0;
 
 // ── 输出 (SBUS/CRSF @UART0) ──
-static int g_out_fd = -1;
-static char g_out_mode = 's';           // 's' = SBUS, 'c' = CRSF
-static int  g_out_baud = 100000;        // 实际波特率 (SBUS标准=100000, SBUS非标=115200, CRSF=420000)
+// C1: g_out_fd 被多线程 (rx_thread/t3/主线程) 无锁访问, 用 atomic 避免 fd 值撕裂
+static std::atomic<int> g_out_fd{-1};
+static std::atomic<char> g_out_mode{'s'}; // 's' = SBUS, 'c' = CRSF
+static std::atomic<int>  g_out_baud{100000}; // 实际波特率 (SBUS标准=100000, SBUS非标=115200, CRSF=420000)
+static std::mutex g_out_write_mtx;        // CO-4: 保护对 g_out_fd 的写 (out_send + crsf_rx_thread 并发)
 static bool g_sbus_std = true;          // SBUS 标准模式: true=100k 8E2, false=115200 8N1
 static bool g_crsf_telem = true;        // CRSF 是否接收回传
-static bool g_ch_map_valid = false;     // 通道映射已从配置加载
-static uint8_t g_ch_map[CH_COUNT];      // 通道映射表
+static std::atomic<bool> g_ch_map_valid{false};  // CRIT#2: atomic, 主线程热重配写 + rx_thread 读
+static uint8_t g_ch_map[CH_COUNT];      // 通道映射表 (读写受 g_mtx 保护)
 static crsf_telem_t g_telem;            // 最近回传数据 (CRSF 回传线程写)
 static bool g_pb6_debug = false;        // PB6 接地=true → UART0 作为 debug 串口, 不输出协议
 
@@ -132,6 +134,8 @@ static bool pb6_grounded(void)
     const uintptr_t PAGE_OFF  = PIO_PHYS - BASE;      /* 0x800, 页内偏移 */
     const size_t    PG        = (size_t)sysconf(_SC_PAGESIZE);
 
+    // 注: 此函数需要 O_RDWR (154-162 行配置 PB6 为 input + pull-up), 功能必需。
+    // 风险缓解: 每次 open+mmap+munmap+close, 写窗口极短。
     int memfd = ::open("/dev/mem", O_RDWR | O_SYNC);
     if (memfd < 0) {
         std::fprintf(stderr, "[dji_rc] PB6 检测: 无法打开 /dev/mem (%s)\n", std::strerror(errno));
@@ -231,23 +235,24 @@ static void pb6_auto_switch(bool grounded, const char *out_dev, char out_mode,
         /* 切到 debug: 停协议输出 + 启 getty */
         if (t3.joinable()) {
             g_crsf_stop.store(true);
-            int oldFd = g_out_fd;
-            if (oldFd >= 0) { ::close(oldFd); g_out_fd = -1; }
+            int oldFd = g_out_fd.exchange(-1);   // C1: atomic 取出并置 -1
+            if (oldFd >= 0) { ::close(oldFd); }
             t3.join();
             g_crsf_stop.store(false);
         }
-        if (g_out_fd >= 0) { ::close(g_out_fd); g_out_fd = -1; }
+        int oldFd2 = g_out_fd.exchange(-1);      // C1: atomic
+        if (oldFd2 >= 0) { ::close(oldFd2); }
         getty_start();
         out_pb6_debug = true;
     } else {
         /* 切到协议: 杀 getty + 开协议输出 (等 getty 释放 ttyS0) */
         getty_stop();
         ::usleep(200000);   /* 200ms, 等 getty 释放 ttyS0 */
-        if (g_out_fd < 0) {
-            bool even2 = (g_out_mode == 's') && g_sbus_std;   /* 用全局, 避免参数过期 */
-            g_out_fd = uart_open_out(out_dev, out_baud, even2);
+        if (g_out_fd.load() < 0) {
+            bool even2 = (g_out_mode.load() == 's') && g_sbus_std;   /* 用全局, 避免参数过期 */
+            g_out_fd.store(uart_open_out(out_dev, g_out_baud.load(), even2));   // 复审: 用 atomic g_out_baud, 避免过时参数
         }
-        if (g_out_mode == 'c' && g_crsf_telem && g_out_fd >= 0 && !t3.joinable()) {
+        if (g_out_mode.load() == 'c' && g_crsf_telem && g_out_fd.load() >= 0 && !t3.joinable()) {
             g_crsf_stop.store(false);
             t3 = std::thread(crsf_rx_thread);
         }
@@ -298,7 +303,8 @@ static void debug_log(const char *fmt, ...);
 static int64_t now_us() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+    // CRIT#1: 用 1000000LL, 避免 32-bit ARM 上 ts.tv_sec*1000000 (long) 35分钟溢出回卷
+    return (int64_t)ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
 }
 
 static void debug_uart0_open(const char *dev, int baud)
@@ -674,6 +680,9 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
         (long long)ts_us);
 
     // atomic write: tmp → rename
+    // H: snprintf 返回值可能超过 sizeof(buf) 或为负, clamp 避免越界写
+    if (w < 0) w = 0;                       // 复审: 负值(编码错误) → 0
+    if (w > (int)sizeof(buf)) w = (int)sizeof(buf);
     int fd = ::open("/var/log/rc_state.json.tmp", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) {
         ssize_t written = ::write(fd, buf, w);
@@ -691,24 +700,40 @@ static void out_send(const rc_state_t &m)
 {
     static uint32_t out_attempts = 0;
     static uint32_t out_errors = 0;
-    if (g_out_fd < 0) return;
+    int outFd = g_out_fd.load();            // C1: atomic load
+    char outMode = g_out_mode.load();       // C1: atomic load
+    if (outFd < 0) return;
 
     uint16_t ch[CH_COUNT];
-    rc_map_build(&m, g_ch_map_valid ? g_ch_map : NULL, ch);
+    // C-1: 持锁拷贝 g_ch_map, 避免与主线程热重配 (load_rc_output_cfg) 的数据竞争。
+    // g_ch_map_valid 只作为"映射是否有效"标志, 拷贝必须在 g_mtx 内完成,
+    // 否则 reader 可能在 writer 写入过程中读到 torn map (g_ch_map_valid 永不复位的场景)。
+    uint8_t mapSnap[CH_COUNT];
+    bool mapValid = false;
+    {
+        std::lock_guard<std::mutex> lock(g_mtx);
+        mapValid = g_ch_map_valid.load(std::memory_order_acquire);
+        if (mapValid) std::memcpy(mapSnap, g_ch_map, CH_COUNT);
+    }
+    rc_map_build(&m, mapValid ? mapSnap : NULL, ch);
 
     int n = 0;
-    if (g_out_mode == 'c') {
+    if (outMode == 'c') {
         uint8_t frame[CRSF_FRAME_MAX];
         n = crsf_pack_channels(ch, frame);
         if (n > 0) {
-            ssize_t w = ::write(g_out_fd, frame, (size_t)n);
+            std::lock_guard<std::mutex> lock(g_out_write_mtx);   // CO-4: 串口写互斥, 防 CRSF 帧交错
+            if (g_out_fd.load() != outFd) return;                // CO-5: fd 已被替换, 丢弃本次输出
+            ssize_t w = ::write(outFd, frame, (size_t)n);
             out_attempts++;
             if (w != n) { out_errors++; }
         }
     } else {
         uint8_t frame[SBUS_FRAME_LEN];
         sbus_encode(ch, frame);
-        ssize_t w = ::write(g_out_fd, frame, SBUS_FRAME_LEN);
+        std::lock_guard<std::mutex> lock(g_out_write_mtx);       // CO-4: 串口写互斥
+        if (g_out_fd.load() != outFd) return;                    // CO-5: fd 已被替换
+        ssize_t w = ::write(outFd, frame, SBUS_FRAME_LEN);
         out_attempts++;
         if (w != SBUS_FRAME_LEN) { out_errors++; }
     }
@@ -720,9 +745,9 @@ static void out_send(const rc_state_t &m)
                   out_attempts, out_errors, errno);
     } else if ((out_attempts <= 10 || (out_attempts % 100) == 0) && out_errors == 0) {
         std::printf("[dji_rc] out ok mode=%c attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u\n",
-                    g_out_mode, out_attempts, ch[0], ch[1], ch[2], ch[3]);
+                    outMode, out_attempts, ch[0], ch[1], ch[2], ch[3]);
         debug_log("[dji_rc][dbg] out ok mode=%c attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u",
-                  g_out_mode, out_attempts, ch[0], ch[1], ch[2], ch[3]);
+                  outMode, out_attempts, ch[0], ch[1], ch[2], ch[3]);
     }
 }
 
@@ -730,17 +755,26 @@ static void out_send(const rc_state_t &m)
 static void sbus_send_if_p20(DjiPort *p)
 {
     if (p != &g_p20) return;
-    if (g_p20.state.type == RC_NONE) return;
+    if (g_out_fd.load() < 0) return;   // C1: atomic load
 
     int64_t n = now_us();
-    if ((n - g_p20.last_us) > 500000LL) return;
-    if (g_out_fd < 0) return;
 
-    int64_t age20 = n - g_p20.last_us;
-    int64_t age0  = (g_p0.state.type == RC_NONE) ? INT64_MAX : n - g_p0.last_us;
+    // CO-2/CO-3: 持锁拷贝 state, 避免与 P0 rx_thread / 主线程热重配的数据竞争
+    rc_state_t s20, s0;
+    int64_t l20, l0;
+    g_mtx.lock();
+    s20 = g_p20.state; l20 = g_p20.last_us;
+    s0  = g_p0.state;  l0  = g_p0.last_us;
+    g_mtx.unlock();
+
+    if (s20.type == RC_NONE) return;
+    if ((n - l20) > 500000LL) return;
+
+    int64_t age20 = n - l20;
+    int64_t age0  = (s0.type == RC_NONE) ? INT64_MAX : n - l0;
 
     rc_state_t m;
-    rc_merge(&g_p20.state, age20, &g_p0.state, age0, 500000LL, &m);
+    rc_merge(&s20, age20, &s0, age0, 500000LL, &m);
 
     if (m.type != RC_NONE) out_send(m);   // write() outside mutex
 }
@@ -768,8 +802,10 @@ static void crsf_rx_thread()
     }
 
     while (!g_crsf_stop.load(std::memory_order_relaxed)) {
+        int outFd = g_out_fd.load();   // C1: atomic load
+        if (outFd < 0) { ::usleep(10000); continue; }
         uint8_t buf[64];
-        ssize_t n = ::read(g_out_fd, buf, sizeof(buf));
+        ssize_t n = ::read(outFd, buf, sizeof(buf));
         if (n > 0) {
             crsf_telem_t telem = g_telem;
             for (ssize_t i = 0; i < n; i++) {
@@ -790,6 +826,19 @@ static void crsf_rx_thread()
                             (void)w;
                         }
                     } else {
+                        /* 设备/参数请求 → 生成响应写回 UART0 上行 */
+                        if (type >= 0x28) {
+                            uint8_t resp[CRSF_FRAME_MAX];
+                            int rlen = crsf_handle_request(rx.buf, (uint8_t)r, &dev,
+                                                           g_crsf_params, g_crsf_n_params, resp);
+                            if (rlen > 0) {
+                                std::lock_guard<std::mutex> lock(g_out_write_mtx);  // CO-4: 串口写互斥, 防与下行帧交错
+                                if (g_out_fd.load() != outFd) continue;             // CO-5: fd 已替换
+                                ssize_t w = ::write(outFd, resp, (size_t)rlen);
+                                (void)w;
+                            }
+                        }
+                    }
                         /* 设备/参数请求 → 生成响应写回 UART0 上行 */
                         if (type >= 0x28) {
                             uint8_t resp[CRSF_FRAME_MAX];
@@ -937,6 +986,9 @@ static void write_telem_file(const crsf_telem_t &t)
         t.batt_capacity_mAh, t.batt_remaining_pct,
         t.has_att ? 1 : 0, t.att_pitch_deg100, t.att_roll_deg100, t.att_yaw_deg100,
         (long long)t.vario_cms, t.flight_mode);
+    // H: snprintf 返回值可能超过 sizeof(buf) 或为负, clamp 避免越界写
+    if (w < 0) w = 0;                       // 复审: 负值(编码错误) → 0
+    if (w > (int)sizeof(buf)) w = (int)sizeof(buf);
     int fd = ::open("/var/log/rc_telem.json.tmp", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) {
         if (::write(fd, buf, w) == w)
@@ -1009,9 +1061,13 @@ static bool load_rc_output_cfg(char &mode, int &baud, bool &sbus_std)
 
     auto presetS = cfg_json_str(obj, "map_preset");
     auto preset = rc_preset_parse(presetS.c_str());
+    // C-1: 写 g_ch_map 前先复位 valid, 让 out_send 的读者跳过旧映射, 再在锁内更新。
+    // 解析失败 (map 为空/项数不足) 时保持 invalid, 避免使用上一轮的旧映射。
+    g_mtx.lock();
+    g_ch_map_valid.store(false, std::memory_order_release);
     if (preset != MAP_CUSTOM) {
         rc_map_apply_preset(preset, g_ch_map);
-        g_ch_map_valid = true;
+        g_ch_map_valid.store(true, std::memory_order_release);
     } else {
         /* map: 逗号分隔 source 名, 如 "ch1,ch2,ch3,ch4,ch5,ch6,mode,rec,..." */
         std::string mapS = cfg_json_str(obj, "map");
@@ -1027,9 +1083,10 @@ static bool load_rc_output_cfg(char &mode, int &baud, bool &sbus_std)
                 if (comma == std::string::npos) break;
                 pos = comma + 1;
             }
-            if (idx >= CH_COUNT) g_ch_map_valid = true;
+            if (idx >= CH_COUNT) g_ch_map_valid.store(true, std::memory_order_release);
         }
     }
+    g_mtx.unlock();
     return found;
 }
 
@@ -1085,9 +1142,9 @@ int main(int argc, char **argv)
         std::printf("[dji_rc] 输出配置(SPI flash): mode=%c baud=%d sbus_std=%d\n",
                     out_mode, out_baud, g_sbus_std ? 1 : 0);
     }
-    g_out_mode = out_mode;
+    g_out_mode.store(out_mode);   // C1: atomic store
     if (out_baud == 0) out_baud = (out_mode == 'c') ? 420000 : (g_sbus_std ? 100000 : 115200);
-    g_out_baud = out_baud;   /* 先修复零值再赋值 */
+    g_out_baud.store(out_baud);   /* 先修复零值再赋值 */  // C1: atomic store
     g_crsf_telem = crsf_telem;
 
     /* bridge 模式: 强制 CRSF 输出 (UART0 双向 CRSF, 参数帧透明转发) */
@@ -1127,13 +1184,14 @@ int main(int argc, char **argv)
     // 协议输出 (UART0): SBUS 标准=100k 8E2, SBUS 非标=115200 8N1, CRSF=420k 8N1
     bool out_even2 = (out_mode == 's') && g_sbus_std;
     if (!g_pb6_debug) {
-        g_out_fd = uart_open_out(out_dev, out_baud, out_even2);
-        if (g_out_fd < 0) {
+        int newFd = uart_open_out(out_dev, out_baud, out_even2);
+        g_out_fd.store(newFd);   // C1: atomic store
+        if (newFd < 0) {
             std::fprintf(stderr, "[dji_rc] 输出口打开失败: %s @%d\n", out_dev, out_baud);
         } else {
             std::printf("[dji_rc] 输出 %c: %s @%d %s fd=%d (通道映射 %s)\n",
-                        out_mode, out_dev, out_baud, out_even2 ? "8E2" : "8N1", g_out_fd,
-                        g_ch_map_valid ? "custom" : "default");
+                        out_mode, out_dev, out_baud, out_even2 ? "8E2" : "8N1", newFd,
+                        g_ch_map_valid.load() ? "custom" : "default");
         }
     }
     sockaddr_in rcmsg_dst;
@@ -1153,7 +1211,7 @@ int main(int argc, char **argv)
     crsf_params_init();   /* 初始化 CRSF 参数表 (Device_Ping 响应用) */
     if (g_p20.fd >= 0) t1 = std::thread(rx_thread, &g_p20);
     if (g_p0.fd  >= 0) t2 = std::thread(rx_thread, &g_p0);
-    if (out_mode == 'c' && g_crsf_telem && g_out_fd >= 0)
+    if (out_mode == 'c' && g_crsf_telem && g_out_fd.load() >= 0)
         t3 = std::thread(crsf_rx_thread);
     if (g_crsf_bridge && g_out_fd >= 0)
         t4 = std::thread(crsf_bridge_rx_thread);   /* bridge 下行: 网口 → UART0 */
@@ -1199,7 +1257,7 @@ int main(int argc, char **argv)
         }
 
         // CRSF 回传: 有回传数据时发 tlm UDP (65531) + 写状态文件
-        if (g_out_mode == 'c') {
+        if (g_out_mode.load() == 'c') {
             crsf_telem_t telem;
             g_mtx.lock(); telem = g_telem; g_mtx.unlock();
             if (telem.last_rx_us > 0 && (n - (int64_t)telem.last_rx_us) < 1000000LL) {
@@ -1214,32 +1272,42 @@ int main(int argc, char **argv)
         if (!g_crsf_bridge && n - last_cfg_check > 2000000LL) {
             last_cfg_check = n;
             char cm; int cb; bool cs;
-            if (load_rc_output_cfg(cm, cb, cs) &&
-                (cm != g_out_mode || cb != g_out_baud || cs != g_sbus_std)) {
+            // DBG#baud: 记录 load_rc_output_cfg 读取结果, 定位热重配为何不触发
+            bool cfgOk = load_rc_output_cfg(cm, cb, cs);
+            if (cfgOk) {
+                bool diff = (cm != g_out_mode.load() || cb != g_out_baud.load() || cs != g_sbus_std);
+                std::printf("[dji_rc][dbg] cfg chk: ok=%d cur=%c/%d/%d spi=%c/%d/%d diff=%d\n",
+                            cfgOk ? 1 : 0,
+                            g_out_mode.load(), g_out_baud.load(), g_sbus_std ? 1 : 0,
+                            cm, cb, cs ? 1 : 0, diff ? 1 : 0);
+                std::fflush(stdout);
+            }
+            if (cfgOk &&
+                (cm != g_out_mode.load() || cb != g_out_baud.load() || cs != g_sbus_std)) {
                 std::printf("[dji_rc] 输出配置变化 mode=%c baud=%d sbus_std=%d → 热重配\n",
                             cm, cb, cs ? 1 : 0);
                 std::fflush(stdout);
-                bool oldCrsf = (g_out_mode == 'c');
-                g_out_mode = cm; g_out_baud = cb; g_sbus_std = cs;
+                bool oldCrsf = (g_out_mode.load() == 'c');
+                g_out_mode.store(cm); g_out_baud.store(cb); g_sbus_std = cs;   // C1: atomic store
 
                 /* 先安全停掉旧回传线程 (CRSF->任何 或 任何->CRSF 切换) */
                 if (t3.joinable()) {
                     g_crsf_stop.store(true);
                     /* 关闭 fd 使阻塞的 read 立即返回 */
-                    int oldFd = g_out_fd;
-                    if (oldFd >= 0) { ::close(oldFd); g_out_fd = -1; }
+                    int oldFd = g_out_fd.exchange(-1);   // C1: atomic
+                    if (oldFd >= 0) { ::close(oldFd); }
                     t3.join();
                     g_crsf_stop.store(false);
                 }
                 /* 重开输出 fd: SBUS标准=8E2, SBUS非标=8N1, CRSF=8N1 */
-                bool even2 = (g_out_mode == 's') && g_sbus_std;
-                if (g_out_fd < 0)
-                    g_out_fd = uart_open_out(out_dev, g_out_baud, even2);
-                if (g_out_fd < 0)
+                bool even2 = (g_out_mode.load() == 's') && g_sbus_std;
+                if (g_out_fd.load() < 0)
+                    g_out_fd.store(uart_open_out(out_dev, g_out_baud.load(), even2));   // C1: atomic
+                if (g_out_fd.load() < 0)
                     std::fprintf(stderr, "[dji_rc] 热重配输出打开失败\n");
 
                 /* CRSF 模式启动回传线程 */
-                if (g_out_mode == 'c' && g_crsf_telem && g_out_fd >= 0 && !t3.joinable()) {
+                if (g_out_mode.load() == 'c' && g_crsf_telem && g_out_fd.load() >= 0 && !t3.joinable()) {
                     g_crsf_stop.store(false);
                     t3 = std::thread(crsf_rx_thread);
                 }
@@ -1276,7 +1344,8 @@ int main(int argc, char **argv)
     /* 先关闭 fd 唤醒阻塞的 read, 再 join, 避免死锁 */
     if (g_p20.fd >= 0) { ::close(g_p20.fd); g_p20.fd = -1; }
     if (g_p0.fd  >= 0) { ::close(g_p0.fd);  g_p0.fd  = -1; }
-    if (g_out_fd >= 0) { ::close(g_out_fd); g_out_fd = -1; }
+    int outFdClean = g_out_fd.exchange(-1);   // C1: atomic
+    if (outFdClean >= 0) { ::close(outFdClean); }
     if (t3.joinable()) t3.join();
     if (t4.joinable()) t4.join();   /* bridge 下行线程 */
     if (t1.joinable()) t1.join();

@@ -52,9 +52,18 @@ static void tcpPingServer() {
     if (listen(srv, 8) < 0) { perror("listen"); close(srv); return; }
     std::cout << "[PING] TCP 延迟测试端口 10.0.0.1:9999" << std::endl;
 
+    // C5: accept 设置 1s 超时, 周期性返回检查 gRunning, 避免 SIGTERM 后无法 join
+    struct timeval accTv;
+    accTv.tv_sec = 1; accTv.tv_usec = 0;
+    ::setsockopt(srv, SOL_SOCKET, SO_RCVTIMEO, &accTv, sizeof(accTv));
+
     while (gRunning) {
         int cli = accept(srv, nullptr, nullptr);
-        if (cli >= 0) close(cli);  // 只测 TCP 握手 RTT，不接受数据
+        if (cli >= 0) { close(cli); continue; }  // 只测 TCP 握手 RTT，不接受数据
+        // 超时返回 (EAGAIN/EINTR) → 循环重新检查 gRunning
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
+        // 硬错误 (EBADF/ENOTSOCK) → 退出, 避免死循环吃满 CPU
+        break;
     }
     close(srv);
 }
@@ -130,6 +139,10 @@ static void ttyToTun(TunIface& tun, Stats& s) {
         int fd = gTtyFd.load();
         if (fd < 0) { usleep(100000); pos = 0; continue; }
 
+        // CO-1: 防环形缓冲越界 (frame_unpack 异常时 pos 可能不减少, 累积到越界)
+        if (pos + FRAME_MAX_LEN > (int)sizeof(ring)) {
+            pos = 0;   // 缓冲溢出风险 → 丢弃未处理数据, 重新对齐
+        }
         ssize_t n = ::read(fd, ring + pos, FRAME_MAX_LEN);
         if (n < 0) {
             if (errno == EAGAIN) continue;
@@ -219,6 +232,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // 关闭顺序: TUN readPacket 是阻塞读, 必须先 close 唤醒阻塞的线程再 join (否则 join 永久等待)
         tun.close();
         if (fd >= 0) ::close(fd);
         t1.join(); t2.join(); t3.join();

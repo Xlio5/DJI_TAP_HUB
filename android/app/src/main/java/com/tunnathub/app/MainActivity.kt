@@ -15,7 +15,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.ResultReceiver
 import android.util.Log
 import android.view.SurfaceView
 import android.widget.FrameLayout
@@ -55,12 +54,17 @@ import com.tunnathub.app.BuildConfig
 import com.tunnathub.app.service.TunNatVpnService
 import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
+import com.tunnathub.app.video.Media3RtspProbePlayer
+import com.tunnathub.app.video.RtspPlaybackEngine
+import com.tunnathub.app.video.RtspUdpProbe
+import com.tunnathub.app.video.UdpRtspPlayer
 import kotlinx.coroutines.*
-import org.easydarwin.video.Client
-import org.easydarwin.video.EasyPlayerClient
+import org.easydarwin.video.BenchmarkStats
+import org.easydarwin.video.LowLatencyRtspPlayer
+import org.easydarwin.video.RtspPlayerSession
 
 /** Activity 与 Compose 共享的播放器引用，用于 onDestroy 时释放 */
-private val playerHolder = java.util.concurrent.atomic.AtomicReference<EasyPlayerClient?>(null)
+private val playerHolder = java.util.concurrent.atomic.AtomicReference<RtspPlayerSession?>(null)
 
 class MainActivity : ComponentActivity() {
     companion object {
@@ -104,10 +108,11 @@ class MainActivity : ComponentActivity() {
             var pollCount by remember { mutableIntStateOf(0) }
             var autoConnected by remember { mutableStateOf(false) }
 
-            LaunchedEffect(pollState) {
-                if (pollState != "scanning") return@LaunchedEffect
+            // H-1: key 用 Unit 而非 pollState, 避免 118 行 pollState="found" 触发 LaunchedEffect 重启 → 重复 startAuthFlow
+            LaunchedEffect(Unit) {
+                val um = this@MainActivity.getSystemService(Context.USB_SERVICE) as UsbManager
                 var count = 0
-                while (count < USB_POLL_MAX) {
+                while (count < USB_POLL_MAX && !autoConnected) {
                     count++
                     pollCount = count
                     kotlinx.coroutines.delay(2000)
@@ -116,14 +121,29 @@ class MainActivity : ComponentActivity() {
                         usbDevice = dev
                         polledDevice = dev
                         pollState = "found"
-                        if (!autoConnected) {
+                        // 权限授予后主动检测 (DJI RC 权限广播可能不触发, 轮询 hasPermission)
+                        if (um.hasPermission(dev)) {
                             autoConnected = true
+                            startAuthFlow()   // hasPermission=true → requestVpn
+                            return@LaunchedEffect
+                        } else {
+                            // 请求权限 (弹窗)
                             startAuthFlow()
+                            // 等权限授予 (轮询 hasPermission, 不依赖广播)
+                            var permCount = 0
+                            while (permCount < 5) {
+                                delay(2000)
+                                if (um.hasPermission(dev)) {
+                                    autoConnected = true
+                                    requestVpn()
+                                    return@LaunchedEffect
+                                }
+                                permCount++
+                            }
                         }
-                        return@LaunchedEffect
                     }
                 }
-                pollState = "timeout"
+                if (!autoConnected) pollState = "timeout"
             }
 
             TunNatHubApp(
@@ -131,10 +151,28 @@ class MainActivity : ComponentActivity() {
                 connectionState = pollState,
                 usbPollCount = pollCount,
                 onVpnTap = {
-                    if (TunNatVpnService.isRunningState.value) stopTunService()
-                    else if (usbDevice != null) startAuthFlow()
+                    if (TunNatVpnService.isRunningState.value) {
+                        // VPN 正在运行 → 断开
+                        stopTunService()
+                    } else {
+                        // VPN 未运行 → 尝试连接。
+                        // 注意: 若服务进程还在但 USB 断开 (isRunning=false), 直接 startAuthFlow
+                        // 可能因 onStartCommand 的 isStarted 残留走"强制重启", 这里先 stop 再 start 保证干净重启
+                        if (TunNatVpnService.isStartedForUi) {
+                            // 服务在但 USB 断了 → 重启服务强制重连
+                            stopTunService()
+                            Handler(Looper.getMainLooper()).postDelayed({
+                                startAuthFlow()
+                            }, 500)
+                        } else if (usbDevice != null) {
+                            startAuthFlow()
+                        }
+                    }
                 },
                 onReconnect = {
+                    // 强制重建 VPN (网段变更/手动重连): 设标志让 onStartCommand 绕过"直接复用",
+                    // 使新的 lan_subnet 路由生效 (否则复用不重建, 旧路由残留 → 摄像头网段不通)。
+                    TunNatVpnService.forceRestartRequested = true
                     stopTunService()
                     Handler(Looper.getMainLooper()).postDelayed({
                         usbDevice = findUsbDevice()
@@ -144,7 +182,6 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        if (usbDevice != null) startAuthFlow()
     }
 
     override fun onDestroy() {
@@ -204,6 +241,12 @@ private enum class Tab { VIDEO, REMOTE, CONFIG }
 fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCount: Int = 0, onVpnTap: () -> Unit, onReconnect: (() -> Unit)? = null) {
     val ctx = LocalContext.current
     val prefs = ctx.getSharedPreferences("tun_nat_hub", Context.MODE_PRIVATE)
+    // 视频自动重连常量 (局部, 供 scheduleAutoReconnect 使用)
+    // V3s 重启后链路重建 (web_server DNAT 重试 + USB gadget 稳定) 可能需 1-2 分钟,
+    // 重连次数需足够覆盖该窗口, 否则链路刚就绪时 app 已放弃 → 手动点才恢复。
+    val MAX_AUTO_RECONNECT = 20
+    // 基础重连延迟: 第 n 次延迟 = min(3s * 2^n, 60s), 链路未稳时不急着重连, 避免反复失败
+    val AUTO_RECONNECT_BASE_DELAY_MS = 3000L
     // 响应式订阅 VPN 运行状态: isRunningState 变化时触发重组,
     // 使下方 LaunchedEffect(vpnRunning) 在 VPN 启动后真正执行
     val vpnRunning by TunNatVpnService.isRunningState
@@ -226,20 +269,38 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         return "%.1f".format(bytes * 8.0 / dtMs / 1000.0)
     }
 
-    val savedUrl = prefs.getString("rtsp_url", "rtsp://192.168.88.100:554/stream1")
-        ?: "rtsp://192.168.88.100:554/stream1"
+    // C-02: 协程 scope 随 composition 取消 — apiPost 使用, 避免 Activity 销毁后孤儿协程泄漏
+    val apiScope = androidx.compose.runtime.rememberCoroutineScope()
+
+    val savedUrl = prefs.getString("rtsp_url", "rtsp://192.168.144.31:554/stream1")
+        ?: "rtsp://192.168.144.31:554/stream1"
     var rtspUrl by remember { mutableStateOf(savedUrl) }
     var isPlaying by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("") }
     var resolutionText by remember { mutableStateOf("") }
     var surfaceViewRef by remember { mutableStateOf<SurfaceView?>(null) }
-    var playerRef by remember { mutableStateOf<EasyPlayerClient?>(null) }
+    var glSurfaceRef by remember { mutableStateOf<com.tunnathub.app.video.GlLowLatencySurface?>(null) }
+    // Surface 是否已就绪 (surfaceCreated 回调后为 true)。
+    // 回前台时 SurfaceView 的 Surface 重建是异步的, 未就绪就播放会拿到已释放的 Surface
+    // → render 线程 lockCanvas 每帧报 "Surface has already been released" → 画面卡死 (流量仍在跑)。
+    var surfaceReady by remember { mutableStateOf(false) }
+    // 切后台前是否正在播放: 用于回前台时区分"恢复之前正在播的" vs "从未主动播放过"。
+    // 老大要求: 进 app 不要自动播放视频, 由用户手动点播放按钮。
+    // 回前台只恢复"切后台前正在播的", 不自动启动从未播过的会话。
+    var wasPlayingBeforePause by remember { mutableStateOf(false) }
+    // 挂起标记: Surface 未就绪时收到了播放请求, 等 surfaceCreated 回调后再真正启动
+    var pendingPlayAfterSurface by remember { mutableStateOf(false) }
+    var playerRef by remember { mutableStateOf<RtspPlayerSession?>(null) }
+    var autoReconnectCount by remember { mutableStateOf(0) }   // 自动重连计数
+    var autoReconnectActive by remember { mutableStateOf(false) } // 自动重连开关(手动停止后关闭)
+    // 函数引用 (打破播放回调→schedule→start→播放回调循环引用, 定义后赋值)
+    lateinit var startPlaybackFn: () -> Unit
+    lateinit var scheduleAutoReconnectFn: () -> Unit
 
     // ── 心跳状态 ──
     var hbDaemon by remember { mutableStateOf(false) }
     var hbTty by remember { mutableStateOf(false) }
     var hbTun by remember { mutableStateOf(false) }
-    var hbTime by remember { mutableStateOf("") }
     var hbCount by remember { mutableStateOf(0) }
     var hbBw by remember { mutableStateOf("0.0") }
     var hbTx by remember { mutableStateOf(0L) }
@@ -264,7 +325,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     // ── 摄像头列表 ──
     data class CamInfo(val name: String, val url: String)
     var cameras by remember { mutableStateOf(listOf<CamInfo>()) }
-    var selectedCam by remember { mutableStateOf(0) }
 
     // ── 端口转发 ──
     data class FwdInfo(val proto: String, val port: Int, val dest: String)
@@ -281,24 +341,47 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var needVpnReconnect by remember { mutableStateOf(false) }
 
     // ── 解码器选择 ──
-    val savedCodec = remember { prefs.getString("forced_codec", "auto") ?: "auto" }
-    LaunchedEffect(Unit) { EasyPlayerClient.setForcedCodec(savedCodec) }
+    val savedPlaybackEngine = remember { RtspPlaybackEngine.fromPref(prefs.getString("playback_engine", null)) }
+    var playbackEngine by remember { mutableStateOf(savedPlaybackEngine) }
+    var playbackEngineDropdown by remember { mutableStateOf(false) }
+    val savedCodec = remember {
+        val codec = prefs.getString("forced_codec", null)
+        if (codec.isNullOrBlank() || codec == "auto") LowLatencyRtspPlayer.DEFAULT_H264_CODEC else codec
+    }
+    LaunchedEffect(Unit) {
+        LowLatencyRtspPlayer.setForcedCodec(savedCodec)
+        prefs.edit().putString("forced_codec", savedCodec).apply()
+    }
 
     // 延迟测试
     var latencyText by remember { mutableStateOf("") }
     var testing by remember { mutableStateOf(false) }
-
+    var codecBenchmarkRunning by remember { mutableStateOf(false) }
+    var codecBenchmarkText by remember { mutableStateOf("") }
+    var rtspUdpProbeRunning by remember { mutableStateOf(false) }
+    var rtspUdpProbeText by remember { mutableStateOf("") }
+    var rtcpFeedbackText by remember { mutableStateOf("") }
+    var rtcpFeedbackRunning by remember { mutableStateOf(false) }
+    var lastRtcpFeedbackAt by remember { mutableLongStateOf(0L) }
     // ── HTTP POST ──
+    // C-02: 用 remember 的 apiScope (随 composition 取消), 避免每次调用创建孤儿协程
     fun apiPost(path: String, body: String) {
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+        apiScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val url = java.net.URL("http://10.0.0.1:8080$path")
                 val conn = url.openConnection() as java.net.HttpURLConnection
                 conn.connectTimeout = 3000; conn.readTimeout = 3000
                 conn.doOutput = true; conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json")
-                conn.outputStream.write(body.toByteArray())
-                conn.inputStream.close()
+                try {
+                    conn.outputStream.use { it.write(body.toByteArray()) }
+                    // H-04: 消费响应, use{} 保证异常路径也关闭流
+                    conn.inputStream.use { it.readBytes() }
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 android.util.Log.e("TunNatHub", "API POST $path 失败: ${e.javaClass.simpleName} ${e.message}")
             }
@@ -338,6 +421,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     prevRx = rx
                     prevAt = nowMs
                     hbCount++
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (_: Exception) { hbDaemon = false; hbTty = false; hbTun = false }
             }
             kotlinx.coroutines.delay(1000)
@@ -370,6 +455,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         AppLog.w("TunNatHub", "网段不同步! V3s=$rs/$rp → 自动同步")
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (_: Exception) {}
         }
     }
@@ -378,20 +465,20 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     LaunchedEffect(vpnRunning) {
         if (!vpnRunning) return@LaunchedEffect
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            var sock: java.net.DatagramSocket? = null
             try {
                 // 打开受保护的 UDP socket (绑定 10.0.0.2:65530), 内核才投递入站包
-                sock = TunNatVpnService.openProtectedPort(RcMsg.PORT)
+                // H-02: 捕获局部 val, 避免 !! (sock 是 var, 并发可能被重赋值)
+                val sock = TunNatVpnService.openProtectedPort(RcMsg.PORT)
                 if (sock == null) {
                     rcConnected = false
                     return@withContext
                 }
-                sock!!.soTimeout = 2000   // 避免 VPN 断开时永久阻塞
+                sock.soTimeout = 2000   // 避免 VPN 断开时永久阻塞
                 val buf = ByteArray(256)
                 val pkt = java.net.DatagramPacket(buf, buf.size)
                 while (vpnRunning) {
                     try {
-                        sock!!.receive(pkt)
+                        sock.receive(pkt)
                         val data = RcMsg.parse(pkt.data.copyOf(pkt.length))
                         if (data != null) {
                             rcConnected = true
@@ -416,6 +503,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         break
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (_: Exception) {
                 rcConnected = false
             } finally {
@@ -424,27 +513,110 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         }
     }
 
-    val receiver = remember {
-        object : ResultReceiver(Handler(ctx.mainLooper)) {
-            override fun onReceiveResult(code: Int, data: Bundle?) {
-                when (code) {
-                    EasyPlayerClient.RESULT_VIDEO_DISPLAYED -> {
-                        val cn = EasyPlayerClient.getForcedCodec()
-                        val ts = if (cn != "auto") cn.split(".").last().take(25)
-                            else if ((data?.getInt(EasyPlayerClient.KEY_VIDEO_DECODE_TYPE, -1) ?: -1) == 1) "MediaCodec"
-                            else "SW"
-                        statusText = "播放中 [$ts]"; isPlaying = true
-                        AppLog.i("Player", "解码器: $ts")
-                    }
-                    EasyPlayerClient.RESULT_VIDEO_SIZE -> {
-                        resolutionText = "${data?.getInt(EasyPlayerClient.EXTRA_VIDEO_WIDTH, 0)}x${data?.getInt(EasyPlayerClient.EXTRA_VIDEO_HEIGHT, 0)}"
-                    }
-                    EasyPlayerClient.RESULT_TIMEOUT -> { statusText = "连接超时"; isPlaying = false }
-                    EasyPlayerClient.RESULT_UNSUPPORTED_VIDEO -> { statusText = "编码不支持"; isPlaying = false }
+    fun togglePlay() {
+        if (isPlaying) {
+            playerRef?.stop(); playerRef = null; isPlaying = false; statusText = "已停止"
+            playerHolder.set(null)
+            autoReconnectActive = false  // 手动停止 → 关闭自动重连
+            pendingPlayAfterSurface = false  // 停止后不再等待 Surface, 防止 surfaceCreated 意外启动
+        } else {
+            autoReconnectActive = true   // 手动播放 → 开启自动重连
+            startPlaybackFn()
+        }
+    }
+
+    /** UDP_SELF 自建会话播放器的回调（复用低延迟播放器的 UI 逻辑，PLI 计数不同语义）。 */
+    val udpPlayerCallback = remember {
+        object : UdpRtspPlayer.Callback {
+            private val mainHandler = Handler(ctx.mainLooper)
+
+            override fun onVideoDisplayed(codecName: String) {
+                mainHandler.post {
+                    val ts = codecName.split(".").last().take(25)
+                    statusText = "播放中 [UDP:$ts]"
+                    isPlaying = true
+                    autoReconnectCount = 0
+                    AppLog.i("Player", "自建UDP低延迟硬解: $codecName")
                 }
+            }
+
+            override fun onVideoSize(width: Int, height: Int) {
+                mainHandler.post { resolutionText = "${width}x${height}" }
+            }
+
+            override fun onTimeout() {
+                mainHandler.post {
+                    statusText = "连接超时"
+                    isPlaying = false
+                    scheduleAutoReconnectFn()
+                }
+            }
+
+            override fun onUnsupportedVideo() {
+                mainHandler.post {
+                    statusText = "编码不支持"
+                    isPlaying = false
+                    scheduleAutoReconnectFn()
+                }
+            }
+
+            override fun onError(message: String?, error: Throwable?) {
+                mainHandler.post {
+                    statusText = "播放错误"
+                    isPlaying = false
+                    AppLog.e("Player", "UDP播放错误: ${message ?: error?.javaClass?.simpleName ?: "unknown"}")
+                    scheduleAutoReconnectFn()
+                }
+            }
+
+            override fun onWaitingKeyFrame(elapsedMs: Long, pliSent: Int) {
+                mainHandler.post {
+                    statusText = "Waiting IDR ${elapsedMs}ms, PLI=$pliSent"
+                    isPlaying = true
+                }
+            }
+
+            override fun onRtpDiag(message: String) {
+                AppLog.i("UdpRtspPlayer", message)
             }
         }
     }
+
+    // ── 切后台/回前台: SurfaceView 的 Surface 在切后台销毁, 渲染线程 lockCanvas 会卡死
+    // ("Surface was already locked")。切后台停止播放, 回前台自动恢复。
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> {
+                    // 记录切后台前是否正在播 (供回前台判断是否恢复)。先记录再 stop。
+                    wasPlayingBeforePause = isPlaying
+                    if (isPlaying) {
+                        playerHolder.getAndSet(null)?.stop()
+                        playerRef = null
+                        isPlaying = false
+                        statusText = "已停止 (切后台)"
+                        AppLog.i("Player", "切后台, 停止播放 (Surface 失效)")
+                    }
+                }
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
+                    // 回前台: 只在"切后台前正在播"时才恢复播放, 不自动启动从未主动播过的会话。
+                    // (老大要求: 进 app 不要自动播放视频, 由用户手动点播放按钮)
+                    if (wasPlayingBeforePause && vpnRunning && !isPlaying && rtspUrl.isNotBlank() && surfaceViewRef != null) {
+                        startPlaybackFn()
+                    }
+                }
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // ── 自动播放: 已禁用。老大要求进 app 不要自动播放视频, 由用户手动点播放按钮触发。
+    // 原逻辑: VPN 连上且未在播放时自动播放保存的 RTSP, 冷启动/链路重建时偶发
+    // not-linked/摄像头会话冲突 → 需要手动点一次, 现改为彻底不自动播, 消除这些时序问题。
+    // 挂起标记 (pendingPlayAfterSurface) 仍由手动播放/回前台恢复时使用, 这里保持无操作。
 
     fun autoSyncSubnet(url: String) {
         val ipMatch = Regex("rtsp://(\\d+\\.\\d+\\.\\d+)\\.\\d+").find(url) ?: return
@@ -456,23 +628,289 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         }
     }
 
-    fun togglePlay() {
-        if (isPlaying) {
-            playerRef?.stop(); playerRef = null; isPlaying = false; statusText = "已停止"
-            playerHolder.set(null)
-        } else {
-            val sv = surfaceViewRef ?: return
+    /** 启动 RTSP 播放 (playerCallback/autoSyncSubnet 已定义, 无前向引用) */
+    fun doStartPlayback() {
+        // QGC_SOFTWARE 用 GLSurfaceView（glSurfaceRef），其他引擎用 SurfaceView
+        val sv = surfaceViewRef
+        val glSrf = glSurfaceRef
+        if (playbackEngine != RtspPlaybackEngine.QGC_SOFTWARE && sv == null) return
+        if (playbackEngine == RtspPlaybackEngine.QGC_SOFTWARE && glSrf == null) return
+        // Surface 未就绪 (切后台回前台时 Surface 重建是异步的): 挂起等待 surfaceCreated 回调,
+        // 避免用已释放的 Surface 创建播放器 → render 每帧 "Surface has already been released" 画面卡死。
+        if (playbackEngine != RtspPlaybackEngine.QGC_SOFTWARE && !surfaceReady) {
+            pendingPlayAfterSurface = true
+            AppLog.w("Player", "播放请求挂起: Surface 未就绪, 等 surfaceCreated")
+            return
+        }
+        // H2: 先释放旧播放器, 避免自动重连时 native 解码器泄漏。
+        // 注意: 只用 playerHolder 做权威清理 (与 onDestroy 一致), 避免对同一实例双重 stop 触发 native 崩溃
+        playerHolder.getAndSet(null)?.stop()
+        playerRef = null
+        try {
+            prefs.edit().putString("rtsp_url", rtspUrl).apply()
+            autoSyncSubnet(rtspUrl)
+            val session: RtspPlayerSession = when (playbackEngine) {
+                RtspPlaybackEngine.MEDIA3_UDP -> {
+                val media3 = Media3RtspProbePlayer(ctx, sv!!.holder.surface, object : Media3RtspProbePlayer.Callback {
+                    override fun onVideoDisplayed() {
+                        Handler(Looper.getMainLooper()).post {
+                            statusText = "播放中 [Media3]"
+                            isPlaying = true
+                            autoReconnectCount = 0
+                            AppLog.i("Player", "Media3 RTSP首帧显示")
+                        }
+                    }
+
+                    override fun onError(message: String?) {
+                        Handler(Looper.getMainLooper()).post {
+                            statusText = "Media3播放错误"
+                            isPlaying = false
+                            AppLog.e("Player", "Media3 RTSP错误: ${message ?: "unknown"}")
+                            scheduleAutoReconnectFn()
+                        }
+                    }
+                })
+                media3.start(rtspUrl)
+                media3
+                }
+                RtspPlaybackEngine.QGC_SOFTWARE -> {
+                    val softwareCodec = LowLatencyRtspPlayer.selectSoftwareH264CodecName()
+                    if (softwareCodec.isNullOrBlank()) {
+                        statusText = "未找到软件H264解码器"
+                        AppLog.e("Player", "QGC-style start failed: no software h264 decoder")
+                        scheduleAutoReconnectFn()
+                        return
+                    }
+                    // QGC 风格：GL 渲染绕开 SurfaceView 队列。glSurfaceRef 在 UI factory 里创建。
+                    val glSrf = glSurfaceRef
+                    val udp = if (glSrf != null) {
+                        UdpRtspPlayer(ctx, glSrf.getSurface(), udpPlayerCallback, softwareCodec, "QGC_SOFTWARE", glSrf)
+                    } else {
+                        UdpRtspPlayer(ctx, glSrf?.getSurface() ?: sv?.holder?.surface, udpPlayerCallback, softwareCodec, "QGC_SOFTWARE")
+                    }
+                    val rc = udp.start(rtspUrl)
+                    if (rc != 0) {
+                        statusText = "QGC风格播放启动失败"
+                        AppLog.e("Player", "QGC-style UdpRtspPlayer start 失败 rc=$rc")
+                        playerHolder.set(null)
+                        scheduleAutoReconnectFn()
+                        return
+                    }
+                    AppLog.i("Player", "QGC-style software decoder: $softwareCodec")
+                    udp
+                }
+                RtspPlaybackEngine.UDP_SELF -> {
+                // 自建 UDP 会话 + PLI 求关键帧
+                val udp = UdpRtspPlayer(ctx, sv?.holder?.surface, udpPlayerCallback)
+                val rc = udp.start(rtspUrl)
+                if (rc != 0) {
+                    statusText = "UDP播放启动失败"
+                    AppLog.e("Player", "UdpRtspPlayer start 失败 rc=$rc")
+                    playerHolder.set(null)
+                    scheduleAutoReconnectFn()
+                    return
+                }
+                udp
+                }
+                RtspPlaybackEngine.GST_QGC -> {
+                    // GStreamer 引擎（参考 QGC GstVideoReceiver 逻辑）
+                    val gst = com.tunnathub.app.video.GstQgcPlayer(
+                        ctx, sv?.holder?.surface, object : com.tunnathub.app.video.GstQgcPlayer.Callback {
+                            override fun onVideoDisplayed(decoderName: String) {
+                                Handler(Looper.getMainLooper()).post {
+                                    statusText = "播放中 [GStreamer:$decoderName]"
+                                    isPlaying = true
+                                    autoReconnectCount = 0
+                                    AppLog.i("Player", "GStreamer 首帧: $decoderName")
+                                }
+                            }
+                            override fun onVideoSize(width: Int, height: Int) {
+                                Handler(Looper.getMainLooper()).post { resolutionText = "${width}x${height}" }
+                            }
+                            override fun onTimeout() {
+                                Handler(Looper.getMainLooper()).post { statusText = "连接超时"; isPlaying = false; scheduleAutoReconnectFn() }
+                            }
+                            override fun onError(message: String?, error: Throwable?) {
+                                Handler(Looper.getMainLooper()).post {
+                                    statusText = "GStreamer播放错误"
+                                    isPlaying = false
+                                    AppLog.e("Player", "GStreamer错误: ${message ?: error?.javaClass?.simpleName}")
+                                    scheduleAutoReconnectFn()
+                                }
+                            }
+                            override fun onDecoderChanged(decoderName: String) {
+                                AppLog.i("Player", "GStreamer 解码器: $decoderName")
+                            }
+                        }, rtspUrl
+                    )
+                    val rc = gst.start()
+                    if (rc != 0) {
+                        statusText = "GStreamer播放启动失败"
+                        AppLog.e("Player", "GstQgcPlayer start 失败 rc=$rc")
+                        playerHolder.set(null)
+                        scheduleAutoReconnectFn()
+                        return
+                    }
+                    gst
+                }
+            }
+            playerRef = session; isPlaying = true; statusText = "连接中..."
+            playerHolder.set(session)
+        } catch (e: Exception) { Log.e("TunNatHub", "播放失败", e); statusText = "播放失败" }
+    }
+
+    fun formatBenchSnapshot(rank: Int, snapshot: BenchmarkStats.Snapshot, error: String?): String {
+        val err = error ?: snapshot.error
+        val prefix = if (rank > 0) "${rank}. " else ""
+        val suffix = if (err.isNullOrBlank()) "" else " err=$err"
+        return prefix + snapshot.codecName +
+            " first=${snapshot.firstFrameMs}ms" +
+            " dec=${snapshot.decodeAvgMs}/${snapshot.decodeP50Ms}/${snapshot.decodeP95Ms}ms" +
+            " cb=${snapshot.callbackToInputAvgMs}/${snapshot.callbackToInputP95Ms}ms" +
+            " rx=${snapshot.framesReceived}" +
+            " in=${snapshot.inputQueued}" +
+            " noIn=${snapshot.inputUnavailable}" +
+            " frames=${snapshot.outputRendered}" +
+            " drop=${snapshot.inputDropped}" + suffix
+    }
+
+    fun doRunCodecBenchmark() {
+        val sv = surfaceViewRef ?: run {
+            codecBenchmarkText = "Surface 未就绪"
+            return
+        }
+        if (codecBenchmarkRunning) return
+        val url = rtspUrl
+        codecBenchmarkRunning = true
+        codecBenchmarkText = "准备 1min/decoder 测试..."
+        apiScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val originalCodec = LowLatencyRtspPlayer.getForcedCodec()
+            val candidates = (listOf("auto") + LowLatencyRtspPlayer.listAvailableDecoders("video/avc")).distinct()
+            val results = mutableListOf<Pair<BenchmarkStats.Snapshot, String?>>()
+            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                autoReconnectActive = false
+                playerHolder.getAndSet(null)?.stop()
+                playerRef = null
+                isPlaying = false
+                statusText = "解码器测试中..."
+            }
             try {
-                prefs.edit().putString("rtsp_url", rtspUrl).apply()
-                autoSyncSubnet(rtspUrl)
-                val client = EasyPlayerClient(ctx, sv.holder.surface, receiver)
-                client.start(rtspUrl, Client.TRANSTYPE_TCP, 1,
-                    Client.EASY_SDK_VIDEO_FRAME_FLAG or Client.EASY_SDK_AUDIO_FRAME_FLAG, "", "", null)
-                playerRef = client; isPlaying = true; statusText = "连接中..."
-                playerHolder.set(client)
-            } catch (e: Exception) { Log.e("TunNatHub", "播放失败", e); statusText = "播放失败" }
+                candidates.forEachIndexed { index, codecName ->
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        codecBenchmarkText = "(${index + 1}/${candidates.size}) 测试 $codecName"
+                    }
+                    LowLatencyRtspPlayer.setForcedCodec(codecName)
+                    val firstFrame = java.util.concurrent.CountDownLatch(1)
+                    val errorRef = java.util.concurrent.atomic.AtomicReference<String?>(null)
+                    val callback = object : UdpRtspPlayer.Callback {
+                        override fun onVideoDisplayed(codecName: String) {
+                            firstFrame.countDown()
+                        }
+
+                        override fun onVideoSize(width: Int, height: Int) {}
+
+                        override fun onTimeout() {
+                            errorRef.compareAndSet(null, "timeout")
+                            firstFrame.countDown()
+                        }
+
+                        override fun onUnsupportedVideo() {
+                            errorRef.compareAndSet(null, "unsupported")
+                            firstFrame.countDown()
+                        }
+
+                        override fun onError(message: String?, error: Throwable?) {
+                            errorRef.compareAndSet(null, message ?: error?.javaClass?.simpleName ?: "error")
+                            firstFrame.countDown()
+                        }
+                    }
+                    val testPlayer = UdpRtspPlayer(ctx, sv?.holder?.surface, callback)
+                    try {
+                        testPlayer.start(url)
+                        val displayed = firstFrame.await(120, java.util.concurrent.TimeUnit.SECONDS)
+                        if (displayed && errorRef.get() == null) {
+                            Thread.sleep(60_000)
+                        } else {
+                            Thread.sleep(1000)
+                        }
+                    } catch (e: Exception) {
+                        errorRef.compareAndSet(null, e.javaClass.simpleName)
+                    } finally {
+                        val snapshot = testPlayer.snapshotStats()
+                        testPlayer.stop()
+                        results.add(snapshot to errorRef.get())
+                        val live = results.mapIndexed { i, item -> formatBenchSnapshot(i + 1, item.first, item.second) }
+                            .joinToString("\n")
+                        withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            codecBenchmarkText = live
+                        }
+                    }
+                }
+            } finally {
+                LowLatencyRtspPlayer.setForcedCodec(originalCodec)
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    codecBenchmarkRunning = false
+                    val ranked = results.sortedWith(
+                        compareBy<Pair<BenchmarkStats.Snapshot, String?>> { it.second != null || it.first.firstFrameMs < 0 }
+                            .thenBy { it.first.firstFrameMs }
+                            .thenBy { it.first.decodeP95Ms }
+                    )
+                    codecBenchmarkText = ranked.mapIndexed { i, item -> formatBenchSnapshot(i + 1, item.first, item.second) }
+                        .joinToString("\n")
+                    statusText = "解码器测试完成"
+                    AppLog.i("PlayerBench", "解码器测试完成\n$codecBenchmarkText")
+                }
+            }
         }
     }
+
+    /** 自动重连: 播放失败后延迟重试 (限次, 手动停止后不触发) */
+    fun doRunRtspUdpProbe() {
+        if (rtspUdpProbeRunning || !vpnRunning) return
+        val url = rtspUrl
+        rtspUdpProbeRunning = true
+        rtspUdpProbeText = "RTSP UDP 探测中..."
+        AppLog.i("RtspUdpProbe", "start $url")
+        apiScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val normal = RtspUdpProbe.run(url, 5)
+            val protectedTun = RtspUdpProbe.runProtectedTun(url, 5)
+            val text = normal.toDisplayString() + "\n\n" + protectedTun.toDisplayString()
+            AppLog.i("RtspUdpProbe", text)
+            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                rtspUdpProbeText = text
+                rtspUdpProbeRunning = false
+            }
+        }
+    }
+
+    fun doScheduleReconnect() {
+        if (!autoReconnectActive) return                     // 手动停止 → 不重连
+        if (isPlaying) return                                // 已在播 → 不重连
+        // VPN 已断 → 链路不存在, 不重连 (等 VPN 重新连上后自动播放会触发)
+        if (!vpnRunning) return
+        if (autoReconnectCount >= MAX_AUTO_RECONNECT) {      // 达到上限 → 停止 (不再手动点)
+            statusText = "自动重连已达上限, 请手动重试"
+            AppLog.w("Player", "自动重连达上限 ($autoReconnectCount)")
+            playerHolder.getAndSet(null)?.stop()
+            playerRef = null
+            isPlaying = false
+            return
+        }
+        autoReconnectCount++
+        // 指数退避: 第 n 次延迟 = min(3s * 2^n, 60s)。链路重建期 (V3s 重启) 前几次用短间隔,
+        // 后面拉长, 覆盖 DNAT 重试 + USB 稳定的完整窗口, 链路就绪后自动连上。
+        val delay = minOf(AUTO_RECONNECT_BASE_DELAY_MS * (1L shl autoReconnectCount), 60_000L)
+        AppLog.i("Player", "自动重连 (${autoReconnectCount}/$MAX_AUTO_RECONNECT) ${delay}ms后")
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (autoReconnectActive && !isPlaying && surfaceViewRef != null && vpnRunning) {
+                startPlaybackFn()
+            }
+        }, delay)
+    }
+
+    // 函数引用赋值 (打破循环引用)
+    startPlaybackFn = { doStartPlayback() }
+    scheduleAutoReconnectFn = { doScheduleReconnect() }
 
     @Composable
     fun RcPanelContent() {
@@ -762,8 +1200,36 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                             color = Color(0xFF020617), shape = RoundedCornerShape(8.dp)
                         ) {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                // QGC_SOFTWARE 引擎用 GLSurfaceView 低延迟渲染（绕开 SurfaceView 队列），
+                                // 其他引擎保持 SurfaceView。
                                 AndroidView(
-                                    factory = { SurfaceView(it).apply { surfaceViewRef = this } },
+                                    factory = { vctx ->
+                                        if (playbackEngine == RtspPlaybackEngine.QGC_SOFTWARE) {
+                                            val gl = com.tunnathub.app.video.GlLowLatencySurface(vctx)
+                                            glSurfaceRef = gl
+                                            gl.view
+                                        } else {
+                                            SurfaceView(vctx).apply {
+                                                surfaceViewRef = this
+                                                // Surface 生命周期: 就绪才允许播放, 销毁标记失效。
+                                                // 修复回前台后 Surface 未重建完成就播放 → render 每帧失败画面卡死。
+                                                holder.addCallback(object : android.view.SurfaceHolder.Callback {
+                                                    override fun surfaceCreated(holder: android.view.SurfaceHolder) {
+                                                        surfaceReady = true
+                                                        // Surface 就绪了, 若之前有挂起的播放请求 (切后台回前台/自动播放), 立即启动
+                                                        if (pendingPlayAfterSurface && !isPlaying && vpnRunning) {
+                                                            pendingPlayAfterSurface = false
+                                                            startPlaybackFn()
+                                                        }
+                                                    }
+                                                    override fun surfaceChanged(holder: android.view.SurfaceHolder, format: Int, width: Int, height: Int) {}
+                                                    override fun surfaceDestroyed(holder: android.view.SurfaceHolder) {
+                                                        surfaceReady = false
+                                                    }
+                                                })
+                                            }
+                                        }
+                                    },
                                     modifier = Modifier.fillMaxWidth(0.94f).aspectRatio(16f / 9f),
                                     update = { sv -> sv.layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT).apply { gravity = android.view.Gravity.CENTER } })
                                 if (!isPlaying) {
@@ -944,10 +1410,19 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 LaunchedEffect(vpnRunning, roReload) {
                                     if (!vpnRunning) return@LaunchedEffect
                                     roMsg = "读取中..."
-                                    try {
-                                        val text = java.net.URL("http://10.0.0.1:8080/api/rc/output").openConnection()
-                                            .apply { connectTimeout = 3000; readTimeout = 3000 }
-                                            .getInputStream().bufferedReader().readText()
+                                    // H-3: 网络请求放 IO 线程, 避免阻塞主线程 (ANR 风险)
+                                    val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        try {
+                                            val text = java.net.URL("http://10.0.0.1:8080/api/rc/output").openConnection()
+                                                .apply { connectTimeout = 3000; readTimeout = 3000 }
+                                                .getInputStream().bufferedReader().readText()
+                                            Pair(text, "")  // (内容, 错误)
+                                        } catch (e: Exception) {
+                                            Pair("", "读取失败, 点刷新重试")
+                                        }
+                                    }
+                                    val text = result.first
+                                    if (text.isNotEmpty()) {
                                         roMode = jsonString(text, "mode") ?: "sbus"
                                         roBaud = jsonString(text, "baud") ?: "auto"
                                         roPreset = jsonString(text, "map_preset") ?: "default"
@@ -955,8 +1430,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                         roSbusStd = (jsonString(text, "sbus_std") ?: "true") == "true"
                                         roSources = (jsonString(text, "sources") ?: "").split(",").filter { it.isNotEmpty() }
                                         roMsg = if (roReload > 0) "已读取配置" else ""
-                                    } catch (_: Exception) {
-                                        roMsg = "读取失败, 点刷新重试"
+                                    } else {
+                                        roMsg = result.second
                                     }
                                 }
 
@@ -1084,16 +1559,25 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     LaunchedEffect(roMode, roReload) {
                                         if (roMode != "crsf") return@LaunchedEffect
                                         while (true) {
-                                            try {
-                                                val t = java.net.URL("http://10.0.0.1:8080/api/rc/telemetry").openConnection()
-                                                    .apply { connectTimeout = 1500; readTimeout = 1500 }
-                                                    .getInputStream().bufferedReader().readText()
-                                                val lat = jsonString(t, "lat") ?: "-"
-                                                val rem = jsonString(t, "remaining_pct") ?: "-"
-                                                val upQ = jsonString(t, "up_quality") ?: "-"
-                                                val dnQ = jsonString(t, "dn_quality") ?: "-"
+                                            // H-4: 网络请求放 IO 线程, 避免阻塞主线程
+                                            val res = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                try {
+                                                    java.net.URL("http://10.0.0.1:8080/api/rc/telemetry").openConnection()
+                                                        .apply { connectTimeout = 1500; readTimeout = 1500 }
+                                                        .getInputStream().bufferedReader().readText()
+                                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                                    throw e
+                                                } catch (_: Exception) { "" }
+                                            }
+                                            if (res.isNotEmpty()) {
+                                                val lat = jsonString(res, "lat") ?: "-"
+                                                val rem = jsonString(res, "remaining_pct") ?: "-"
+                                                val upQ = jsonString(res, "up_quality") ?: "-"
+                                                val dnQ = jsonString(res, "dn_quality") ?: "-"
                                                 tlText = "链路 上行${upQ}% 下行${dnQ}% · 电量 ${rem}% · GPS lat=$lat"
-                                            } catch (_: Exception) { tlText = "回传不可用" }
+                                            } else {
+                                                tlText = "回传不可用"
+                                            }
                                             kotlinx.coroutines.delay(2000)
                                         }
                                     }
@@ -1106,12 +1590,43 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 Text("已移到左侧栏“遥控”页，显示 CH1-CH16、raw_ch1-raw_ch6、C1/C2/BACK 等按键。", fontSize = 10.sp, color = Color(0xFF64748B), lineHeight = 15.sp)
 
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
+                                SectionHdr("播放引擎")
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    Row(modifier = Modifier.fillMaxWidth().height(32.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).clickable { playbackEngineDropdown = !playbackEngineDropdown }.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(playbackEngine.label(), fontSize = 10.sp, color = if (playbackEngine == RtspPlaybackEngine.GST_QGC) Color(0xFF22C55E) else Color(0xFFF59E0B), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                        Text(if (playbackEngineDropdown) "▲" else "▼", fontSize = 9.sp, color = Color(0xFF64748B))
+                                    }
+                                    DropdownMenu(expanded = playbackEngineDropdown, onDismissRequest = { playbackEngineDropdown = false }, modifier = Modifier.background(Color(0xFF1E293B))) {
+                                        RtspPlaybackEngine.values().forEach { engine ->
+                                            DropdownMenuItem(text = { Text(engine.label(), fontSize = 10.sp, color = Color(0xFFE2E8F0)) }, onClick = {
+                                                playbackEngine = engine
+                                                playbackEngineDropdown = false
+                                                prefs.edit().putString("playback_engine", engine.prefValue()).apply()
+                                                AppLog.i("Player", "播放引擎切换: ${engine.prefValue()}")
+                                            }, modifier = Modifier.background(if (engine == playbackEngine) Color(0xFF334155) else Color(0xFF1E293B)))
+                                        }
+                                    }
+                                }
+                                Text(when (playbackEngine) {
+                                    RtspPlaybackEngine.MEDIA3_UDP -> "Media3 默认 UDP 优先，用于验证摄像头/RTP UDP 是否可通。"
+                                    RtspPlaybackEngine.QGC_SOFTWARE -> "QGC风格对照路径：自建UDP低缓冲 + Android软件H264解码。"
+                                    RtspPlaybackEngine.GST_QGC -> "GStreamer引擎：rtspsrc+decodebin3+GL sink，完全参考 QGC 逻辑。"
+                                    RtspPlaybackEngine.UDP_SELF -> "默认低延迟硬解路径，固定 c2.qti.avc.decoder.low_latency。"
+                                }, fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.padding(top = 3.dp))
+
+                                Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("解码器")
-                                var selectedCodec by remember { mutableStateOf(EasyPlayerClient.getForcedCodec()) }
+                                var selectedCodec by remember { mutableStateOf(LowLatencyRtspPlayer.getForcedCodec()) }
                                 var codecList by remember { mutableStateOf(listOf("auto")) }
                                 var codecDropdown by remember { mutableStateOf(false) }
                                 var codecSaved by remember { mutableStateOf(false) }
-                                LaunchedEffect(Unit) { try { codecList = listOf("auto") + EasyPlayerClient.listAvailableDecoders() } catch (_: Exception) {} }
+                                // H-5: JNI 原生调用放 IO 线程, 避免阻塞主线程
+                                LaunchedEffect(Unit) {
+                                    val decoders = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        try { LowLatencyRtspPlayer.listAvailableDecoders() } catch (_: Exception) { emptyList() }
+                                    }
+                                    codecList = listOf("auto") + decoders
+                                }
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                     Box(modifier = Modifier.weight(1f)) {
                                         Row(modifier = Modifier.fillMaxWidth().height(32.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).clickable { codecDropdown = !codecDropdown }.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1123,10 +1638,20 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                         }
                                     }
                                     Spacer(Modifier.width(6.dp))
-                                    Button(onClick = { EasyPlayerClient.setForcedCodec(selectedCodec); codecSaved = true; prefs.edit().putString("forced_codec", selectedCodec).apply() },
+                                    Button(onClick = { LowLatencyRtspPlayer.setForcedCodec(selectedCodec); codecSaved = true; prefs.edit().putString("forced_codec", selectedCodec).apply() },
                                         modifier = Modifier.height(30.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))) { Text("应用", fontSize = 10.sp) }
                                 }
                                 if (codecSaved) Text("解码器已切换, 重启播放生效", fontSize = 9.sp, color = Color(0xFFF59E0B), modifier = Modifier.padding(top = 2.dp))
+                                Spacer(Modifier.height(6.dp))
+                                Button(onClick = { doRunCodecBenchmark() }, enabled = !codecBenchmarkRunning && vpnRunning,
+                                    modifier = Modifier.fillMaxWidth().height(30.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E))) {
+                                    Text(if (codecBenchmarkRunning) "测试中..." else "自动测试 H264 解码器 1min", fontSize = 10.sp)
+                                }
+                                if (codecBenchmarkText.isNotEmpty()) {
+                                    Text(codecBenchmarkText, fontSize = 9.sp, color = Color(0xFF38BDF8), lineHeight = 13.sp, modifier = Modifier.padding(top = 4.dp))
+                                }
 
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("诊断")
@@ -1135,18 +1660,46 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     Button(onClick = {
                                         if (!testing && vpnRunning) {
                                             testing = true; latencyText = "测试中..."
-                                            Thread {
+                                            // M5: 协程替代裸 Thread, socket 用 use 保证关闭, state 切主线程写
+                                            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                                                 val rtts = mutableListOf<Double>(); var drops = 0
                                                 try {
-                                                    for (i in 0 until 10) { try { val t0 = System.nanoTime(); val s = java.net.Socket(); s.connect(java.net.InetSocketAddress("10.0.0.1", 9999), 3000); rtts.add((System.nanoTime() - t0) / 1_000_000.0); s.close() } catch (_: Exception) { drops++ } }
-                                                    if (rtts.isNotEmpty()) { rtts.sort(); latencyText = "%.1f/%.1f/%.1f ms (丢$drops)".format(rtts.average(), rtts[rtts.size / 2], rtts[(rtts.size * 0.95).toInt()]) } else latencyText = "全部丢包 ($drops/10)"
-                                                } catch (_: Exception) { latencyText = "失败" }
-                                                testing = false
-                                            }.start()
+                                                    for (i in 0 until 10) {
+                                                        try {
+                                                            val t0 = System.nanoTime()
+                                                            java.net.Socket().use { s ->
+                                                                s.connect(java.net.InetSocketAddress("10.0.0.1", 9999), 3000)
+                                                                rtts.add((System.nanoTime() - t0) / 1_000_000.0)
+                                                            }
+                                                        } catch (_: Exception) { drops++ }
+                                                    }
+                                                    val result = if (rtts.isNotEmpty()) {
+                                                        rtts.sort()
+                                                        "%.1f/%.1f/%.1f ms (丢$drops)".format(rtts.average(), rtts[rtts.size / 2], rtts[(rtts.size * 0.95).toInt()])
+                                                    } else "全部丢包 ($drops/10)"
+                                                    withContext(kotlinx.coroutines.Dispatchers.Main) { latencyText = result }
+                                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                                    throw e
+                                                } catch (_: Exception) {
+                                                    withContext(kotlinx.coroutines.Dispatchers.Main) { latencyText = "失败" }
+                                                }
+                                                withContext(kotlinx.coroutines.Dispatchers.Main) { testing = false }
+                                            }
                                         }
                                     }, enabled = vpnRunning && !testing, modifier = Modifier.height(28.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))) { Text(if (testing) "⏳" else "⏱", fontSize = 11.sp) }
                                 }
                                 if (latencyText.isNotEmpty()) Text(latencyText, fontSize = 10.sp, color = Color(0xFF38BDF8), modifier = Modifier.padding(top = 2.dp))
+
+                                Spacer(Modifier.height(8.dp))
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    Text("RTSP UDP/RTP", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                                    Button(onClick = { doRunRtspUdpProbe() }, enabled = vpnRunning && !rtspUdpProbeRunning,
+                                        modifier = Modifier.height(28.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))) {
+                                        Text(if (rtspUdpProbeRunning) "探测中" else "探测", fontSize = 11.sp)
+                                    }
+                                }
+                                if (rtspUdpProbeText.isNotEmpty()) Text(rtspUdpProbeText, fontSize = 9.sp, color = Color(0xFF38BDF8), lineHeight = 13.sp, modifier = Modifier.padding(top = 2.dp))
+                                if (rtcpFeedbackText.isNotEmpty()) Text(rtcpFeedbackText, fontSize = 9.sp, color = Color(0xFFFBBF24), lineHeight = 13.sp, modifier = Modifier.padding(top = 2.dp))
 
                                 Spacer(Modifier.height(8.dp))
                                 var debugExpanded by remember { mutableStateOf(true) }

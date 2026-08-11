@@ -34,6 +34,7 @@ import com.tunnathub.app.MainActivity
 import com.tunnathub.app.R
 import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
+import com.tunnathub.app.video.VpnNetworkBinder
 import kotlinx.coroutines.*
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
@@ -55,8 +56,34 @@ class TunNatVpnService : VpnService() {
         /** 是否正在重连 USB */
         val isReconnectingState = mutableStateOf(false)
 
+        /**
+         * 强制重建 VPN 标志 (MainActivity 网段变更/手动重连时设置)。
+         * onStartCommand 看到此标志时强制 stopVpn+重建, 绕过"直接复用"逻辑,
+         * 使新的 lan_subnet 路由生效 (否则复用不重建, 旧路由残留)。
+         */
+        @Volatile var forceRestartRequested = false
+
+        /** VPN 服务进程是否存活 (与 isRunning 区分: 服务在但 USB 断开时 isRunning=false) */
+        @Volatile var isStartedForUi: Boolean = false
+            private set
+
         /** 当前 VpnService 实例（供 protectSocket 静态调用） */
         @Volatile private var instance: TunNatVpnService? = null
+
+        @JvmStatic
+        fun isVpnRunningForJava(): Boolean = isRunning
+
+        @JvmStatic
+        fun bindProcessToVpnNetwork(): Boolean {
+            val ctx = instance?.applicationContext ?: return false
+            return VpnNetworkBinder.bindProcessToVpn(ctx)
+        }
+
+        @JvmStatic
+        fun clearProcessNetworkBinding() {
+            val ctx = instance?.applicationContext ?: return
+            VpnNetworkBinder.clearProcessBinding(ctx)
+        }
 
         /** 静态 protect UDP socket，供外部（如 MainActivity 延迟测试）使用 */
         fun protectSocket(socket: java.net.DatagramSocket): Boolean {
@@ -78,7 +105,17 @@ class TunNatVpnService : VpnService() {
          */
         fun openProtectedPort(port: Int): java.net.DatagramSocket? {
             val inst = instance ?: return null
-            protectedPorts[port]?.let { return it }   // 已存在则复用
+            // 复用前检查 socket 有效性: 若已被关闭 (fd 释放但 inode 残留, 孤儿 socket),
+            // 必须重建 — 否则 receive() 永远收不到数据 (摇杆/心跳丢失)。
+            protectedPorts[port]?.let { existing ->
+                if (existing.isClosed || !existing.isBound) {
+                    AppLog.w(TAG, "UDP端口保护: $port socket 失效, 重建")
+                    try { existing.close() } catch (_: Exception) {}
+                    protectedPorts.remove(port)
+                } else {
+                    return existing   // 有效, 复用
+                }
+            }
             return try {
                 val socket = java.net.DatagramSocket(null)
                 socket.reuseAddress = true
@@ -128,9 +165,11 @@ class TunNatVpnService : VpnService() {
 
     private var tunFd: ParcelFileDescriptor? = null
     private var usbBridge: UsbBridge? = null
-    private var isStarted = false
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val reconnectScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    @Volatile private var isStarted = false   // M-05: 主线程写/IO线程读, 需可见性
+    // C-01: 主线程重建 (stopVpn), IO 线程读 (onLinkStateChange 触发 reconnectScope.launch),
+    // 无 @Volatile 可能读到已取消的旧 scope → 重连静默失败
+    @Volatile private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    @Volatile private var reconnectScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onCreate() {
         super.onCreate()
@@ -141,14 +180,36 @@ class TunNatVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "VpnService 启动")
 
-        // 已在运行，忽略重复的启动请求
-        // USB 热插拔由 BootReceiver 先停止再启动，不走这里
+        // 修复: 退出 app 时 VPN 服务 (TunNatVpnService) 仍在后台运行, USB 隧道也还连着。
+        // 再进 app 时不应强制重启 VPN (stopVpn 会关 TUN+USB+受保护端口 incl. 65530 摇杆 socket,
+        // 重建后 RC effect 重新建 socket, 时序/投递易出问题 → 摇杆丢失)。
+        // 正确逻辑: 服务已启动且隧道健康 (isStarted=true, USB 连通 isRunning=true) → 直接复用, 不重建。
+        // 服务已启动但隧道断了 → 服务内部 doReconnect 会后台自动重连, 也不需强制重启。
+        // 只有服务确实未初始化 (isStarted=false) 才走完整启动流程。
         if (isStarted) {
-            Log.w(TAG, "VpnService 已在运行，忽略重复启动")
-            return START_STICKY
+            // 强制重建标志 (网段变更/手动重连): 必须重建 VPN 让新路由生效。
+            if (forceRestartRequested) {
+                forceRestartRequested = false
+                Log.w(TAG, "强制重建 VPN (网段变更/手动重连)")
+                stopVpn()
+                usbBridge?.disconnect()
+                usbBridge = null
+            } else if (isRunning) {
+                // 服务已在跑: 隧道已连通则直接复用, 不打断 (保留受保护端口/摇杆 socket)。
+                Log.i(TAG, "VPN 服务已在运行, 直接复用 (不重启, 保留摇杆/受保护端口)")
+                isStartedForUi = true
+                return START_STICKY
+            } else {
+                // 服务在但隧道断了: 不强制重启, 服务内部 doReconnect 会重连。
+                // 只补一下 UI 状态标记。
+                Log.w(TAG, "VPN 服务在但隧道未连, 交由 doReconnect 重连 (不强制重启)")
+                isStartedForUi = true
+                return START_STICKY
+            }
         }
         isStarted = true
-        isRunning = true
+        isStartedForUi = true
+        isRunning = false
 
         // 前台服务
         startForeground(NOTIFICATION_ID, buildNotification("正在启动..."))
@@ -165,16 +226,22 @@ class TunNatVpnService : VpnService() {
         }
 
         // 启动 USB Bridge（带自动重试 + 回调更新通知）
-        usbBridge = UsbBridge(this, tunFd!!)
+        val fd = tunFd ?: return START_NOT_STICKY   // L-04: 避免 !!
+        usbBridge = UsbBridge(this, fd)
         // 无限重连 — USB 断开自动恢复，等 USB_DEVICE_ATTACHED 广播
-        usbBridge!!.onLinkStateChange = { state ->
+        usbBridge?.onLinkStateChange = { state ->
             when (state) {
                 com.tunnathub.app.usb.LinkState.Connected -> {
                     isReconnectingState.value = false
+                    // 状态联动: USB 转发活跃 → isRunning=true (UI 显示连接/运行)
+                    isRunning = true
                     updateNotification("已连接 (USB Bulk)")
                 }
                 com.tunnathub.app.usb.LinkState.Disconnected -> {
                     isReconnectingState.value = true
+                    // 状态联动: USB 转发断开 → isRunning=false (UI 显示"连接"可点击重连)
+                    // 服务进程保持存活, 重连协程继续后台静默恢复
+                    isRunning = false
                     updateNotification("USB 已断开")
                     AppLog.w(TAG, "USB 链路断开，等待设备重新连接...")
                     // 启动重连协程
@@ -184,10 +251,44 @@ class TunNatVpnService : VpnService() {
             }
         }
 
+        // 注册 USB 拔出广播: 收到 DETACHED → 触发重连 (不停止服务)
+        registerUsbDetachReceiver()
+
         // 首次连接
         scope.launch { doReconnect() }
 
         return START_STICKY
+    }
+
+    /**
+     * 注册 ACTION_USB_DEVICE_DETACHED 广播。
+     * 修复: USB 拔出时 usbToTunLoop 阻塞在 bulkTransfer 上检测不到断开,
+     * 这里用 Android 官方广播作为断开信号 → 触发 doReconnect 轮询重连。
+     */
+    private fun registerUsbDetachReceiver() {
+        unregisterReconnectReceiver()  // 先注销旧的, 避免重复注册
+        reconnectReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                val action = intent.action ?: return
+                if (action == android.hardware.usb.UsbManager.ACTION_USB_DEVICE_DETACHED) {
+                    val device = intent.getParcelableExtra<android.hardware.usb.UsbDevice>(
+                        android.hardware.usb.UsbManager.EXTRA_DEVICE)
+                    if (device != null && device.vendorId == com.tunnathub.app.usb.UsbBridge.USB_VID &&
+                        device.productId == com.tunnathub.app.usb.UsbBridge.USB_PID) {
+                        Log.w(TAG, "USB 拔出广播, 触发重连")
+                        AppLog.w(TAG, "USB 拔出广播, 触发重连")
+                        isRunning = false
+                        if (isStarted) reconnectScope.launch { doReconnect() }
+                    }
+                }
+            }
+        }
+        try {
+            registerReceiver(reconnectReceiver, IntentFilter(android.hardware.usb.UsbManager.ACTION_USB_DEVICE_DETACHED),
+                Context.RECEIVER_NOT_EXPORTED)
+        } catch (e: Exception) {
+            Log.e(TAG, "注册 USB 拔出广播失败: ${e.message}")
+        }
     }
 
     override fun onDestroy() {
@@ -223,93 +324,50 @@ class TunNatVpnService : VpnService() {
     }
 
     private var reconnectReceiver: BroadcastReceiver? = null
-    private val reconnectLatch = java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CountDownLatch?>(null)
     private val reconnecting = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
-     * 尝试一次性连接 USB，失败时注册 USB_DEVICE_ATTACHED 等待设备重新插入
+     * 尝试连接 USB。失败后轮询重试（不依赖 USB 插入广播，
+     * 设备一直插着也能重连，解决"开多次 App 才连上"的问题）。
      */
     private suspend fun doReconnect() {
         if (!isStarted || !reconnecting.compareAndSet(false, true)) return
         usbBridge?.disconnect()
         isReconnectingState.value = true
-
-        // 先在主线程注册 USB 监听（防止漏掉插入事件）
-        withContext(Dispatchers.Main) {
-            unregisterReconnectReceiver()
-            val latch = java.util.concurrent.CountDownLatch(1)
-            reconnectLatch.set(latch)
-            reconnectReceiver = object : BroadcastReceiver() {
-                override fun onReceive(ctx: Context, intent: Intent) {
-                    if ("android.hardware.usb.action.USB_DEVICE_ATTACHED" == intent.action) {
-                        val dev = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
-                        if (dev != null && dev.vendorId == UsbBridge.USB_VID && dev.productId == UsbBridge.USB_PID) {
-                            AppLog.i(TAG, "收到 V3s 插入广播")
-                            latch.countDown()
-                        }
-                    }
-                }
-            }
-            registerReceiver(reconnectReceiver, IntentFilter("android.hardware.usb.action.USB_DEVICE_ATTACHED"), Context.RECEIVER_NOT_EXPORTED)
-        }
+        // 连接尚未建立成功, 状态应为 false (H1: isRunning 反映真实连接状态)
+        isRunning = false
 
         try {
             var retries = 0
             while (isStarted) {
                 retries++
-                // 先立即试一次（第一次可能设备已经在线）
-                if (retries == 1) {
-                    try {
-                        updateNotification("USB 连接中...")
-                        usbBridge!!.start(scope)
-                        AppLog.i(TAG, "USB 首次连接成功")
-                        isReconnectingState.value = false
-                        return
-                    } catch (e: Exception) {
-                        AppLog.w(TAG, "USB 未在线: ${e.message}，等待插入...")
-                        updateNotification("等待 USB 设备...")
-                    }
+                try {
+                    updateNotification("USB 连接中... ($retries)")
+                    // H-02: 局部变量安全检查, 避免与 stopVpn() 置 null 竞态 NPE
+                    val bridge = usbBridge ?: break
+                    bridge.start(scope)
+                    AppLog.w(TAG, "USB 转发循环已退出 (第${retries}次), 继续重连")
+                    isReconnectingState.value = true
+                    isRunning = false
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e   // H-01: 协程取消必须传播, 避免 isRunning 被错误覆写
+                } catch (e: Exception) {
+                    AppLog.w(TAG, "USB 连接失败 (第${retries}次): ${e.message}")
+                    updateNotification("USB 重连中... ($retries)")
+                    // H1: 连接失败 → isRunning 保持 false (UI 显示"连接"可重连)
+                    isRunning = false
                 }
-
-                // 等待 USB 插入（阻塞 IO 线程，等待硬件事件）
-                val latch = reconnectLatch.get()
-                if (latch != null) {
-                    withContext(Dispatchers.IO) { latch.await() }
-                    reconnectLatch.set(java.util.concurrent.CountDownLatch(1))  // 重置
-                }
-                if (!isStarted) break
-
-                delay(1000)  // 等驱动加载完
-                // DJI RC 权限授予有延迟 → 重试多次
-                var reconnected = false
-                for (attempt in 1..5) {
-                    try {
-                        updateNotification("重连中... ($retries)")
-                        usbBridge?.disconnect()
-                        usbBridge!!.start(scope)
-                        AppLog.i(TAG, "USB 重连成功 (第${retries}次)")
-                        isReconnectingState.value = false
-                        reconnected = true
-                        break
-                    } catch (e: Exception) {
-                        AppLog.w(TAG, "USB 重连尝试 $attempt/5 失败: ${e.message}")
-                        usbBridge?.disconnect()
-                        if (attempt < 5) delay(800)
-                    }
-                }
-                if (reconnected) return
-                // 5 次都失败 → 重新等广播
+                // 轮询重试: 设备一直插着也能重连, 不依赖插入广播
+                delay(RECONNECT_DELAY)
             }
         } finally {
             reconnecting.set(false)
-            withContext(Dispatchers.Main) { unregisterReconnectReceiver() }
         }
     }
 
     private fun unregisterReconnectReceiver() {
         reconnectReceiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }
         reconnectReceiver = null
-        reconnectLatch.set(null)
     }
 
     /**
@@ -317,9 +375,17 @@ class TunNatVpnService : VpnService() {
      */
     private fun stopVpn() {
         isStarted = false
+        isStartedForUi = false
         isRunning = false
         usbBridge?.disconnect()
         usbBridge = null
+
+        // 取消旧协程 (TUN→USB / USB→TUN), 避免下次启动时旧协程占着 TUN/USB fd
+        scope.cancel()
+        scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        // M2: 同时取消 reconnectScope, 避免残留 doReconnect 的 usbBridge!! NPE
+        reconnectScope.cancel()
+        reconnectScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
         try {
             tunFd?.close()

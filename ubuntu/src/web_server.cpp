@@ -32,6 +32,8 @@
 #include <unistd.h>
 #include <vector>
 
+#include "rtsp_nat_helper.h"
+
 extern "C" {
 #include "rc_map.h"
 }
@@ -39,11 +41,12 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.4.5"   // 固件版本 — 改这里全局生效
+#define VERSION     "1.6.4"   // 固件版本 — 改这里全局生效
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
 constexpr int    MAX_CFG    = 32768;
+constexpr const char* RTSP_RTP_TUN_CLIENT = "10.0.0.2";
 const char*      CFG_DEV    = "/dev/mtdblock0";
 constexpr int    CFG_OFFSET = 0xFD000;  // uboot 分区尾部空闲区(12KB, 距SPL 1012KB)
 constexpr int    CFG_MAX    = 0x3000;   // 12KB
@@ -180,7 +183,7 @@ struct Camera {
 };
 
 struct Config {
-    std::string rtspUrl = "rtsp://192.168.88.100:554/stream1";
+    std::string rtspUrl = "rtsp://192.168.144.31:554/stream1";
     std::string lanSubnet = "192.168.88.0/24";
     std::string tunSubnet = "10.0.0.0/24";
     std::vector<ForwardRule> forwards;
@@ -291,8 +294,12 @@ static std::string detectLanIface() {
     return "eth0";
 }
 
-static Config loadConfig() {
+// H-3: loadConfig 支持报告"配置是否被修改" (LAN 网段自动检测到变化时置 true),
+// 调用方据此决定是否要 saveConfig — 避免每次启动都无条件擦写 SPI NOR flash (磨损寿命)。
+// outChanged 可空 (nullptr 表示不关心)。
+static Config loadConfig(bool* outChanged = nullptr) {
     Config cfg;
+    if (outChanged) *outChanged = false;
     // Read config from SPI Flash (persistent, survives reboot)
     int fd = ::open(CFG_DEV, O_RDONLY);
     if (fd < 0) return cfg;
@@ -301,9 +308,10 @@ static Config loadConfig() {
     ssize_t r = ::read(fd, &len, 2);
     if (r != 2 || len == 0 || len > CFG_MAX) { ::close(fd); return cfg; }
     std::vector<char> buf(len + 1);
-    ::read(fd, buf.data(), len);
-    buf[len] = '\0';
+    ssize_t got = ::read(fd, buf.data(), len);
     ::close(fd);
+    if (got != (ssize_t)len) return cfg;   // H: 读不满 → 配置损坏, 用默认
+    buf[len] = '\0';
     std::string json(buf.data(), len);
 
     auto v = jsonStr(json, "rtsp_url");
@@ -390,6 +398,7 @@ static Config loadConfig() {
     if (!detected.empty() && detected != cfg.lanSubnet) {
         std::cout << "[web_server] LAN 网段自动检测: " << cfg.lanSubnet << " → " << detected << std::endl;
         cfg.lanSubnet = detected;
+        if (outChanged) *outChanged = true;
     }
 
     return cfg;
@@ -435,10 +444,13 @@ static void saveConfig(const Config& cfg) {
     if (fd < 0) { std::cerr << "[cfg] ERROR: cannot open " << CFG_DEV << std::endl; return; }
     uint16_t len = (uint16_t)json.size();
     ::lseek(fd, CFG_OFFSET, SEEK_SET);
-    ::write(fd, &len, 2);
-    ::write(fd, json.c_str(), len);
+    // H: 检查写返回值, 写失败报错 (SPI flash 磨损/坏块)
+    ssize_t w1 = ::write(fd, &len, 2);
+    ssize_t w2 = ::write(fd, json.c_str(), len);
     ::close(fd);
     sync();
+    if (w1 != 2 || w2 != (ssize_t)len)
+        std::cerr << "[cfg] WARN: 配置写入不完整 (" << w1 << "+" << w2 << "/" << len << ")" << std::endl;
     std::cout << "[cfg] saved " << len << " bytes to " << CFG_DEV << " @0x" << std::hex << CFG_OFFSET << std::dec << std::endl;
 }
 
@@ -447,6 +459,22 @@ static void saveConfig(const Config& cfg) {
 // ═══════════════════════════════════════════════════════════════
 
 static std::string g_lanIface = "eth0";
+
+static std::string detectLanIp() {
+    std::string out = exec({"ip", "addr", "show", g_lanIface});
+    std::istringstream iss(out);
+    std::string line;
+    while (std::getline(iss, line)) {
+        auto p = line.find("inet ");
+        if (p == std::string::npos) continue;
+        std::istringstream ls(line.substr(p + 5));
+        std::string cidr;
+        ls >> cidr;
+        auto slash = cidr.find('/');
+        if (slash != std::string::npos) return cidr.substr(0, slash);
+    }
+    return "";
+}
 
 static void applyForward(const ForwardRule& r) {
     std::string port = std::to_string(r.port);
@@ -466,6 +494,53 @@ static void applyForward(const ForwardRule& r) {
 
 static void applyAllForwards(const Config& cfg) {
     for (auto& r : cfg.forwards) applyForward(r);
+}
+
+static std::vector<std::string> rtspCameraHosts(const Config& cfg) {
+    std::vector<std::string> hosts;
+    addUniqueIpv4Host(hosts, rtspHostFromUrl(cfg.rtspUrl));
+    for (const auto& c : cfg.cameras) {
+        addUniqueIpv4Host(hosts, rtspHostFromUrl(c.url));
+    }
+    return hosts;
+}
+
+// 应用 RTSP UDP RTP 转发规则。
+// 返回 true = 已成功应用 (LAN IP 已就绪); false = 尚未就绪 (启动早期 eth0 可能还没拿到 IP),
+// 由主循环周期性重试, 直到应用成功为止 — 修复 V3s 重启后 DNAT 规则永久丢失问题。
+// 幂等: 每条规则先 `-C` 检查已存在, 存在则跳过不重复添加。
+static bool applyRtspUdpRtpForward(const Config& cfg) {
+    std::string lanIp = detectLanIp();
+    if (lanIp.empty()) {
+        std::cout << "[rtsp-udp] skip: no LAN ip on " << g_lanIface
+                  << " (将重试)" << std::endl;
+        return false;
+    }
+
+    for (const auto& host : rtspCameraHosts(cfg)) {
+        if (execRet({"iptables", "-t", "nat", "-C", "PREROUTING",
+                     "-i", g_lanIface, "-p", "udp",
+                     "-s", host, "-d", lanIp, "--dport", "10000:65535",
+                     "-j", "DNAT", "--to-destination", RTSP_RTP_TUN_CLIENT}) != 0) {
+            execRet({"iptables", "-t", "nat", "-A", "PREROUTING",
+                     "-i", g_lanIface, "-p", "udp",
+                     "-s", host, "-d", lanIp, "--dport", "10000:65535",
+                     "-j", "DNAT", "--to-destination", RTSP_RTP_TUN_CLIENT});
+        }
+
+        if (execRet({"iptables", "-C", "FORWARD",
+                     "-i", g_lanIface, "-o", "tun_hub", "-p", "udp",
+                     "-s", host, "-d", RTSP_RTP_TUN_CLIENT, "--dport", "10000:65535",
+                     "-j", "ACCEPT"}) != 0) {
+            execRet({"iptables", "-A", "FORWARD",
+                     "-i", g_lanIface, "-o", "tun_hub", "-p", "udp",
+                     "-s", host, "-d", RTSP_RTP_TUN_CLIENT, "--dport", "10000:65535",
+                     "-j", "ACCEPT"});
+        }
+        std::cout << "[rtsp-udp] " << host << " -> " << RTSP_RTP_TUN_CLIENT
+                  << " via " << g_lanIface << " dport 10000:65535" << std::endl;
+    }
+    return true;
 }
 
 static bool addForward(Config& cfg, const std::string& proto, int port, const std::string& dest) {
@@ -516,11 +591,15 @@ static int extractRequest(std::string& buf, Request* req) {
         return 0;
     }
     // 解析 Content-Length（可能无 body）
+    // CO-7: atoi 溢出是 UB, 改用 stoll + try-catch, 超限返回 -1
     int contentLen = 0;
     size_t clPos = buf.find("Content-Length:");
     if (clPos != std::string::npos && clPos < hdrEnd) {
-        contentLen = std::atoi(buf.c_str() + clPos + 15);
-        if (contentLen < 0 || contentLen > 8 * 1024 * 1024) return -1;
+        try {
+            long long cl = std::stoll(buf.substr(clPos + 15, hdrEnd - clPos - 15));
+            if (cl < 0 || cl > 8 * 1024 * 1024) return -1;
+            contentLen = (int)cl;
+        } catch (...) { return -1; }
     }
     size_t total = hdrEnd + 4 + (size_t)contentLen;
     if (buf.size() < total) return 0;   // body 未收全
@@ -553,8 +632,15 @@ struct Response {
             "Connection: " + std::string(keepAlive ? "keep-alive" : "close") + "\r\n"
             "Content-Length: " + std::to_string(body.size()) + "\r\n"
             "\r\n";
-        ::send(fd, hdr.c_str(), hdr.size(), MSG_NOSIGNAL);
-        ::send(fd, body.c_str(), body.size(), MSG_NOSIGNAL);
+        // C-2: send() 可能短写 (慢连接/内核缓冲满), 必须循环写完, 否则客户端收到截断响应,
+        // 破坏 keep-alive 连接上后续请求的 Content-Length 帧对齐。
+        const std::string full = hdr + body;
+        size_t off = 0;
+        while (off < full.size()) {
+            ssize_t n = ::send(fd, full.c_str() + off, full.size() - off, MSG_NOSIGNAL);
+            if (n <= 0) break;   // EAGAIN/EINTR 或对端关闭: 放弃本次发送
+            off += (size_t)n;
+        }
     }
 };
 
@@ -692,6 +778,13 @@ async function ref(){
   document.getElementById("cam-list").innerHTML=cl;
   document.getElementById("net-info").textContent=await t(A+"/network");
   document.getElementById("ipt-info").textContent=await t(A+"/iptables");
+  let sy=await j(A+"/system");
+  document.getElementById("sys-info").textContent=
+    `运行时长: ${sy.uptime}\n`+
+    `usb_tund 守护进程: ${sy.daemon_active?'运行中':'停止'}\n`+
+    `web_server: ${sy.web_active?'运行中':'停止'}\n`+
+    `内存: ${sy.mem}\n`+
+    `磁盘: ${sy.disk}`;
 }
 async function addFwd(){
   let r=await fetch(A+"/forward/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({proto:document.getElementById("fw-proto").value,port:parseInt(document.getElementById("fw-port").value),dest:document.getElementById("fw-dest").value})});
@@ -835,25 +928,29 @@ static std::string apiStats() {
     // 格式: [统计] TX=123/456B RX=789/012B err=0
     uint64_t txPkts=0, txBytes=0, rxPkts=0, rxBytes=0, err=0;
 
+    // CRIT#6: 安全解析数字, 日志损坏时 stoull 抛异常会终止进程
+    auto safeStoull = [](const std::string& s) -> uint64_t {
+        try { return std::stoull(s); } catch (...) { return 0; }
+    };
     std::istringstream iss(tail);
     std::string w;
     while (iss >> w) {
         if (w.rfind("TX=",0) == 0) {
             auto s = w.substr(3);
             auto slash = s.find('/');
-            txPkts = std::stoull(s.substr(0, slash));
+            txPkts = safeStoull(s.substr(0, slash));
             auto b = s.substr(slash+1);
             if (!b.empty() && b.back() == 'B') b.pop_back();
-            txBytes = b.empty() ? 0 : std::stoull(b);
+            txBytes = safeStoull(b);
         } else if (w.rfind("RX=",0) == 0) {
             auto s = w.substr(3);
             auto slash = s.find('/');
-            rxPkts = std::stoull(s.substr(0, slash));
+            rxPkts = safeStoull(s.substr(0, slash));
             auto b = s.substr(slash+1);
             if (!b.empty() && b.back() == 'B') b.pop_back();
-            rxBytes = b.empty() ? 0 : std::stoull(b);
+            rxBytes = safeStoull(b);
         } else if (w.rfind("err=",0) == 0) {
-            err = std::stoull(w.substr(4));
+            err = safeStoull(w.substr(4));
         }
     }
 
@@ -895,12 +992,34 @@ static std::string apiSystem() {
     std::istringstream ms(mem);
     std::getline(ms, memLine); // skip header
     std::getline(ms, memLine); // Mem:
+    // 精简: "Mem: 61004 13456 40512 118 47008 56204" → "已用 13M / 共 61M"
+    {
+        std::stringstream ss(memLine);
+        std::string label; long total = 0, used = 0;
+        ss >> label >> total >> used;
+        if (total > 0) {
+            std::stringstream fmt;
+            fmt << "已用 " << used << "M / 共 " << total << "M";
+            memLine = fmt.str();
+        }
+    }
 
     auto disk = exec({"df", "-h", "/"});
     std::string diskLine;
     std::istringstream ds(disk);
     std::getline(ds, diskLine); // skip header
     std::getline(ds, diskLine);
+    // 精简: "/dev/root 3.7M 3.4M 291K 93% /" → "3.4M 已用 / 3.7M 共 (93%)"
+    {
+        std::stringstream ss(diskLine);
+        std::string dev, size, used, avail, pct, mnt;
+        ss >> dev >> size >> used >> avail >> pct >> mnt;
+        if (!size.empty()) {
+            std::stringstream fmt;
+            fmt << used << " 已用 / " << size << " 共 (" << pct << ")";
+            diskLine = fmt.str();
+        }
+    }
 
     JsonObj obj;
     obj.pair("uptime", JsonValue::string(uptime));
@@ -1046,6 +1165,16 @@ static Response handleRequest(const Request& req) {
             } else {
                 resp.body = R"({"error":"RC daemon not running"})";
             }
+        } else if (p == "/api/dji_rc/log") {
+            // 诊断接口: 抓启动配置行 + 热重配检测行 + 状态刷屏行 + tail
+            std::string boot = exec({"sh", "-c",
+                "echo '=== BOOT ==='; "
+                "grep -aE '输出|fd=|已打开' /var/log/dji_rc.log | head -8; "
+                "echo '=== CFGCHK ==='; "
+                "grep -aE 'cfg chk|变化|重配' /var/log/dji_rc.log | tail -8; "
+                "echo '=== TAIL ==='; tail -4 /var/log/dji_rc.log"});
+            resp.contentType = "text/plain; charset=utf-8";
+            resp.body = boot;
         } else if (p == "/api/rc/output") {
             Config c = loadConfig();
             resp.body = apiRcOutput(c);
@@ -1097,6 +1226,7 @@ static Response handleRequest(const Request& req) {
             auto lan = jsonStr(req.body, "lan_subnet");
             if (!lan.empty()) cfg.lanSubnet = lan;
             saveConfig(cfg);
+            applyRtspUdpRtpForward(cfg);
             JsonObj obj;
             obj.pair("ok", JsonValue::boolean(true));
             resp.body = obj.done();
@@ -1130,18 +1260,21 @@ static Response handleRequest(const Request& req) {
             if (!c.url.empty()) {
                 cfg.cameras.push_back(c);
                 saveConfig(cfg);
+                applyRtspUdpRtpForward(cfg);
             }
             JsonObj obj;
             obj.pair("ok", JsonValue::boolean(!c.url.empty()));
             resp.body = obj.done();
         } else if (p == "/api/camera/del") {
             int idx = jsonInt(req.body, "index");
-            if (idx >= 0 && idx < (int)cfg.cameras.size()) {
+            bool ok = idx >= 0 && idx < (int)cfg.cameras.size();
+            if (ok) {
                 cfg.cameras.erase(cfg.cameras.begin() + idx);
                 saveConfig(cfg);
+                applyRtspUdpRtpForward(cfg);
             }
             JsonObj obj;
-            obj.pair("ok", JsonValue::boolean(idx >= 0 && idx < (int)cfg.cameras.size()));
+            obj.pair("ok", JsonValue::boolean(ok));
             resp.body = obj.done();
         } else if (p == "/api/firmware/upload") {
             // Handled in main loop before parseRequest
@@ -1168,9 +1301,11 @@ static Response handleRequest(const Request& req) {
 static std::string readLine(int fd) {
     std::string line;
     char c;
+    const size_t MAX_LINE = 8192;   // H: 限制单行长度, 防恶意超长行耗尽内存
     while (::recv(fd, &c, 1, 0) > 0) {
         if (c == '\r') continue;
         if (c == '\n') break;
+        if (line.size() >= MAX_LINE) return line;  // 超长: 返回已有内容, 连接将被上层关闭
         line += c;
     }
     return line;
@@ -1188,6 +1323,10 @@ static void handleFirmwareUpload(int fd) {
     Response resp;
     resp.contentType = "application/json";
     std::cout << "[fw] === UPGRADE START ===" << std::endl;
+    // C4: 设置 socket 接收超时 (30s), 防恶意客户端发 Content-Length 后停止发送导致永久阻塞
+    struct timeval rcvTv;
+    rcvTv.tv_sec = 30; rcvTv.tv_usec = 0;
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcvTv, sizeof(rcvTv));
     std::string reqLine = readLine(fd);
     if (reqLine.find("POST") == std::string::npos) {
         std::cout << "[fw] ERR: not POST" << std::endl;
@@ -1197,7 +1336,16 @@ static void handleFirmwareUpload(int fd) {
     std::string headers;
     while (true) { std::string line = readLine(fd); if (line.empty()) break; headers += line + "\n"; }
     auto clStr = findHeader(headers, "Content-Length");
-    size_t contentLen = clStr.empty() ? 0 : std::stoull(clStr);
+    // CRIT#4: stoull 对非法值抛异常会终止进程, try-catch 防护
+    size_t contentLen = 0;
+    if (!clStr.empty()) {
+        try { contentLen = std::stoull(clStr); }
+        catch (...) {
+            std::cout << "[fw] ERR: bad Content-Length" << std::endl;
+            resp.code = 400; resp.body = R"({"ok":false,"error":"bad Content-Length"})";
+            sendClose(resp, fd); return;
+        }
+    }
     std::cout << "[fw] SIZE: " << contentLen << " bytes (" << (contentLen/1024) << "KB)" << std::endl;
     if (contentLen < 1024*1024 || contentLen > 8*1024*1024) {
         std::cout << "[fw] ERR: invalid size" << std::endl;
@@ -1215,7 +1363,13 @@ static void handleFirmwareUpload(int fd) {
     while (remaining > 0) {
         size_t chunk = remaining < sizeof(buf) ? remaining : sizeof(buf);
         ssize_t n = ::recv(fd, buf, chunk, 0); if (n <= 0) break;
-        ::write(fwFd, buf, n); remaining -= n;
+        ssize_t written = ::write(fwFd, buf, n);   // CRIT#5: 检查写返回值, 短写中止避免坏固件
+        if (written != n) {
+            std::cout << "[fw] ERR: write 短写 " << written << "/" << n << std::endl;
+            remaining = SIZE_MAX;  // 标记失败
+            break;
+        }
+        remaining -= n;
         if (contentLen - remaining - lastRpt >= 512*1024) {
             lastRpt = contentLen - remaining;
             std::cout << "[fw] RECV: " << (lastRpt/1024) << "/" << (contentLen/1024) << "KB" << std::endl;
@@ -1230,7 +1384,10 @@ static void handleFirmwareUpload(int fd) {
     }
     int vFd = ::open(tmpPath.c_str(), O_RDONLY);
     if (vFd >= 0) {
-        uint8_t magic[4]; ::read(vFd, magic, 4); ::close(vFd);
+        uint8_t magic[4] = {0};
+        // H-1: read 返回值检查, 失败则按 bad magic 处理 (magic 保持初始化值 0)
+        if (::read(vFd, magic, 4) != 4) { ::close(vFd); magic[0] = magic[1] = magic[2] = magic[3] = 0; }
+        else ::close(vFd);
         std::cout << "[fw] MAGIC: " << magic[0] << magic[1] << magic[2] << magic[3] << " (expect hsqs)" << std::endl;
         if (magic[0] != 'h' || magic[1] != 's' || magic[2] != 'q' || magic[3] != 's') {
             std::cout << "[fw] ERR: bad magic" << std::endl;
@@ -1244,9 +1401,15 @@ static void handleFirmwareUpload(int fd) {
     if (::stat(tmpPath.c_str(), &st) == 0 && st.st_size > 12) {
         int tf = ::open(tmpPath.c_str(), O_RDONLY);
         if (tf >= 0) {
-            char tail[12]; ::lseek(tf, st.st_size - 12, SEEK_SET); ::read(tf, tail, 12); ::close(tf);
+            char tail[12];
+            if (::lseek(tf, st.st_size - 12, SEEK_SET) >= 0 && ::read(tf, tail, 12) != 12) {
+                std::memset(tail, 0, sizeof(tail));   // H-1: 读失败则清空, 避免用未初始化栈数据
+            }
+            ::close(tf);
             if (memcmp(tail, "TUN_NAT_HUB", 11) == 0) {
-                uint32_t crc = *(uint32_t*)(tail + 8);
+                // C-3: 避免 unaligned 访问 UB, 用 memcpy 提取 CRC32
+                uint32_t crc;
+                std::memcpy(&crc, tail + 8, sizeof(crc));
                 std::cout << "[fw] TAIL: CRC32=0x" << std::hex << crc << std::dec << " OK" << std::endl;
             } else { std::cout << "[fw] TAIL: not present" << std::endl; }
         }
@@ -1260,7 +1423,12 @@ static void handleFirmwareUpload(int fd) {
     std::string mtdDev = runningOnB ? "/dev/mtd3" : "/dev/mtd4";
     std::string eraseCmd = "flash_erase -q " + mtdDev + " 0 0 2>/dev/null || mtd_debug erase " + mtdDev + " 0 1048576 2>/dev/null || true";
     std::cout << "[fw] ERASE: " << eraseCmd << std::endl;
-    system(eraseCmd.c_str());
+    // H-2: 检查擦除命令返回值 (命令含 || true 兜底, 但 flash_erase 失败路径需告警,
+    // 未擦除就 dd 写入可能损坏 rootfs)
+    int eraseRc = system(eraseCmd.c_str());
+    if (eraseRc != 0) {
+        std::cout << "[fw] WARN: erase 命令返回 " << eraseRc << " (可能未擦除, dd 写入有风险)" << std::endl;
+    }
 
     std::cout << "[fw] dd " << tmpPath << " -> " << inactiveDev << std::endl;
 	std::string flashCmd = "dd if=" + tmpPath + " of=" + inactiveDev + " bs=4096 2>&1";
@@ -1286,15 +1454,24 @@ static void handleFirmwareUpload(int fd) {
         uint8_t lastSlot = runningOnB ? 0x00 : 0xFF;     // B or A
         uint8_t tgtFlag  = runningOnB ? 0xFF : 0x00;     // A or B
         uint8_t ctl[6] = {tgtFlag, 0x00, 0x03, 0x01, lastSlot, 0x00};
-        ::lseek(slotFd, 0xFC000, SEEK_SET); ::write(slotFd, ctl, 6);
+        // CRIT#7: 检查 lseek/write 返回值, 写失败则报错 (ctl 损坏会启动失败)
+        off_t seekRc = ::lseek(slotFd, 0xFC000, SEEK_SET);
+        ssize_t ctlRc = (seekRc == (off_t)0xFC000) ? ::write(slotFd, ctl, 6) : -1;
         ::close(slotFd); sync();
+        if (ctlRc != 6)
+            std::cerr << "[fw] WARN: OTA ctl 写入失败 (" << ctlRc << "/6)" << std::endl;
         std::cout << "[fw] FLAG: target=" << (tgtFlag ? "A" : "B")
                   << " last=" << (lastSlot ? "A" : "B")
                   << " trial=3 retries" << std::endl;
     }
     int vf2 = ::open("/dev/mtdblock0", O_RDONLY);
     if (vf2 >= 0) {
-        uint8_t ctl[6]; ::lseek(vf2, 0xFC000, SEEK_SET); ::read(vf2, ctl, 6); ::close(vf2);
+        uint8_t ctl[6] = {0};
+        // H-1: read 返回值检查, 失败时 ctl 保持初始化 0
+        if (::lseek(vf2, 0xFC000, SEEK_SET) >= 0 && ::read(vf2, ctl, 6) != 6) {
+            std::memset(ctl, 0, sizeof(ctl));
+        }
+        ::close(vf2);
         std::cout << "[fw] VFY: ctl=" << std::hex << (int)ctl[4] << "|" << (int)ctl[5] << std::dec << std::endl;
     }
     ::unlink(tmpPath.c_str());
@@ -1315,9 +1492,14 @@ int main() {
     std::cout << "[web_server] LAN 网口: " << g_lanIface << std::endl;
 
     // 加载配置 + 应用已有转发规则
-    Config cfg = loadConfig();
-    saveConfig(cfg);  // 自动检测写入
+    bool cfgChanged = false;
+    Config cfg = loadConfig(&cfgChanged);
+    // H-3: 只在配置实际变化时写 SPI, 避免每次启动无条件擦写 NOR flash (磨损寿命)
+    if (cfgChanged) saveConfig(cfg);
     applyAllForwards(cfg);
+    // 启动时 eth0 可能尚未拿到 IP, applyRtspUdpRtpForward 会返回 false;
+    // 主循环每 2s 重试直到应用成功 (修复 V3s 重启后 DNAT 规则永久丢失)
+    bool rtspFwdApplied = applyRtspUdpRtpForward(cfg);
 
     // 创建监听 socket
     int srv = socket(AF_INET, SOCK_STREAM, 0);
@@ -1351,10 +1533,23 @@ int main() {
     };
     const int64_t IDLE_TIMEOUT_MS = 10000;   // 空闲连接 10s 后回收
 
+    // RTSP UDP 转发重试: LAN IP 就绪前每 2s 补一次规则, 直到应用成功
+    const int64_t RTSP_FWD_RETRY_MS = 2000;
+    int64_t lastRtspFwdRetryMs = 0;
+
     std::vector<Conn> conns;
     std::vector<struct pollfd> pfds;
 
     while (true) {
+        // RTSP UDP 转发重试: 启动时 eth0 IP 未就绪导致规则未应用时, 周期补齐直到成功
+        if (!rtspFwdApplied && (now_ms() - lastRtspFwdRetryMs) >= RTSP_FWD_RETRY_MS) {
+            lastRtspFwdRetryMs = now_ms();
+            if (applyRtspUdpRtpForward(cfg)) {
+                rtspFwdApplied = true;
+                std::cout << "[rtsp-udp] RTSP UDP 转发规则已补应用" << std::endl;
+            }
+        }
+
         pfds.clear();
         pfds.push_back({srv, POLLIN, 0});
         for (auto& c : conns) pfds.push_back({c.fd, POLLIN, 0});
@@ -1388,8 +1583,9 @@ int main() {
 
             c.lastActive_ms = now_ms();
 
-            // 首个请求: peek 检测固件上传 (poll 保证有数据才 peek, 不阻塞)
-            if (!c.firstHandled) {
+            // 每个请求都 peek 检测固件上传 (peek 不消费数据, 普通请求无影响)
+            // 修复: 浏览器 fetch 复用连接时 firstHandled 已为 true, 旧逻辑只在首请求拦截导致上传失败
+            {
                 char peek[2048] = {};
                 int peekLen = ::recv(c.fd, peek, sizeof(peek) - 1, MSG_PEEK);
                 if (peekLen > 0) {

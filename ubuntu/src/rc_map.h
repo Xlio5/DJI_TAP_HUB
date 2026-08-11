@@ -22,6 +22,11 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "rc_decode.h"
 
 #define CH_COUNT 16
@@ -68,3 +73,7 @@ void rc_map_default(uint8_t map[CH_COUNT]);
 
 /* 预设 -> map 数组。预设只重排 CH1-4, 其余同默认。 */
 void rc_map_apply_preset(rc_map_preset_t p, uint8_t map[CH_COUNT]);
+
+#ifdef __cplusplus
+}
+#endif

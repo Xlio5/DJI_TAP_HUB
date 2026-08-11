@@ -21,6 +21,8 @@ Thumbs.db
 
 # Binary artifacts
 *.apk
+# 例外: 固件发布备份目录下的 APK 需纳入 git 版本管理
+!backup/release_*/*.apk
 
 # Deployment artifacts
 tun_nat_hub_pkg/
