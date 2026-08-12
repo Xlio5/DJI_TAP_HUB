@@ -42,7 +42,14 @@ object CrsfBridge {
         host = hostAddr
         running.set(true)
         try {
-            socket = DatagramSocket().apply { soTimeout = 1000 }
+            // bind 到 tun0 IP (10.0.0.2), 确保走 VPN 隧道到 V3s (10.0.0.1), 避免走 wlan0
+            socket = try {
+                val tunSock = DatagramSocket(null)
+                tunSock.bind(java.net.InetSocketAddress("10.0.0.2", 0))
+                tunSock
+            } catch (e: Exception) {
+                DatagramSocket()  // 兜底: 系统默认
+            }.apply { soTimeout = 1000 }
             rxThread = Thread {
                 val buf = ByteArray(4 + 62)
                 while (running.get()) {
