@@ -52,18 +52,55 @@ web_server.cpp 需要做以下适配（已固定于源码）：
 
 ## 2. rootfs.squashfs 打包
 
+### ⚠️⚠️ 重要：必须从"已验证的 base rootfs"提取 + 替换，禁止用 buildroot target 直接 mksquashfs
+
+**这是踩过的坑（2026-08-13，v1.6.5 构建）**：
+
+| 错误做法 | 后果 |
+|---------|------|
+| 用 `/home/xlong/v3s/buildroot-2024.02/output/target` 直接 `mksquashfs` | **丢失 setup_v3s.sh 的 172.20.10.3 备用 IP**（target 里是旧版，没同步）。固件烧进去只有 192.168.144.66，172 调试入口没了 |
+
+**正确做法**（用当前最新 base rootfs 提取，保留所有已固化配置，只替换要更新的二进制）：
+
 ```bash
-# 步骤 1: 解包现有 rootfs
-unsquashfs -d /tmp/rootfs_extracted backup/rootfs_v142.squashfs
+# 步骤 0: 选 base —— 用 backup/ 里最新的已验证 rootfs (如 rootfs_v7.squashfs)
+BASE=backup/rootfs_v7.squashfs
+OUT=/home/xlong/build_v165
+rm -rf "$OUT"; mkdir -p "$OUT"
+unsquashfs -q -f -d "$OUT" "$BASE"
 
-# 步骤 2: 替换更新文件
-cp web_server /tmp/rootfs_extracted/usr/local/bin/web_server
-cp ubuntu/scripts/S99tun_nat_hub /tmp/rootfs_extracted/etc/init.d/S99tun_nat_hub
+# 步骤 1: 替换要更新的文件 (只动这些, 其他保留 base 配置)
+cp ubuntu/build_v3s/dji_rc "$OUT/usr/local/bin/dji_rc"        # crsf-bridge 版
+cp ubuntu/build_v3s/web_server "$OUT/usr/local/bin/web_server" # 含新 VERSION
+cp ubuntu/scripts/S99tun_nat_hub "$OUT/etc/init.d/S99tun_nat_hub"
+cp ubuntu/scripts/setup_v3s.sh "$OUT/usr/local/bin/setup_v3s.sh"
 
-# 步骤 3: 打包 (XZ, all-root)
-mksquashfs /tmp/rootfs_extracted backup/rootfs.squashfs \
-    -comp xz -noappend -all-root
+# 步骤 2: 校验关键配置没丢
+grep -n "172\." "$OUT/usr/local/bin/setup_v3s.sh"   # 必须看到 172.20.10.3
+head -1 "$OUT/etc/init.d/S99tun_nat_hub" | xxd       # 必须 #!/bin/sh\n (LF, 无 \r\n)
+
+# 步骤 3: 打包 (XZ + 12B 验证尾)
+mksquashfs "$OUT" /tmp/rootfs_v165.sq -comp xz -b 131072 -noappend
+python3 tmp/_add_rootfs_tail.py /tmp/rootfs_v165.sq backup/rootfs_v165.squashfs
+
+# 步骤 4: 读回校验 (必须做!)
+unsquashfs -q -d /home/xlong/v165_check backup/rootfs_v165.squashfs
+md5sum /home/xlong/v165_check/usr/local/bin/dji_rc       # 应 = 本地 build_v3s/dji_rc
+grep -c "172\." /home/xlong/v165_check/usr/local/bin/setup_v3s.sh  # ≥1
 ```
+
+### ⚠️ S99/脚本必须 LF 换行（busybox sh 不认 CRLF）
+
+S99tun_nat_hub 等脚本**必须是 LF 换行**。CRLF 的 `#!/bin/sh\r\n` 会让 busybox sh 报 `not found`，整个服务链（usb_tund/web_server/dji_rc）都不启动 → 设备无 IP 连不上。
+
+- 项目 `.gitattributes` 已强制 `*.sh text eol=lf`、`*.lua text eol=lf`
+- 构建前确认：`head -1 ubuntu/scripts/S99tun_nat_hub | xxd` 结尾是 `0a` 不是 `0d 0a`
+- 从 Windows 编辑过的文件尤其要检查（git 可能转 CRLF）
+
+### 可复用脚本
+
+- `tmp/_build_v165_v2.sh` — 完整构建流程 (base 提取 → 替换 → 打包 → 读回校验)
+- `tmp/_add_rootfs_tail.py` — 加 12B 验证尾 (TUN_NAT_HUB + CRC32)
 
 ---
 
