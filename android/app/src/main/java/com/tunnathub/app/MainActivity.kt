@@ -259,9 +259,9 @@ private fun LuaParamEmbed() {
             if (activity != null) activity.runOnUiThread { title = it }
             else title = it
         }
-        // mock(模拟器) host 用 NAT 网关; 真机走 V3s LAN IP 192.168.144.66 (经 VPN 隧道, bridge UDP 65532)
-        // 注意: 不用 10.0.0.1 (VPN 对端, Android 内核特殊处理不回显), 用 V3s eth0 IP 走 VPN 转发
-        val v3sHost = if (com.tunnathub.app.crsf.LuaEngine.isEmulator()) "10.0.2.2" else "192.168.144.66"
+        // mock(模拟器) host 用 NAT 网关; 真机走 V3s tun_hub IP 10.0.0.1 (USB隧道→tun_hub→bridge 65532)
+        // 关键: 必须用 10.0.0.1 (tun_hub INPUT 投递正常), 不能用 192.168.144.66 (eth0 INPUT 投递坏, V3s内核bug)
+        val v3sHost = if (com.tunnathub.app.crsf.LuaEngine.isEmulator()) "10.0.2.2" else "10.0.0.1"
         controller.start(v3sHost)
         onDispose {
             controller.onRowsChanged = null
