@@ -317,7 +317,10 @@ class TunNatVpnService : VpnService() {
             .addRoute(lanSubnet, lanPrefix)
             .addRoute(TUN_ROUTE, TUN_PREFIX_ROUTE)
             .setBlocking(true)
-            .allowBypass()
+            // 移除 allowBypass: 它导致 CrsfBridge socket 走 wlan0 绕过 VPN,
+            // 使 CRSF 命令到不了 V3s bridge。移除后所有流量(含 CRSF)走 tun0→USB→V3s。
+            // 视频 RTSP (192.168.144.31) 在 lanSubnet 路由内, 走 tun0→USB→V3s→DNAT→摄像头。
+            //.allowBypass()
 
         return builder.establish()
             ?: throw IllegalStateException("VpnService.Builder.establish() 返回 null")
