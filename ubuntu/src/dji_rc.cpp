@@ -207,12 +207,16 @@ static void getty_stop(void)
 
 static int uart_open_out(const char *dev, int baud, bool even2);   /* forward */
 static void crsf_rx_thread();                                       /* forward */
+static void crsf_bridge_rx_thread();                                /* forward */
+
+// CRSF 桥开关 (crsf-bridge 模式): 前移声明, pb6_auto_switch 需访问
+static bool g_crsf_bridge = false;
 
 // ── PB6 运行中自动切换 (每 2s 检测, 连续 N 次相同才切换, 防抖) ──
 // 主循环调用。接地→debug(启 getty + 关协议), 上拉→协议(杀 getty + 开协议)。
-// 需要访问 main 局部变量 (out_dev/out_mode/out_baud/t3), 由 main 传入。
+// 需要访问 main 局部变量 (out_dev/out_mode/out_baud/t3/t4), 由 main 传入。
 static void pb6_auto_switch(bool grounded, const char *out_dev, char out_mode,
-                            int out_baud, bool &out_pb6_debug, std::thread &t3)
+                            int out_baud, bool &out_pb6_debug, std::thread &t3, std::thread &t4)
 {
     static int same_count = 0;
     static bool last = false;
@@ -256,6 +260,9 @@ static void pb6_auto_switch(bool grounded, const char *out_dev, char out_mode,
             g_crsf_stop.store(false);
             t3 = std::thread(crsf_rx_thread);
         }
+        /* 补启动 bridge 下行线程 (启动时 PB6 接地会跳过, 切协议后需补) */
+        if (g_crsf_bridge && g_out_fd.load() >= 0 && !t4.joinable())
+            t4 = std::thread(crsf_bridge_rx_thread);
         out_pb6_debug = false;
     }
     (void)out_mode;   /* 已改用全局 g_out_mode */
@@ -268,7 +275,7 @@ static constexpr const char *RCMSG_HOST = "10.0.0.2";
 
 // ── CRSF 桥 (crsf-bridge 模式): UART0 CRSF 帧 ↔ 网口 UDP 透明转发 ──
 // App 跑 ELRS Lua 脚本, 经网口 UDP 发 CRSF 参数命令, V3s 转 UART0。
-static bool g_crsf_bridge = false;   // --crsf-bridge 启用
+// g_crsf_bridge 前移声明于文件顶部 (pb6_auto_switch 需访问), 见上
 static constexpr uint32_t CRSFBR_MAGIC = 0x46534352u;   // "RCSF" little-endian = "CRSF"
 static int       crsfbr_port = 65532;                   // 网口 CRSF 桥端口
 static const char *crsfbr_host = "10.0.0.2";
@@ -1309,7 +1316,7 @@ int main(int argc, char **argv)
         if (n - last_pb6 > 2000000LL) {
             last_pb6 = n;
             bool gnd = pb6_grounded();
-            pb6_auto_switch(gnd, out_dev, out_mode, out_baud, g_pb6_debug, t3);
+            pb6_auto_switch(gnd, out_dev, out_mode, out_baud, g_pb6_debug, t3, t4);
         }
 
         // 控制台打印
