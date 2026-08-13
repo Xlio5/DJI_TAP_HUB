@@ -68,6 +68,7 @@ static DjiPort g_p0;       // ttyS2 @115200
 static std::mutex g_mtx;
 static std::atomic<bool> g_stop{false};
 static std::atomic<bool> g_crsf_stop{false};   /* 独立控制 CRSF 回传线程 (t3), 不干扰 t1/t2 */
+static std::atomic<bool> g_bridge_stop{false}; /* 独立控制 bridge 下行线程 (t4), 避免与 t3 的 g_crsf_stop 互相干扰 */
 static int g_debug_fd = -1;
 static int64_t g_last_debug_us = 0;
 
@@ -261,8 +262,10 @@ static void pb6_auto_switch(bool grounded, const char *out_dev, char out_mode,
             t3 = std::thread(crsf_rx_thread);
         }
         /* 补启动 bridge 下行线程 (启动时 PB6 接地会跳过, 切协议后需补) */
-        if (g_crsf_bridge && g_out_fd.load() >= 0 && !t4.joinable())
+        if (g_crsf_bridge && g_out_fd.load() >= 0 && !t4.joinable()) {
+            g_bridge_stop.store(false);
             t4 = std::thread(crsf_bridge_rx_thread);
+        }
         out_pb6_debug = false;
     }
     (void)out_mode;   /* 已改用全局 g_out_mode */
@@ -884,7 +887,7 @@ static void crsf_bridge_rx_thread()
 
     std::printf("[dji_rc] crsf-bridge 监听 UDP %s:%d → UART0\n", crsfbr_host, crsfbr_port);
 
-    while (!g_crsf_stop.load(std::memory_order_relaxed)) {
+    while (!g_bridge_stop.load(std::memory_order_relaxed)) {
         uint8_t pkt[4 + CRSF_FRAME_MAX];
         ssize_t n = ::recvfrom(fd, pkt, sizeof(pkt), 0, NULL, NULL);
         if (n > 0) {
@@ -896,7 +899,7 @@ static void crsf_bridge_rx_thread()
                 }
             }
         } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
-            if (g_crsf_stop.load(std::memory_order_relaxed)) break;
+            if (g_bridge_stop.load(std::memory_order_relaxed)) break;
             ::usleep(20000);
         } else {
             ::usleep(2000);
@@ -1209,8 +1212,10 @@ int main(int argc, char **argv)
     if (g_p0.fd  >= 0) t2 = std::thread(rx_thread, &g_p0);
     if (out_mode == 'c' && g_crsf_telem && g_out_fd.load() >= 0)
         t3 = std::thread(crsf_rx_thread);
-    if (g_crsf_bridge && g_out_fd >= 0)
+    if (g_crsf_bridge && g_out_fd >= 0) {
+        g_bridge_stop.store(false);
         t4 = std::thread(crsf_bridge_rx_thread);   /* bridge 下行: 网口 → UART0 */
+    }
 
     // 主循环: 状态文件写入 + 控制台打印 (SBUS/CRSF 输出走独立事件驱动)
     std::printf("[dji_rc] Ctrl+C 停止\n\n");
@@ -1307,6 +1312,11 @@ int main(int argc, char **argv)
                     g_crsf_stop.store(false);
                     t3 = std::thread(crsf_rx_thread);
                 }
+                /* 补启动 bridge 下行线程 (热重配可能停了它) */
+                if (g_crsf_bridge && g_out_fd.load() >= 0 && !t4.joinable()) {
+                    g_bridge_stop.store(false);
+                    t4 = std::thread(crsf_bridge_rx_thread);
+                }
                 (void)oldCrsf;
             }
         }
@@ -1337,6 +1347,7 @@ int main(int argc, char **argv)
 
     g_stop.store(true);
     g_crsf_stop.store(true);
+    g_bridge_stop.store(true);   /* 停 bridge 下行线程 */
     /* 先关闭 fd 唤醒阻塞的 read, 再 join, 避免死锁 */
     if (g_p20.fd >= 0) { ::close(g_p20.fd); g_p20.fd = -1; }
     if (g_p0.fd  >= 0) { ::close(g_p0.fd);  g_p0.fd  = -1; }
