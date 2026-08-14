@@ -44,9 +44,9 @@ object CrsfBridge {
         try {
             // bind 到 tun0 IP (10.0.0.2), 确保走 VPN 隧道到 V3s (10.0.0.1), 避免走 wlan0
             socket = try {
-                val tunSock = DatagramSocket(null)
-                tunSock.bind(java.net.InetSocketAddress("10.0.0.2", 0))
-                tunSock
+                // IPv4 socket bind 0.0.0.0:65532: V3s 上行回传发 10.0.0.2:65532 (IPv4),
+                // IPv6 映射 socket 在 tun0 上收不到 IPv4 包 → 用 DatagramSocket(PORT) 显式 IPv4
+                DatagramSocket(PORT)
             } catch (e: Exception) {
                 DatagramSocket()  // 兜底: 系统默认
             }.apply { soTimeout = 1000 }

@@ -12,8 +12,8 @@ android {
         applicationId = "com.tunnathub.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 39
-        versionName = "1.6.0"
+        versionCode = 42
+        versionName = "1.6.3"
 
         ndk {
             abiFilters += listOf("arm64-v8a")

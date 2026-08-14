@@ -906,7 +906,18 @@ static void crsf_bridge_rx_thread()
                             n, flen, (long)(n - 4), ofd);
                 std::fflush(stdout);
                 if (flen + 2 == (uint8_t)(n - 4) && ofd >= 0) {
-                    ::write(ofd, pkt + 4, (size_t)(n - 4));
+                    /* 摇杆帧占满 UART0 TX 时 O_NONBLOCK write 会 EAGAIN 丢参数帧,
+                       必须重试直到写入 (参数帧比摇杆帧重要) */
+                    ssize_t w = -1;
+                    for (int r = 0; r < 100 && w < 0; r++) {
+                        w = ::write(ofd, pkt + 4, (size_t)(n - 4));
+                        if (w < 0 && errno == EAGAIN) { ::usleep(500); continue; }
+                        break;
+                    }
+                    if (w < 0) {
+                        std::printf("[dji_rc] bridge fwd write 失败 errno=%d\n", errno);
+                        std::fflush(stdout);
+                    }
                 }
             }
         } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
