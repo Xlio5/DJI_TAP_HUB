@@ -87,7 +87,7 @@ We'll know we're right when **4Mbps RTSP 视频流持续稳定播放 >30 分钟�
 | 3 | 增值功能: RTSP 播放 + 端口转发 + 延迟测试 | 完整无人机操控体验 | **complete** | — |
 | 4 | V3s 平台移植 + PB6 角色切换 | 物料成本降 10-20x，固件 v1.6.8 量产可用 | **complete** | — |
 | 5 | OTA A/B 在线升级 | 浏览器一键升级 + 失败自动回退 | **complete** | — |
-| 6 | CRSF-Lua 桥接: 真机 ELRS 参数配置 | DJI RC 上直接配置 ELRS 高频头参数 | **in-progress** | → /plan .claude/prds/tun-nat-hub-core.prd.md |
+| 6 | CRSF-Lua 桥接: 真机 ELRS 参数配置 | DJI RC 上直接配置 ELRS 高频头参数（链路打通 + 参数界面渲染） | **in-progress**（链路/渲染 ✅，编辑交互/稳定性 ⚠️） | → /plan .claude/prds/tun-nat-hub-core.prd.md |
 | 7 | 固件固化 + 清理 | 验证过的 bridge 逻辑固化进固件，删除测试残留 | pending | — |
 
 ## Open Questions
