@@ -76,7 +76,7 @@ static int64_t g_last_debug_us = 0;
 // C1: g_out_fd 被多线程 (rx_thread/t3/主线程) 无锁访问, 用 atomic 避免 fd 值撕裂
 static std::atomic<int> g_out_fd{-1};
 static std::atomic<char> g_out_mode{'s'}; // 's' = SBUS, 'c' = CRSF
-static std::atomic<int>  g_out_baud{100000}; // 实际波特率 (SBUS标准=100000, SBUS非标=115200, CRSF=420000)
+static std::atomic<int>  g_out_baud{100000}; // 实际波特率 (SBUS标准=100000, SBUS非标=115200, CRSF=400000)
 static std::mutex g_out_write_mtx;        // CO-4: 保护对 g_out_fd 的写 (out_send + crsf_rx_thread 并发)
 static bool g_sbus_std = true;          // SBUS 标准模式: true=100k 8E2, false=115200 8N1
 static bool g_crsf_telem = true;        // CRSF 是否接收回传
@@ -1064,7 +1064,7 @@ static bool load_rc_output_cfg(char &mode, int &baud, bool &sbus_std)
     auto baudS = cfg_json_str(obj, "baud");
     /* 标准 SBUS: 100k 8E2; 非标准: 115200 8N1; CRSF: 420k 8N1 */
     if (baudS == "auto" || baudS.empty()) {
-        if (mode == 'c') baud = 420000;
+        if (mode == 'c') baud = 400000;   /* ELRS CRSF: 400k (autobaud 列表有, 420k 不在) */
         else if (sbus_std) baud = 100000;
         else baud = 115200;
     } else { int b = std::atoi(baudS.c_str()); if (b >= 9600 && b <= 4000000) baud = b; }
@@ -1153,7 +1153,7 @@ int main(int argc, char **argv)
                     out_mode, out_baud, g_sbus_std ? 1 : 0);
     }
     g_out_mode.store(out_mode);   // C1: atomic store
-    if (out_baud == 0) out_baud = (out_mode == 'c') ? 420000 : (g_sbus_std ? 100000 : 115200);
+    if (out_baud == 0) out_baud = (out_mode == 'c') ? 400000 : (g_sbus_std ? 100000 : 115200);
     g_out_baud.store(out_baud);   /* 先修复零值再赋值 */  // C1: atomic store
     g_crsf_telem = crsf_telem;
 
@@ -1162,7 +1162,7 @@ int main(int argc, char **argv)
         out_mode = 'c';
         g_out_mode = 'c';
         g_crsf_telem = true;
-        if (out_baud == 0) out_baud = 420000;
+        if (out_baud == 0) out_baud = 400000;
         g_out_baud = out_baud;
         std::printf("[dji_rc] crsf-bridge 模式: UART0 CRSF %d baud, 参数帧转发网口\n", out_baud);
     }

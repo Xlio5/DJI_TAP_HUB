@@ -54,7 +54,7 @@ case "$1" in
     # 上拉=协议输出。S99 不再单独读 PB6, 避免浮空误判。
     if [ -c /dev/ttyS1 ] || [ -c /dev/ttyS2 ]; then
         # crsf-bridge 模式: UART0 CRSF 参数帧 ↔ 网口 UDP 65532 (App Lua 引擎)
-        /usr/local/bin/dji_rc --interval 20 --out-dev /dev/ttyS0 --out-baud auto --crsf-telem 1 --rcmsg-host 10.0.0.2 --rcmsg-port 65530 --crsf-bridge --crsfbr-host 10.0.0.2 --crsfbr-port 65532 > /var/log/dji_rc.log 2>&1 &
+        /usr/local/bin/dji_rc --interval 20 --out-dev /dev/ttyS0 --out-baud 400000 --crsf-telem 1 --rcmsg-host 10.0.0.2 --rcmsg-port 65530 --crsf-bridge --crsfbr-host 10.0.0.2 --crsfbr-port 65532 > /var/log/dji_rc.log 2>&1 &
         _ts "dji_rc: started (crsf-bridge)"
     fi
 
