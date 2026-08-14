@@ -10,12 +10,15 @@ echo "=== 1. 提取 base rootfs_v169 ==="
 rm -rf "$OUT"; sleep 1; mkdir -p "$OUT"
 unsquashfs -q -f -d "$OUT" "$BASE" 2>&1 | tail -1
 
-echo "=== 2. 替换二进制 ==="
+echo "=== 2. 替换二进制 + 启动脚本 ==="
 cp "$PROJ/ubuntu/build_v3s/dji_rc" "$OUT/usr/local/bin/dji_rc"
 cp "$PROJ/ubuntu/build_v3s/web_server" "$OUT/usr/local/bin/web_server"
-chmod +x "$OUT/usr/local/bin/dji_rc" "$OUT/usr/local/bin/web_server"
+cp "$PROJ/ubuntu/scripts/S99tun_nat_hub" "$OUT/etc/init.d/S99tun_nat_hub"
+cp "$PROJ/ubuntu/scripts/setup_v3s.sh" "$OUT/usr/local/bin/setup_v3s.sh"
+chmod +x "$OUT/usr/local/bin/dji_rc" "$OUT/usr/local/bin/web_server" "$OUT/etc/init.d/S99tun_nat_hub" "$OUT/usr/local/bin/setup_v3s.sh"
 echo "dji_rc: $(md5sum "$OUT/usr/local/bin/dji_rc" | awk '{print $1}')"
 echo "web_server: $(strings "$OUT/usr/local/bin/web_server" | grep -o '1.6.11' | head -1)"
+echo "S99 baud: $(grep -o 'out-baud [0-9]*' "$OUT/etc/init.d/S99tun_nat_hub")"
 
 echo "=== 3. 校验关键配置 ==="
 echo "172 IP: $(grep -c '172\.' "$OUT/usr/local/bin/setup_v3s.sh" 2>/dev/null || echo 0)"
