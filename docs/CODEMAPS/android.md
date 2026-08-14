@@ -98,7 +98,7 @@ GET  /api/config          → 获取配置
 **关键参数**:
 ```
 TUN IP:    10.0.0.2/24
-路由:      192.168.88.0/24 (LAN 设备)
+路由:      192.168.144.0/24 (LAN 设备)
            10.0.0.0/24     (隧道内网)
 MTU:       1400
 DNS:       8.8.8.8 (占位，不用于隧道)
@@ -196,7 +196,7 @@ class BufferPool(size: Int, bufferSize: Int)
 ## 数据流
 
 ```
-RTSP 摄像头 (192.168.88.100:554)
+RTSP 摄像头 (192.168.144.100:554)
     ↓ RTSP/TCP
 Linux 板 eth0
     ↓ NAT MASQUERADE

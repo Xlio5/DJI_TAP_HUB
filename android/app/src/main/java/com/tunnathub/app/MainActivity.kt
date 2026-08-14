@@ -380,7 +380,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var fwdMsg by remember { mutableStateOf("") }
 
     // ── LAN 网段 ──
-    val savedLanSubnet = prefs.getString("lan_subnet", "192.168.88.0") ?: "192.168.88.0"
+    val savedLanSubnet = prefs.getString("lan_subnet", "192.168.144.0") ?: "192.168.144.0"
     val savedLanPrefix = prefs.getInt("lan_prefix", 24)
     var needVpnReconnect by remember { mutableStateOf(false) }
 
@@ -665,7 +665,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     fun autoSyncSubnet(url: String) {
         val ipMatch = Regex("rtsp://(\\d+\\.\\d+\\.\\d+)\\.\\d+").find(url) ?: return
         val ns = "${ipMatch.groupValues[1]}.0"
-        if (ns != (prefs.getString("lan_subnet", "192.168.88.0") ?: "192.168.88.0")) {
+        if (ns != (prefs.getString("lan_subnet", "192.168.144.0") ?: "192.168.144.0")) {
             prefs.edit().putString("lan_subnet", ns).putInt("lan_prefix", 24).apply()
             needVpnReconnect = true
             AppLog.w("TunNatHub", "网段自动同步 → $ns")
@@ -1384,7 +1384,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                         if (prefix == null || prefix < 8 || prefix > 30) { lanPrefixStr = savedLanPrefix.toString(); return@Button }
                                         prefs.edit().putString("lan_subnet", lanSubnet).putInt("lan_prefix", prefix).apply(); advSaved = true
                                     }, modifier = Modifier.height(30.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))) { Text("保存", fontSize = 11.sp) }
-                                    Button(onClick = { lanSubnet = "192.168.88.0"; lanPrefixStr = "24"; prefs.edit().putString("lan_subnet", "192.168.88.0").putInt("lan_prefix", 24).apply(); advSaved = true },
+                                    Button(onClick = { lanSubnet = "192.168.144.0"; lanPrefixStr = "24"; prefs.edit().putString("lan_subnet", "192.168.144.0").putInt("lan_prefix", 24).apply(); advSaved = true },
                                         modifier = Modifier.height(30.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))) { Text("默认", fontSize = 10.sp) }
                                 }
                                 if (advSaved) Text("已保存, 重连 VPN 生效", fontSize = 9.sp, color = Color(0xFF22C55E), modifier = Modifier.padding(top = 4.dp))

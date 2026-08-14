@@ -197,11 +197,11 @@ make -j$(nproc)
 
 ```bash
 # SSH 推文件
-scp my_service xlong@192.168.88.66:/tmp/
-ssh xlong@192.168.88.66 "sudo mv /tmp/my_service /usr/local/bin/ && sudo systemctl restart my_service"
+scp my_service xlong@192.168.144.66:/tmp/
+ssh xlong@192.168.144.66 "sudo mv /tmp/my_service /usr/local/bin/ && sudo systemctl restart my_service"
 
 # 远程看日志
-ssh xlong@192.168.88.66 "journalctl -u my_service -f"
+ssh xlong@192.168.144.66 "journalctl -u my_service -f"
 ```
 
 ## 注意

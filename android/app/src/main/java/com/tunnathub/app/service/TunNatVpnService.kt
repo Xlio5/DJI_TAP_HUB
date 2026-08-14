@@ -3,13 +3,13 @@
  *
  * 核心职责:
  *   1. 创建 TUN 接口（VpnService.Builder.establish()）
- *   2. 配置路由：仅捕获局域网流量（192.168.88.0/24）
+ *   2. 配置路由：仅捕获局域网流量（192.168.144.0/24）
  *   3. 启动 USB Bridge 双协程转发
  *   4. 前台服务保活
  *
  * TUN 参数:
  *   Android IP: 10.0.0.2/24
- *   Route:      192.168.88.0/24
+ *   Route:      192.168.144.0/24
  *   MTU:        1400
  */
 
@@ -180,7 +180,7 @@ class TunNatVpnService : VpnService() {
         private const val PREFS_NAME = "tun_nat_hub"
         private const val KEY_LAN_SUBNET = "lan_subnet"
         private const val KEY_LAN_PREFIX = "lan_prefix"
-        private const val DEFAULT_LAN_SUBNET = "192.168.88.0"
+        private const val DEFAULT_LAN_SUBNET = "192.168.144.0"
         private const val DEFAULT_LAN_PREFIX = 24
     }
 

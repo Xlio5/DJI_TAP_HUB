@@ -265,7 +265,7 @@ http://10.0.0.1:8080/
 **REST API**:
 ```
 GET  /api/heartbeat        → {"usb":"connected","uptime":1234,"version":"1.1.0"}
-GET  /api/config           → {"tun_ip":"10.0.0.1","lan_network":"192.168.88.0/24",...}
+GET  /api/config           → {"tun_ip":"10.0.0.1","lan_network":"192.168.144.0/24",...}
 GET  /api/stats            → {"tx_bytes":123456,"rx_bytes":654321,"tx_mbps":4.2,...}
 GET  /api/system           → {"hostname":"...","uptime":...,"memory":...}
 GET  /api/network          → {"interfaces":[...],"iptables_rules":[...]}
@@ -301,7 +301,7 @@ TUN fd write()
     ↓ /dev/net/tun
 Linux 内核 IP 栈
     ↓ 路由 + MASQUERADE
-eth0 → LAN 设备 (192.168.88.x)
+eth0 → LAN 设备 (192.168.144.x)
 ```
 
 **反向路径**:
