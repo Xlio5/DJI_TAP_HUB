@@ -1,45 +1,61 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""COM10(ELRS) ↔ COM30(V3s UART0) 双向透明桥 + 监测
-   链路: ELRS(COM10) ⇄ 电脑桥 ⇄ COM30 ⇄ V3s UART0 ⇄ V3s bridge(UDP65532) ⇄ 安卓App
-   CRSF 波特率 420000"""
-import serial, time, threading, sys
-
-COM10 = "COM10"   # ELRS 设备
-COM30 = "COM30"   # V3s UART0
-BAUD = 115200
-
-s10 = serial.Serial(COM10, BAUD, timeout=0.2)
-# 关键: ELRS 模块 (CP210x) 在 DTR/RTS assert 时 MCU 复位不响应, 必须 drop
-s10.dtr = False
-s10.rts = False
-print(f"{COM10} (ELRS) 打开 @{BAUD} dtr/rts=False")
-s30 = serial.Serial(COM30, BAUD, timeout=0.2)
-s30.dtr = False
-s30.rts = False
-print(f"{COM30} (V3s UART0) 打开 @{BAUD}")
+"""COM5(V3s) ↔ COM37(高频头) 双向透明桥 + 帧监测, 波特率 400000
+   链路: V3s(COM5) ⇄ 电脑桥 ⇄ COM37(高频头 ELRS)
+   关键: 两侧 drop DTR/RTS (CP210x/CH340 在 DTR/RTS assert 时可能复位 MCU)
+   用法: python _com_bridge.py [--a COM5 --b COM37 --baud 400000]"""
+import argparse
+import serial
+import threading
+import time
 
 stop = threading.Event()
+
 
 def bridge(src, dst, name, other):
     while not stop.is_set():
         n = src.in_waiting
         if n:
             data = src.read(n)
-            print(f"[{name}→{other}] {len(data)}B: {data[:40].hex()}", flush=True)
+            print(f"[{name}→{other}] {len(data)}B: {data[:48].hex()}", flush=True)
             dst.write(data)
         else:
             time.sleep(0.01)
 
-print("启动双向桥 (Ctrl+C 停止)...")
-t1 = threading.Thread(target=bridge, args=(s10, s30, "ELRS", "V3s"), daemon=True)
-t2 = threading.Thread(target=bridge, args=(s30, s10, "V3s", "ELRS"), daemon=True)
-t1.start(); t2.start()
 
-try:
-    while True:
-        time.sleep(0.5)
-except KeyboardInterrupt:
-    print("\n停止")
-finally:
-    stop.set()
-    s10.close(); s30.close()
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--a", default="COM5", help="A 端口 (V3s UART0)")
+    ap.add_argument("--b", default="COM37", help="B 端口 (高频头 ELRS)")
+    ap.add_argument("--baud", type=int, default=400000, help="波特率")
+    args = ap.parse_args()
+
+    sa = serial.Serial(args.a, args.baud, timeout=0.2)
+    sa.dtr = False
+    sa.rts = False
+    print(f"{args.a} (V3s) @{args.baud} dtr/rts=False", flush=True)
+
+    sb = serial.Serial(args.b, args.baud, timeout=0.2)
+    sb.dtr = False
+    sb.rts = False
+    print(f"{args.b} (高频头) @{args.baud} dtr/rts=False", flush=True)
+
+    t1 = threading.Thread(target=bridge, args=(sa, sb, "V3s", "ELRS"), daemon=True)
+    t2 = threading.Thread(target=bridge, args=(sb, sa, "ELRS", "V3s"), daemon=True)
+    t1.start()
+    t2.start()
+    print("启动双向桥 (Ctrl+C 停止)...", flush=True)
+
+    try:
+        while True:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\n停止", flush=True)
+    finally:
+        stop.set()
+        sa.close()
+        sb.close()
+
+
+if __name__ == "__main__":
+    main()

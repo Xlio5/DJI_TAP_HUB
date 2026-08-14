@@ -30,13 +30,15 @@ int main(int argc, char *argv[]) {
     unsigned char f[6] = {0xEE, 0x04, 0x28, 0x00, 0xEA, 0x00};
     f[5] = crc8(f + 2, 3);
     unsigned char pkt[4 + sizeof(f)];
-    memcpy(pkt, "\x52\x53\x43\x46", 4);  /* 网口 magic 0x46534352 LE, 与 App/固件一致 */
+    uint32_t m = 0x46534352u;            /* "RCSF" LE(52 43 53 46), 与固件 CRSFBR_MAGIC 一致 */
+    memcpy(pkt, &m, 4);
     memcpy(pkt + 4, f, sizeof(f));
     printf("frame: ");
     for (int i = 0; i < 6; i++) printf("%02x ", f[i]);
     printf("\n");
     for (int i = 0; i < 5; i++) {
-        sendto(fd, pkt, sizeof(pkt), 0, (struct sockaddr *)&a, sizeof(a));
+        int r = sendto(fd, pkt, sizeof(pkt), 0, (struct sockaddr *)&a, sizeof(a));
+        if (r < 0) perror("sendto");
         usleep(300000);
     }
     close(fd);
