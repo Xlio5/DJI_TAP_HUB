@@ -123,7 +123,7 @@ App(接收机页, elrsV3.lua) → VPN(tun0) → USB → V3s bridge → UART0(115
 - 渲染参数: Packet Rate=100Hz(-117dBm), Telem Ratio=1:8, Switch Mode=Hybrid 等（6 行/页）
 - Parameter_Read/Write 到 ELRS 正常
 
-### 修复清单（5 个根因）
+### 修复清单（7 个根因，2026-08-15 补充）
 | # | 修复 | 文件 |
 |---|---|---|
 | 1 | crsf_rx_byte CRC 校验起点 addr→type | ubuntu/src/crsf.c |
@@ -131,17 +131,23 @@ App(接收机页, elrsV3.lua) → VPN(tun0) → USB → V3s bridge → UART0(115
 | 3 | CrsfBridge 收发分离 + bind 65532 + openProtectedPort | CrsfBridge.kt |
 | 4 | bindProcessToVpnNetwork（发包走 tun0） | CrsfBridge.kt |
 | 5 | buildCrsfFrame CRC 范围 len→len+1 | LuaEngine.kt |
+| 6 | **dji_rc crsf_rx_thread 启动条件 + 跳过摇杆输出**（bridge 模式上行转发 + 不干扰 ELRS backchannel）| dji_rc.cpp |
+| 7 | **App 发包走 tun0 路由修复**：bindSocketToVpn + UDP connect（bindProcessToNetwork 不彻底，uid 规则覆盖）| CrsfBridge.kt + TunNatVpnService.kt |
 
-### UI 改进（App 1.6.11）
+### UI 改进（App 1.6.11+）
 - 右侧操作按钮列（▲▼确认返回）
 - 选中行 ▶ 箭头 + selectedLine 跟踪
 - 编辑模式 BLINK 闪烁提醒
 
-### ⚠️ 遗留问题
-1. **Device_Info(36B) 偶发不到 App**（App 稳定收 ELRS_STATUS 19B, Device_Info 偶发丢）→ App 偶发不识别
-2. **参数渲染偶发 0 行**（依赖 Device_Info 识别 + Settings_Entry）
-3. **固件未固化**：V3s 跑 /tmp 的 dji_rc（调试版），未刷入固件
-4. **调试日志**：dji_rc.cpp crsf_rx 日志已移除；App 保留 rx 日志
+### ✅ 已解决（2026-08-15）
+1. ~~Device_Info 偶发丢~~ → 根因: crsf_rx_thread 未启动 + 摇杆干扰, 已修复
+2. ~~参数渲染偶发 0 行~~ → 随 #1 解决
+3. ~~App 发包走 wlan0~~ → bindSocketToVpn + connect 修复
+4. **400k 波特率**：V3s DLF 精确输出 401070(+0.27%), ELRS 兼容（见 docs/CRSF_400K_BAUD_NOTES.md）
+
+### ⚠️ 遗留
+1. **电脑桥中转 400k 乱码**：电脑桥 @400000 读 V3s 401070 偏差 0.27% 乱码；V3s 直连 ELRS 时 400k 正常（需改接线验证）
+2. **固件已固化 v1.6.12**（400k 默认），但 115200 验证通过（当前跑 115200）
 
 ---
 
