@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 project(gstqgcplayer C CXX)
 
-# GStreamer Android SDK 路径 (已解压到项目内)
-set(GSTREAMER_ROOT ${CMAKE_SOURCE_DIR}/../gstreamer_libs)
+# GStreamer Android SDK 路径 (最小编译集, 已随 git 提交; 全量 2GB 见 gstreamer_libs/, .gitignore 排除)
+set(GSTREAMER_ROOT ${CMAKE_SOURCE_DIR}/../gstreamer_libs_min)
 if(NOT EXISTS "${GSTREAMER_ROOT}/arm64")
     message(FATAL_ERROR "GStreamer SDK not found at ${GSTREAMER_ROOT}/arm64. Download and extract first.")
 endif()
