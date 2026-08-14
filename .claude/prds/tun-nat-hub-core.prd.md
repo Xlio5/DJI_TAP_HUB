@@ -90,6 +90,43 @@ We'll know we're right when **4Mbps RTSP 视频流持续稳定播放 >30 分钟�
 | 6 | CRSF-Lua 桥接: 真机 ELRS 参数配置 | DJI RC 上直接配置 ELRS 高频头参数（链路打通 + 参数界面渲染） | **in-progress**（链路/渲染 ✅，编辑交互/稳定性 ⚠️） | → /plan .claude/prds/tun-nat-hub-core.prd.md |
 | 7 | 固件固化 + 清理 | 验证过的 bridge 逻辑固化进固件，删除测试残留 | pending | — |
 
+## 当前进度追踪（CRSF-Lua 里程碑 6）
+
+> 更新时间: 2026-08-14 | 详细交接见 [docs/SESSION_HANDOFF_CRSF_LUA.md](docs/SESSION_HANDOFF_CRSF_LUA.md)
+
+### ✅ 已完成
+- **链路全通**：App(elrsV3.lua) → VPN(tun0) → USB → V3s bridge → UART0(115200) → 桥 → ELRS → Device_Info/Settings_Entry 回传 → App → Lua 渲染参数
+- **真机渲染验证**：DJI RC 上显示 "T-14 900 TX" + Packet Rate/Telem Ratio/Switch Mode
+- **5 个根因修复**：
+  1. 固件 crsf_rx_byte CRC 校验起点 addr→type（ELRS 帧格式）
+  2. 固件 bridge fwd 写入重试（摇杆占 TX）
+  3. App CrsfBridge 收发分离 + bind 65532 + openProtectedPort
+  4. App bindProcessToVpnNetwork（发包走 tun0）
+  5. App buildCrsfFrame CRC 范围 len→len+1
+- **UI 改进**：右侧操作按钮列 + 选中箭头 + 编辑 BLINK 闪烁
+- **版本**：固件 1.6.10（待固化）、App 1.6.11
+
+### ⚠️ 卡点
+1. **Device_Info(36B) 偶发不到 App** → App 偶发不识别设备（稳定收 ELRS_STATUS 19B，Device_Info 偶发丢）
+2. **参数渲染偶发 0 行**（依赖 Device_Info 识别 + Settings_Entry 持续交互）
+3. **固件未固化**（V3s 跑 /tmp 调试版 dji_rc）
+
+### 🔧 调试方法
+完整调试方式（桥监测/帧对比/V3s 状态/常用命令）见 [docs/SESSION_HANDOFF_CRSF_LUA.md §8](docs/SESSION_HANDOFF_CRSF_LUA.md)
+
+### 📚 文档索引（CRSF-Lua / 项目）
+| 文档 | 内容 |
+|---|---|
+| [docs/SESSION_HANDOFF_CRSF_LUA.md](docs/SESSION_HANDOFF_CRSF_LUA.md) | **CRSF-Lua 交接 + 进度 + 调试方法**（新会话从这里开始） |
+| [docs/CRSF_LUA_PROGRESS_20260814.md](docs/CRSF_LUA_PROGRESS_20260814.md) | 调试进度记录 |
+| [docs/crsf_lua_bridge_plan.md](docs/crsf_lua_bridge_plan.md) | 桥接架构 + App Lua 引擎计划 |
+| [docs/crsf_ondevice_debug_notes.md](docs/crsf_ondevice_debug_notes.md) | 真机调试规范（VPN/USB 权限步骤） |
+| [docs/BUILD.md](docs/BUILD.md) | V3s 固件构建（base rootfs 提取） |
+| [docs/ANDROID_BUILD_REQUIREMENTS.md](docs/ANDROID_BUILD_REQUIREMENTS.md) | Android 编译环境（GStreamer min 集已入库） |
+| [docs/CODEMAPS/android.md](docs/CODEMAPS/android.md) · [ubuntu.md](docs/CODEMAPS/ubuntu.md) | 代码地图 |
+| [docs/PLATFORM.md](docs/PLATFORM.md) · [RELEASE.md](docs/RELEASE.md) · [USAGE.md](docs/USAGE.md) | 平台/发布/使用 |
+| [docs/architecture.md](docs/architecture.md) | 整体架构 |
+
 ## Open Questions
 
 - [ ] **ELRS Lua 真机验证（M4 阻塞项）**：App 发包走 wlan0 不到 V3s 的路由问题是否已解决？还是需 App 侧修复（-uid 规则覆盖 tun0）？
