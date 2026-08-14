@@ -257,7 +257,8 @@ static void pb6_auto_switch(bool grounded, const char *out_dev, char out_mode,
             bool even2 = (g_out_mode.load() == 's') && g_sbus_std;   /* 用全局, 避免参数过期 */
             g_out_fd.store(uart_open_out(out_dev, g_out_baud.load(), even2));   // 复审: 用 atomic g_out_baud, 避免过时参数
         }
-        if (g_out_mode.load() == 'c' && g_crsf_telem && g_out_fd.load() >= 0 && !t3.joinable()) {
+        /* 补启动上行 crsf_rx_thread: CRSF 遥测 或 bridge 模式都需要 (bridge 双向转发 ELRS 响应) */
+        if ((g_out_mode.load() == 'c' && g_crsf_telem || g_crsf_bridge) && g_out_fd.load() >= 0 && !t3.joinable()) {
             g_crsf_stop.store(false);
             t3 = std::thread(crsf_rx_thread);
         }
@@ -786,7 +787,9 @@ static void sbus_send_if_p20(DjiPort *p)
     rc_state_t m;
     rc_merge(&s20, age20, &s0, age0, 500000LL, &m);
 
-    if (m.type != RC_NONE) out_send(m);   // write() outside mutex
+    /* bridge 模式: UART0 专用于 CRSF-Lua 双向桥 (摇杆 CRSF 输出会干扰 ELRS Lua backchannel),
+       跳过摇杆输出 — ELRS 模块需要空闲才能响应 Lua 命令 */
+    if (m.type != RC_NONE && !g_crsf_bridge) out_send(m);   // write() outside mutex
 }
 
 // ── CRSF 回传接收线程: 读 UART0 上行帧 (GPS/BATT/ATT/VARIO/LINK) ──
@@ -1232,8 +1235,11 @@ int main(int argc, char **argv)
     crsf_params_init();   /* 初始化 CRSF 参数表 (Device_Ping 响应用) */
     if (g_p20.fd >= 0) t1 = std::thread(rx_thread, &g_p20);
     if (g_p0.fd  >= 0) t2 = std::thread(rx_thread, &g_p0);
-    if (out_mode == 'c' && g_crsf_telem && g_out_fd.load() >= 0)
-        t3 = std::thread(crsf_rx_thread);
+    /* 上行 crsf_rx_thread: CRSF 遥测回传 或 bridge 模式都需要 (bridge 双向转发 ELRS 响应) */
+    if ((out_mode == 'c' && g_crsf_telem) || g_crsf_bridge) {
+        if (g_out_fd.load() >= 0)
+            t3 = std::thread(crsf_rx_thread);
+    }
     if (g_crsf_bridge && g_out_fd >= 0) {
         g_bridge_stop.store(false);
         t4 = std::thread(crsf_bridge_rx_thread);   /* bridge 下行: 网口 → UART0 */

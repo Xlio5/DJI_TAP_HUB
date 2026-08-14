@@ -76,16 +76,16 @@ object CrsfBridge {
                     val pkt = DatagramPacket(buf, buf.size)
                     recvSocket?.receive(pkt)
                     timeouts = 0
-                    val hex = pkt.data.copyOfRange(0, pkt.length).take(10).joinToString(" ") { "%02x".format(it) }
-                    Log.i(TAG, "rx ${pkt.length}B from ${pkt.address?.hostAddress}:${pkt.port} [${hex}]")
-                    if (pkt.length >= 5 && pkt.length <= 4 + 62) {
-                        val data = pkt.data.copyOfRange(0, pkt.length)
-                        val magic = (data[0].toInt() and 0xFF) or
-                            ((data[1].toInt() and 0xFF) shl 8) or
-                            ((data[2].toInt() and 0xFF) shl 16) or
-                            ((data[3].toInt() and 0xFF) shl 24)
-                        if (magic == MAGIC) {
-                            onFrame?.invoke(data.copyOfRange(4, data.size))
+                    dispatch(pkt)
+                    // 连续消费: ELRS 响应 ping 时连续发 Device_Info+ELRS_STATUS 多帧,
+                    // 内核可能把多个 UDP 包同时排入队列。收到一个后立即非阻塞再收, 避免帧对漏收。
+                    while (running.get()) {
+                        try {
+                            val p2 = DatagramPacket(buf, buf.size)
+                            recvSocket?.receive(p2)
+                            dispatch(p2)
+                        } catch (e: java.net.SocketTimeoutException) {
+                            break  // 无更多包, 回到阻塞等待
                         }
                     }
                 } catch (e: java.net.SocketTimeoutException) {
@@ -98,6 +98,22 @@ object CrsfBridge {
             }
         }.apply { isDaemon = true; start() }
         Log.i(TAG, "started @ $host:$PORT")
+    }
+
+    /** 处理一个收到的 UDP 包: 校验 magic + 剥离前缀 → onFrame */
+    private fun dispatch(pkt: DatagramPacket) {
+        val hex = pkt.data.copyOfRange(0, pkt.length).take(10).joinToString(" ") { "%02x".format(it) }
+        Log.i(TAG, "rx ${pkt.length}B from ${pkt.address?.hostAddress}:${pkt.port} [${hex}]")
+        if (pkt.length >= 5 && pkt.length <= 4 + 62) {
+            val data = pkt.data.copyOfRange(0, pkt.length)
+            val magic = (data[0].toInt() and 0xFF) or
+                ((data[1].toInt() and 0xFF) shl 8) or
+                ((data[2].toInt() and 0xFF) shl 16) or
+                ((data[3].toInt() and 0xFF) shl 24)
+            if (magic == MAGIC) {
+                onFrame?.invoke(data.copyOfRange(4, data.size))
+            }
+        }
     }
 
     /** 发送 CRSF 帧到 V3s (App → UART0), 后台线程执行 */
@@ -131,6 +147,9 @@ object CrsfBridge {
         running.set(false)
         sendSocket?.close()
         sendSocket = null
+        // 主动释放 protectedPort, 确保下次 start() 重建收包 socket
+        // (否则复用失效 socket → inode 残留孤儿, receive 静默丢帧, Device_Info 偶发丢)
+        if (recvSocket != null) TunNatVpnService.releasePort(PORT)
         recvSocket?.close()
         recvSocket = null
         rxThread?.join(2000)
