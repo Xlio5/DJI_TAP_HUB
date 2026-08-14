@@ -79,6 +79,27 @@ class TunNatVpnService : VpnService() {
             return VpnNetworkBinder.bindProcessToVpn(ctx)
         }
 
+        /** 把 UDP socket 显式绑定到 VPN network (走 tun0, 避免 uid 规则覆盖走 wlan0)
+         *  CrsfBridge.sendSocket 调用, 确保发包到 10.0.0.1 走隧道 */
+        @JvmStatic
+        fun bindSocketToVpn(socket: java.net.DatagramSocket): Boolean {
+            val inst = instance ?: return false
+            val ctx = inst.applicationContext
+            val cm = ctx.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            val vpnNet = cm.allNetworks.firstOrNull { net ->
+                cm.getNetworkCapabilities(net)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
+            } ?: return false
+            return try {
+                // Network.bindSocket() API 23+, 比 bindSocketToNetwork(API30) 兼容更广 (minSdk=26)
+                vpnNet.bindSocket(socket)
+                AppLog.i(TAG, "bindSocketToVpn vpn=$vpnNet ok=true")
+                true
+            } catch (e: Exception) {
+                AppLog.w(TAG, "bindSocketToVpn err: $e")
+                false
+            }
+        }
+
         @JvmStatic
         fun clearProcessNetworkBinding() {
             val ctx = instance?.applicationContext ?: return

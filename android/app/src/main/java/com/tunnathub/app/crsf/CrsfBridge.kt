@@ -52,7 +52,9 @@ object CrsfBridge {
         // 进程绑定 VPN 网络: 发包到 10.0.0.1 必须走 tun0, 否则 Android 默认走 wlan0 到不了 V3s
         // (参考 UdpRtspPlayer bindProcessToVpnNetwork; rcmsg 收包用 openProtectedPort 同理需 VPN 上下文)
         TunNatVpnService.bindProcessToVpnNetwork()
-        // 发包 socket: bind tun0 IP (10.0.0.2) 走 VPN 隧道到 V3s, 不 protect (否则走 wlan0)
+        // 发包 socket: bind tun0 IP (10.0.0.2) + 显式绑定到 VPN network
+        // (bindSocketToNetwork 比 bindProcessToNetwork 可靠: 进程路由可能被 uid 规则(走 wlan0)覆盖,
+        //  socket 级绑定强制走 tun0, V3s OTA 重启后隧道重建也不丢)
         sendSocket = try {
             DatagramSocket(null).apply {
                 bind(InetSocketAddress("10.0.0.2", 0))
@@ -60,6 +62,8 @@ object CrsfBridge {
         } catch (e: Exception) {
             DatagramSocket()
         }
+        // sendSocket 显式绑定 VPN network (走 tun0), 避免 uid 规则覆盖走 wlan0
+        sendSocket?.let { TunNatVpnService.bindSocketToVpn(it) }
         // 收包 socket: 必须 openProtectedPort 保护, 内核才投递 TUN 入站 65532 包
         // (参考 MainActivity rcmsg 收包方式; 之前普通 socket 收不到 V3s 上行)
         recvSocket = TunNatVpnService.openProtectedPort(PORT) ?: run {
@@ -132,6 +136,12 @@ object CrsfBridge {
             val addr = InetAddress.getByName(hostAddr)
             sendExecutor.execute {
                 try {
+                    // connect 后 send: UDP connect 的 socket 才严格走 bindSocketToVpn 绑定的网络
+                    // (未 connect 的 sendto 可能不路由到 VPN network, 即使 bindSocket 成功)
+                    if (!sock.isConnected) {
+                        sock.connect(addr, PORT)
+                        Log.d(TAG, "sendFrame connect $hostAddr:$PORT")
+                    }
                     sock.send(DatagramPacket(pkt, pkt.size, addr, PORT))
                     Log.d(TAG, "sendFrame sent OK")
                 } catch (e: Exception) {
