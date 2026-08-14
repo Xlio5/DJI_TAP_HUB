@@ -13,14 +13,18 @@ stop = threading.Event()
 
 
 def bridge(src, dst, name, other):
+    # 阻塞 read (timeout 50ms) — 不丢数据, 不会错过 ELRS 即时响应 (ping→3ms 内响应)
+    # 之前 in_waiting 轮询 + 10ms sleep 会错过 ELRS 的即时响应帧
     while not stop.is_set():
-        n = src.in_waiting
-        if n:
-            data = src.read(n)
+        data = src.read(1)  # 阻塞读一个字节
+        if data:
+            # 积攒到 4 字节再读剩余的 (减少打印次数)
+            while src.in_waiting:
+                data += src.read(src.in_waiting)
             print(f"[{name}→{other}] {len(data)}B: {data[:48].hex()}", flush=True)
             dst.write(data)
         else:
-            time.sleep(0.01)
+            time.sleep(0.001)
 
 
 def main():

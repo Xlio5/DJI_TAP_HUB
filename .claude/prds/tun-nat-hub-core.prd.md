@@ -87,29 +87,32 @@ We'll know we're right when **4Mbps RTSP 视频流持续稳定播放 >30 分钟�
 | 3 | 增值功能: RTSP 播放 + 端口转发 + 延迟测试 | 完整无人机操控体验 | **complete** | — |
 | 4 | V3s 平台移植 + PB6 角色切换 | 物料成本降 10-20x，固件 v1.6.8 量产可用 | **complete** | — |
 | 5 | OTA A/B 在线升级 | 浏览器一键升级 + 失败自动回退 | **complete** | — |
-| 6 | CRSF-Lua 桥接: 真机 ELRS 参数配置 | DJI RC 上直接配置 ELRS 高频头参数（链路打通 + 参数界面渲染） | **in-progress**（链路/渲染 ✅，编辑交互/稳定性 ⚠️） | → /plan .claude/prds/tun-nat-hub-core.prd.md |
+| 6 | CRSF-Lua 桥接: 真机 ELRS 参数配置 | DJI RC 上直接配置 ELRS 高频头参数（链路 + 渲染 + 改值全部打通） | **complete**（2026-08-14 真机验证：T-14 900 TX + 改值 1:8→1:16 生效） | — |
 | 7 | 固件固化 + 清理 | 验证过的 bridge 逻辑固化进固件，删除测试残留 | pending | — |
 
 ## 当前进度追踪（CRSF-Lua 里程碑 6）
 
 > 更新时间: 2026-08-14 | 详细交接见 [docs/SESSION_HANDOFF_CRSF_LUA.md](docs/SESSION_HANDOFF_CRSF_LUA.md)
 
-### ✅ 已完成
+### ✅ 已完成（完整打通 2026-08-14）
 - **链路全通**：App(elrsV3.lua) → VPN(tun0) → USB → V3s bridge → UART0(115200) → 桥 → ELRS → Device_Info/Settings_Entry 回传 → App → Lua 渲染参数
-- **真机渲染验证**：DJI RC 上显示 "T-14 900 TX" + Packet Rate/Telem Ratio/Switch Mode
-- **5 个根因修复**：
+- **真机完整验证**：DJI RC 显示 "T-14 900 TX" + 6 行参数，**改值 Telem Ratio 1:8→1:16 ELRS 生效**
+- **7 个根因修复**：
   1. 固件 crsf_rx_byte CRC 校验起点 addr→type（ELRS 帧格式）
   2. 固件 bridge fwd 写入重试（摇杆占 TX）
   3. App CrsfBridge 收发分离 + bind 65532 + openProtectedPort
   4. App bindProcessToVpnNetwork（发包走 tun0）
   5. App buildCrsfFrame CRC 范围 len→len+1
+  6. **固件 crsf_rx_thread 启动条件：bridge 模式也启动上行转发**（原仅 out_mode==c，SBUS 下 ELRS 响应不转发 → Device_Info 丢）
+  7. **固件 bridge 模式跳过摇杆 CRSF 输出**（摇杆帧干扰 ELRS Lua backchannel，UART0 专用于 Lua 桥）
+- **App 收包加固**（1.6.12）：stop() 释放 protectedPort + rxThread 连续消费多帧
 - **UI 改进**：右侧操作按钮列 + 选中箭头 + 编辑 BLINK 闪烁
-- **版本**：固件 1.6.10（待固化）、App 1.6.11
+- **版本**：固件 1.6.10（待固化）、App 1.6.12
 
-### ⚠️ 卡点
-1. **Device_Info(36B) 偶发不到 App** → App 偶发不识别设备（稳定收 ELRS_STATUS 19B，Device_Info 偶发丢）
-2. **参数渲染偶发 0 行**（依赖 Device_Info 识别 + Settings_Entry 持续交互）
-3. **固件未固化**（V3s 跑 /tmp 调试版 dji_rc）
+### ⚠️ 卡点（已解决 2026-08-14）
+1. ~~Device_Info(36B) 偶发不到 App~~ → ✅ 根因: crsf_rx_thread 未启动 + 摇杆帧干扰, 已修复
+2. ~~参数渲染偶发 0 行~~ → ✅ 依赖 #1, 已随修复解决
+3. 固件未固化（V3s 跑 /tmp 调试版 dji_rc）→ 待固化（M7）
 
 ### 🔧 调试方法
 完整调试方式（桥监测/帧对比/V3s 状态/常用命令）见 [docs/SESSION_HANDOFF_CRSF_LUA.md §8](docs/SESSION_HANDOFF_CRSF_LUA.md)
@@ -129,9 +132,9 @@ We'll know we're right when **4Mbps RTSP 视频流持续稳定播放 >30 分钟�
 
 ## Open Questions
 
-- [ ] **ELRS Lua 真机验证（M4 阻塞项）**：App 发包走 wlan0 不到 V3s 的路由问题是否已解决？还是需 App 侧修复（-uid 规则覆盖 tun0）？
-- [ ] ELRS 响应回传在 App 全链路（UDP→V3s→UART→ELRS→回传→App）是否稳定？波特率轮换（~7s）下能否持续跟踪？
-- [ ] CRSF-Lua 桥接是固化进 dji_rc 固件还是独立 uart_bridge？前者需处理与现有 crsf_rx_thread 的共存
+- [x] **ELRS Lua 真机验证（M4）**：✅ 已解决（2026-08-14 真机打通，App bindProcessToVpnNetwork + openProtectedPort + dji_rc t3 启动）
+- [x] ELRS 响应回传稳定性：✅ 已解决（crsf_rx_thread 启动 + 跳过摇杆输出后稳定回传）
+- [x] CRSF-Lua 桥接固化位置：✅ 固化进 dji_rc（bridge 模式），非独立 uart_bridge
 - [ ] Hub 模式（多 Android 客户端连接同一 Linux 板）何时需要？当前点对点架构能否满足所有已知场景？
 - [ ] Web Panel 是否需要认证？（当前无需认证，USB 物理连接为安全边界；若未来支持网络访问需要）
 
