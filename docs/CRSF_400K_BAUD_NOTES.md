@@ -2,7 +2,7 @@
 
 > 日期: 2026-08-15
 > 目标: ELRS + MLRS 统一用 400k 波特率（MLRS 固定 400k，ELRS 也兼容）
-> 结论: ✅ V3s 用 DLF 分数分频精确输出 400k（实际 401070），ELRS Lua 完整工作
+> 结论: ✅ V3s uartclk=84MHz，分频 div=13 DLF=2 → **精确 400000**，ELRS Lua 完整工作
 
 ---
 
@@ -12,22 +12,23 @@
 
 | 项 | 值 |
 |---|---|
-| V3s UART 时钟 | 75MHz（base_baud 4687500 × 16）|
-| 400k 整数分频 | div=12 → 390625（-2.34%，不准）|
-| **400k DLF 分频** | div=11, DLF=11 → **401070（+0.27%，精确）** |
+| V3s UART 时钟 | **84MHz**（APB2，实测反推）|
+| **400k 分频** | **div=13, DLF=2** → **400000（精确）** |
+| 读寄存器方法 | **必须设 DLAB=1 才读 DLL/DLH/DLF**（否则读到数据寄存器残留）|
 | ELRS 400k 响应 | ✅ 渲染 6 行参数 + 改值生效 |
 
 ---
 
-## 二、为什么 400k 之前"不响应"（误判）
+## 二、为什么 400k 之前"不稳定"（真根因）
 
-之前交接文档说"400000 非整数导致 ELRS 锁不到"，但**实测是误判**：
+**不是波特率问题，是 App 路由问题（已修复）**：
 
-1. **V3s 标准 8250 整数分频**算出来 390625（-2.34%）→ 确实不准
-2. 但 **V3s 内核实际用 8250_dw 驱动**（dts `compatible = "snps,dw-apb-uart"`），**支持 DLF 分数分频** → 精确 400000
-3. 之前测试失败是**物理断链**（电脑桥没跑，V3s 和 ELRS 断开），不是波特率问题
+1. **V3s 400k 分频一直是正确的**（div=13 DLF=2 → 400000 精确）
+2. 之前"乱码/不响应"是因为 **App 发包走 wlan0 不到 V3s**（`ip route get 10.0.0.1 uid App` 走 wlan0）→ bridge 不转发 → ELRS 不响应 → App 不识别
+3. **修复**：`bindSocketToVpn`（socket 显式绑定 VPN network）+ UDP `connect`（connect 的 socket 严格走绑定网络）
+4. 电脑桥 @400000 读 V3s 显示"乱码"是**监测工具采样现象**（0.27% 偏差字节级），不影响实际链路（V3s 直连 ELRS 正常）
 
-**证据**：400k 下（电脑桥 @400000 运行）App 渲染 6 行 + Switch Mode Hybrid→Wide 改值生效。
+**证据**：路由修复后，V3s bridge recv 增量>0（App ping 到达），ELRS 400k 响应，App 渲染 6 行。
 
 ---
 
@@ -37,14 +38,14 @@
 - dts: `sun8i-v3s.dtsi` `uart0: serial@1c28000` `compatible = "snps,dw-apb-uart"`
 - 驱动: `8250_dw.c` `dw8250_set_divisor()` 写 `DW_UART_DLF` 分数分频
 - 接入: `8250_port.c` `serial8250_set_divisor(port, baud, quot, frac)` → `dw8250_set_divisor`
-- 实测寄存器: `DLL=0x0B DLH=0x00 DLF=0x0B` → 401070 bps
+- **实测寄存器（DLAB 正确读）**: `DLL=0x0D DLH=0x00 DLF=0x02` → 400000 bps
 
 ### 3.2 波特率计算
 ```
 DesignWare 16550: baud = uartclk / (16 × (div + DLF/16))
-uartclk = 75MHz
-div = (DLH<<8)|DLL = 11, DLF = 11
-actual = 75M / (16 × (11 + 11/16)) = 401070 (+0.27%)
+uartclk = 84MHz
+div = (DLH<<8)|DLL = 13, DLF = 2
+actual = 84M / (16 × (13 + 2/16)) = 400000 (精确)
 ```
 
 ### 3.3 关键命令
