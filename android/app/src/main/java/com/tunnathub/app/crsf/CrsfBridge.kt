@@ -6,13 +6,20 @@
  *   App 在此收帧; App 发的 CRSF 命令也经此端口 → V3s → UART0。
  *
  * 网口协议: [magic "CRSF" 4B][CRSF 帧], magic = 0x46534352 little-endian
+ *
+ * 收发 socket 分离:
+ *   - 发包 socket: bind 10.0.0.2 走 VPN 隧道发到 V3s (10.0.0.1) —— 不能 protect (否则走 wlan0)
+ *   - 收包 socket: TunNatVpnService.openProtectedPort(65532) —— protect 后内核才把
+ *     TUN 接口入站的 65532 UDP 包投递到该 socket (参考 rcmsg 收包方式)
  */
 package com.tunnathub.app.crsf
 
 import android.util.Log
+import com.tunnathub.app.service.TunNatVpnService
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -25,7 +32,8 @@ object CrsfBridge {
     var host: String = "192.168.144.66"
         private set
 
-    private var socket: DatagramSocket? = null
+    private var sendSocket: DatagramSocket? = null
+    private var recvSocket: DatagramSocket? = null
     private var rxThread: Thread? = null
     private val running = AtomicBoolean(false)
 
@@ -41,49 +49,61 @@ object CrsfBridge {
         stop()
         host = hostAddr
         running.set(true)
-        try {
-            // bind 到 tun0 IP (10.0.0.2), 确保走 VPN 隧道到 V3s (10.0.0.1), 避免走 wlan0
-            socket = try {
-                // IPv4 socket bind 0.0.0.0:65532: V3s 上行回传发 10.0.0.2:65532 (IPv4),
-                // IPv6 映射 socket 在 tun0 上收不到 IPv4 包 → 用 DatagramSocket(PORT) 显式 IPv4
-                DatagramSocket(PORT)
-            } catch (e: Exception) {
-                DatagramSocket()  // 兜底: 系统默认
-            }.apply { soTimeout = 1000 }
-            Log.i(TAG, "socket 创建: VPN建立? ${com.tunnathub.app.service.TunNatVpnService.isRunningState.value} host=$host")
-            rxThread = Thread {
-                val buf = ByteArray(4 + 62)
-                while (running.get()) {
-                    try {
-                        val pkt = DatagramPacket(buf, buf.size)
-                        socket?.receive(pkt)
-                        if (pkt.length >= 5 && pkt.length <= 4 + 62) {
-                            val data = pkt.data.copyOfRange(0, pkt.length)
-                            val magic = (data[0].toInt() and 0xFF) or
-                                ((data[1].toInt() and 0xFF) shl 8) or
-                                ((data[2].toInt() and 0xFF) shl 16) or
-                                ((data[3].toInt() and 0xFF) shl 24)
-                            if (magic == MAGIC) {
-                                onFrame?.invoke(data.copyOfRange(4, data.size))
-                            }
-                        }
-                    } catch (e: Exception) {
-                        if (e is java.net.SocketTimeoutException) continue
-                        if (running.get()) Log.w(TAG, "rx err: $e")
-                    }
-                }
-            }.apply { isDaemon = true; start() }
-            Log.i(TAG, "started @ $host:$PORT")
+        // 进程绑定 VPN 网络: 发包到 10.0.0.1 必须走 tun0, 否则 Android 默认走 wlan0 到不了 V3s
+        // (参考 UdpRtspPlayer bindProcessToVpnNetwork; rcmsg 收包用 openProtectedPort 同理需 VPN 上下文)
+        TunNatVpnService.bindProcessToVpnNetwork()
+        // 发包 socket: bind tun0 IP (10.0.0.2) 走 VPN 隧道到 V3s, 不 protect (否则走 wlan0)
+        sendSocket = try {
+            DatagramSocket(null).apply {
+                bind(InetSocketAddress("10.0.0.2", 0))
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "start fail: $e")
-            running.set(false)
+            DatagramSocket()
         }
+        // 收包 socket: 必须 openProtectedPort 保护, 内核才投递 TUN 入站 65532 包
+        // (参考 MainActivity rcmsg 收包方式; 之前普通 socket 收不到 V3s 上行)
+        recvSocket = TunNatVpnService.openProtectedPort(PORT) ?: run {
+            try { DatagramSocket(PORT) } catch (e: Exception) { null }
+        }
+        recvSocket?.soTimeout = 1000
+        Log.i(TAG, "socket 创建: VPN建立? ${TunNatVpnService.isRunningState.value} host=$host recv=${recvSocket != null}")
+        rxThread = Thread {
+            Log.i(TAG, "rxThread 启动, recv=${recvSocket}")
+            val buf = ByteArray(4 + 62)
+            var timeouts = 0
+            while (running.get()) {
+                try {
+                    val pkt = DatagramPacket(buf, buf.size)
+                    recvSocket?.receive(pkt)
+                    timeouts = 0
+                    val hex = pkt.data.copyOfRange(0, pkt.length).take(10).joinToString(" ") { "%02x".format(it) }
+                    Log.i(TAG, "rx ${pkt.length}B from ${pkt.address?.hostAddress}:${pkt.port} [${hex}]")
+                    if (pkt.length >= 5 && pkt.length <= 4 + 62) {
+                        val data = pkt.data.copyOfRange(0, pkt.length)
+                        val magic = (data[0].toInt() and 0xFF) or
+                            ((data[1].toInt() and 0xFF) shl 8) or
+                            ((data[2].toInt() and 0xFF) shl 16) or
+                            ((data[3].toInt() and 0xFF) shl 24)
+                        if (magic == MAGIC) {
+                            onFrame?.invoke(data.copyOfRange(4, data.size))
+                        }
+                    }
+                } catch (e: java.net.SocketTimeoutException) {
+                    timeouts++
+                    if (timeouts % 10 == 0) Log.d(TAG, "rx 超时 x${timeouts} (无包)")
+                    continue
+                } catch (e: Exception) {
+                    if (running.get()) Log.w(TAG, "rx err: $e")
+                }
+            }
+        }.apply { isDaemon = true; start() }
+        Log.i(TAG, "started @ $host:$PORT")
     }
 
     /** 发送 CRSF 帧到 V3s (App → UART0), 后台线程执行 */
     fun sendFrame(frame: ByteArray) {
         if (frame.size > 62) return
-        val sock = socket ?: return
+        val sock = sendSocket ?: return
         val hostAddr = host
         val pkt = ByteArray(4 + frame.size)
         pkt[0] = (MAGIC and 0xFF).toByte()
@@ -109,8 +129,10 @@ object CrsfBridge {
 
     fun stop() {
         running.set(false)
-        socket?.close()
-        socket = null
+        sendSocket?.close()
+        sendSocket = null
+        recvSocket?.close()
+        recvSocket = null
         rxThread?.join(2000)
         rxThread = null
     }

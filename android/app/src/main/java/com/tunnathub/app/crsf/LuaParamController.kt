@@ -19,6 +19,8 @@ class LuaParamController(private val context: Context) {
     private val TAG = "LuaParamController"
 
     private var rows = mutableListOf<ParamRow>()
+    private var selectedLine: Int? = null   // 当前选中行的 y (INVERS 标记)
+    private var selectedEditing = false     // 是否进入编辑 (BLINK 闪烁提醒)
     var onRowsChanged: (() -> Unit)? = null
     /** 当前设备名 (标题栏) */
     var onTitleChanged: ((String) -> Unit)? = null
@@ -37,7 +39,9 @@ class LuaParamController(private val context: Context) {
             if (line.text.isNotEmpty()) {
                 lineMap.getOrPut(line.y) { mutableListOf() }.add(line.x to line.text)
                 if (line.attr and LuaEngine.INVERS != 0) {
-                    // 选中行标记: 记下这个 y 是选中
+                    // 选中行: 记录该 y 和编辑状态(BLINK=进入编辑闪烁), 供 rebuildRows 标记
+                    selectedLine = line.y
+                    selectedEditing = (line.attr and LuaEngine.BLINK) != 0
                     hasRowData = true
                 }
             }
@@ -48,6 +52,8 @@ class LuaParamController(private val context: Context) {
             Log.d(TAG, "onClear 清空行")
             lineMap.clear()
             hasRowData = false
+            selectedLine = null
+            selectedEditing = false
             rebuildRows()
         }
         // Lua crossfireTelemetryPush → 发 CRSF 帧 (mock 模式不建网络, 忽略)
@@ -76,7 +82,11 @@ class LuaParamController(private val context: Context) {
                 text.append(s)
                 prevX = x + s.length * 6  // 估算下一段起始
             }
-            ParamRow(text.toString(), selected = false)
+            ParamRow(
+                text.toString(),
+                selected = (y == selectedLine),
+                editing = (y == selectedLine && selectedEditing)
+            )
         }.toMutableList()
         Log.d(TAG, "rebuildRows ${rows.size} 行 title='$title'")
         onRowsChanged?.invoke()

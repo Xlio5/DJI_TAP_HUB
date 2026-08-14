@@ -133,7 +133,9 @@ int crsf_rx_byte(crsf_rx_t *rx, uint8_t b) {
 
     uint8_t flen = rx->buf[1];
     if (flen + 2 > rx->len) return 0;               /* 未收满: addr+len+len+1(crc) */
-    if (crsf_crc8(rx->buf, flen) == rx->buf[flen + 1]) { /* CRC 在 flen+1 */
+    /* ELRS/EdgeTX 帧: crc 从 type 起覆盖 len-1 字节 (不含 addr/len/crc),
+       不是从 addr 起 — 否则 ELRS 参数帧全被 crc 校验拒绝 (曾导致 bridge 上行不通) */
+    if (flen >= 2 && crsf_crc8(rx->buf + 2, flen - 1) == rx->buf[flen + 1]) { /* CRC 在 flen+1 */
         uint8_t got = flen + 2;                     /* 整帧字节数 */
         /* 平移剩余字节供下一个帧 */
         uint8_t rest = rx->len - got;

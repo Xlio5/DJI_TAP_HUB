@@ -350,7 +350,9 @@ object LuaEngine {
         frame[3] = payload[0]
         frame[4] = payload[1]
         if (plen > 0) data.copyInto(frame, 5)
-        frame[len + 1] = crc8(frame, 2, len)
+        // crc 覆盖 [type][dest][orig][payload] 全部 (len+1 字节, 不含 crc);
+        // 之前 crc8(frame,2,len) 少覆盖最后 1 字节 payload → crc 错 → ELRS 校验拒绝
+        frame[len + 1] = crc8(frame, 2, len + 1)
         return frame
     }
 

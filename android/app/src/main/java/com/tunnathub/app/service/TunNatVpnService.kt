@@ -120,10 +120,10 @@ class TunNatVpnService : VpnService() {
                 val socket = java.net.DatagramSocket(null)
                 socket.reuseAddress = true
                 socket.bind(java.net.InetSocketAddress(TUN_ADDRESS, port))
-                inst.protect(socket)
+                val protectOk = inst.protect(socket)
                 protectedPorts[port] = socket
                 protectedPortsState.value = protectedPorts.keys().toList().sorted()
-                AppLog.i(TAG, "UDP端口保护: $port")
+                AppLog.i(TAG, "UDP端口保护: $port protect=$protectOk bound=${socket.isBound}")
                 socket
             } catch (e: Exception) {
                 AppLog.e(TAG, "UDP端口保护失败: $port — ${e.message}")
