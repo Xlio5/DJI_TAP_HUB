@@ -867,8 +867,10 @@ static void crsf_rx_thread()
 /* ── bridge 下行线程: 收网口 UDP CRSF 命令 → 写 UART0 ── */
 static void crsf_bridge_rx_thread()
 {
+    std::printf("[dji_rc] bridge 线程启动\n");
+    std::fflush(stdout);
     int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) return;
+    if (fd < 0) { std::printf("[dji_rc] bridge socket 失败\n"); return; }
     int fl = ::fcntl(fd, F_GETFL, 0);
     if (fl >= 0) ::fcntl(fd, F_SETFL, fl | O_NONBLOCK);
     int yes = 1;
@@ -885,17 +887,26 @@ static void crsf_bridge_rx_thread()
         return;
     }
 
-    std::printf("[dji_rc] crsf-bridge 监听 UDP %s:%d → UART0\n", crsfbr_host, crsfbr_port);
+    std::printf("[dji_rc] crsf-bridge 监听 UDP %s:%d → UART0, bridge_stop=%d\n",
+                crsfbr_host, crsfbr_port, g_bridge_stop.load() ? 1 : 0);
+    std::fflush(stdout);
 
     while (!g_bridge_stop.load(std::memory_order_relaxed)) {
         uint8_t pkt[4 + CRSF_FRAME_MAX];
         ssize_t n = ::recvfrom(fd, pkt, sizeof(pkt), 0, NULL, NULL);
         if (n > 0) {
+            std::printf("[dji_rc] bridge recv %ldB magic=%02x%02x%02x%02x\n",
+                        n, pkt[0], pkt[1], pkt[2], pkt[3]);
+            std::fflush(stdout);
             /* 校验 magic "CRSF" + 帧长合法, 原样写 UART0 */
             if (n >= 5 && memcmp(pkt, &CRSFBR_MAGIC, 4) == 0) {
                 uint8_t flen = pkt[4 + 1];   /* CRSF len 字段 */
-                if (flen + 2 == (uint8_t)(n - 4) && g_out_fd >= 0) {
-                    ::write(g_out_fd, pkt + 4, (size_t)(n - 4));
+                int ofd = g_out_fd.load();
+                std::printf("[dji_rc] bridge fwd: n=%ld flen=%d n-4=%ld g_out_fd=%d\n",
+                            n, flen, (long)(n - 4), ofd);
+                std::fflush(stdout);
+                if (flen + 2 == (uint8_t)(n - 4) && ofd >= 0) {
+                    ::write(ofd, pkt + 4, (size_t)(n - 4));
                 }
             }
         } else if (n < 0 && errno != EAGAIN && errno != EINTR) {

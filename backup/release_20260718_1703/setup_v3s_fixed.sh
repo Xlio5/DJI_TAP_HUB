@@ -1,4 +1,4 @@
-#!/bin/sh
+jinjin#!/bin/sh
 # setup_v3s.sh - TUN + NAT + USB init (SPI Flash, dr_mode=peripheral)
 set -e
 
