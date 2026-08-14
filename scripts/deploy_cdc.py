@@ -1,7 +1,7 @@
 """Deploy cdc branch (old baseline) to RK3588 for latency comparison."""
 import paramiko, base64, time, os
 
-HOST = "192.168.88.66"
+HOST = "192.168.144.66"
 LOCAL_BASE = r"c:\my_project\TUN_NAT_HUB"
 
 c = paramiko.SSHClient()

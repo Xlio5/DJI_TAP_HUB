@@ -4,7 +4,7 @@ reboot_test.py — 上传修复脚本 → 重启 → 验证 → 循环直到稳�
 import paramiko, base64, time, os, sys
 
 WIFI = "172.24.91.129"
-WIRED = "192.168.88.66"
+WIRED = "192.168.144.66"
 
 def colored(text, color):
     colors = {"G": "\033[92m", "R": "\033[91m", "Y": "\033[93m", "B": "\033[1m", "X": "\033[0m"}

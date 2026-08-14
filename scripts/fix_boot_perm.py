@@ -2,7 +2,7 @@
 import paramiko, base64, sys
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-HOST = "192.168.88.66"
+HOST = "192.168.144.66"
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 c.connect(HOST, username="xlong", password="1234", timeout=10)

@@ -32,6 +32,6 @@ def probe(ip: str) -> None:
             pass  # skip dead paths silently
 
 if __name__ == "__main__":
-    targets = sys.argv[1:] if len(sys.argv) > 1 else ["192.168.144.88", "192.168.88.88"]
+    targets = sys.argv[1:] if len(sys.argv) > 1 else ["192.168.144.88", "192.168.144.88"]
     for t in targets:
         probe(t)

@@ -28,7 +28,7 @@ after_html = rest[close_idx:]
 old_config = (
     '<h3>\U0001F4F9 RTSP 视频流配置</h3>\n'
     '        <div class="form-row">\n'
-    '          <input id="rtsp-url" type="text" placeholder="rtsp://192.168.88.100:554/stream1">\n'
+    '          <input id="rtsp-url" type="text" placeholder="rtsp://192.168.144.100:554/stream1">\n'
     '          <button class="btn btn-blue" onclick="saveRtsp()">\U0001F4BE 保存</button>\n'
     '        </div>\n'
     '        <div style="color:var(--dim);font-size:0.8em;margin-top:6px">摄像头地址。DJI RC App 上点播放时使用此 URL。<br>如果在 App 上改过，在这里改完需要重启 App。</div>'
@@ -41,7 +41,7 @@ new_config = (
     'Web 面板修改后 App 自动同步。</div>\n'
     '        <div class="form-row">\n'
     '          <input id="cam-name" type="text" placeholder="名称" style="flex:0;width:100px">\n'
-    '          <input id="cam-url" type="text" placeholder="rtsp://192.168.88.101:554/stream1">\n'
+    '          <input id="cam-url" type="text" placeholder="rtsp://192.168.144.101:554/stream1">\n'
     '          <button class="btn btn-green" onclick="addCam()">＋ 添加</button>\n'
     '        </div>\n'
     '        <ul class="rules" id="cam-list"><li style="color:var(--dim)">加载中...</li></ul>'

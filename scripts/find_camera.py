@@ -32,7 +32,7 @@ def scan_ip(ip: str) -> dict:
     return {"ip": ip, "ports": sorted(open_ports)}
 
 if __name__ == "__main__":
-    targets = sys.argv[1:] if len(sys.argv) > 1 else ["192.168.144.88", "192.168.88.88"]
+    targets = sys.argv[1:] if len(sys.argv) > 1 else ["192.168.144.88", "192.168.144.88"]
     for t in targets:
         result = scan_ip(t)
         if not result["ports"]:

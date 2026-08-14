@@ -2,7 +2,7 @@
 import paramiko, base64, time, sys
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-HOST = "192.168.88.66"
+HOST = "192.168.144.66"
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 c.connect(HOST, username="xlong", password="1234", timeout=10)
@@ -52,6 +52,6 @@ print("=== Test from DJI RC ===")
 print("adb shell 'for i in 1 2 3 4 5; do echo PING | nc -u -w 1 10.0.0.1 9999 2>/dev/null; done'")
 print("")
 print("=== Test camera from RK3588 ===")
-run("ping -c 5 192.168.88.101 2>&1")
+run("ping -c 5 192.168.144.101 2>&1")
 
 c.close()

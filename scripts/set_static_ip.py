@@ -1,4 +1,4 @@
-"""Configure static IP 192.168.88.66/24 on end1 via NM."""
+"""Configure static IP 192.168.144.66/24 on end1 via NM."""
 import paramiko, time
 
 c = paramiko.SSHClient()
@@ -29,7 +29,7 @@ sh("echo 1234 | sudo -S nmcli connection delete netplan-end1 2>&1 || true")
 # Create static connection
 print()
 print("=== Create static connection ===")
-sh('echo 1234 | sudo -S nmcli connection add type ethernet ifname end1 con-name end1-static connection.autoconnect yes ipv4.method manual ipv4.addresses 192.168.88.66/24 ipv4.gateway 192.168.88.1 ipv4.dns 192.168.88.1 ipv6.method disabled 2>&1')
+sh('echo 1234 | sudo -S nmcli connection add type ethernet ifname end1 con-name end1-static connection.autoconnect yes ipv4.method manual ipv4.addresses 192.168.144.66/24 ipv4.gateway 192.168.144.1 ipv4.dns 192.168.144.1 ipv6.method disabled 2>&1')
 time.sleep(1)
 
 # Bring it up

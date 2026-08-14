@@ -1,7 +1,7 @@
 """Build daemon on RK3588 and create deployment package."""
 import paramiko, base64, time, os, sys
 
-HOST = "192.168.88.66"
+HOST = "192.168.144.66"
 USER = "xlong"
 PW = "1234"
 LOCAL_BASE = r"c:\my_project\TUN_NAT_HUB"

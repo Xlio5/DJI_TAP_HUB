@@ -1,7 +1,7 @@
 """Quick deploy master branch daemon + scripts to RK3588."""
 import paramiko, base64, time, os
 
-HOST = "192.168.88.66"
+HOST = "192.168.144.66"
 LOCAL_BASE = r"c:\my_project\TUN_NAT_HUB"
 
 c = paramiko.SSHClient()
@@ -186,5 +186,5 @@ ssh("/usr/local/bin/usb_tund 2>&1 | head -1; true")
 
 print()
 print("=== master branch deployed! ===")
-print("Web panel: http://192.168.88.66:8080")
+print("Web panel: http://192.168.144.66:8080")
 c.close()

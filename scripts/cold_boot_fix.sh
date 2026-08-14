@@ -22,8 +22,8 @@ check() {
 
 # 1. 有线网
 check wired "wired" \
-  "ip -br addr show end1 2>/dev/null | grep -q 192.168.88" \
-  "ip addr add 192.168.88.66/24 dev end1 2>/dev/null; ip link set end1 up; nmcli connection up end1-static 2>/dev/null"
+  "ip -br addr show end1 2>/dev/null | grep -q 192.168.144" \
+  "ip addr add 192.168.144.66/24 dev end1 2>/dev/null; ip link set end1 up; nmcli connection up end1-static 2>/dev/null"
 
 # 2. ttyGS0 device
 check ttygs0 "ttyGS0" \

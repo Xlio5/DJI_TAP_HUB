@@ -3,7 +3,7 @@ import paramiko
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect("192.168.88.66", username="xlong", password="1234", timeout=15)
+c.connect("192.168.144.66", username="xlong", password="1234", timeout=15)
 
 def sh(cmd, timeout=15):
     stdin, stdout, stderr = c.exec_command(cmd, timeout=timeout)

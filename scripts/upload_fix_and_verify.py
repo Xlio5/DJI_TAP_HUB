@@ -2,7 +2,7 @@
 import paramiko, base64, time, os
 
 LOCAL_BASE = r"c:\my_project\TUN_NAT_HUB"
-HOST = "192.168.88.66"
+HOST = "192.168.144.66"
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -115,4 +115,4 @@ print(ssh("echo 'tun_hub:' $(ip -br addr show tun_hub | awk '{print $3}')"))
 
 c.close()
 print()
-print("Done! Web panel: http://192.168.88.66:8080")
+print("Done! Web panel: http://192.168.144.66:8080")

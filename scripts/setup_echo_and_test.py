@@ -2,7 +2,7 @@
 import paramiko, base64, time, sys, subprocess, socket
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-HOST = "192.168.88.66"
+HOST = "192.168.144.66"
 DJI = "172.24.91.112:33625"
 S = "echo '1234' | sudo -S"
 
@@ -56,7 +56,7 @@ for i in range(5):
     try:
         sock = __import__('socket').socket(__import__('socket').AF_INET, __import__('socket').SOCK_DGRAM)
         sock.settimeout(2)
-        sock.sendto(b"ping", ("192.168.88.66", 9999))
+        sock.sendto(b"ping", ("192.168.144.66", 9999))
         t0 = time.time()
         sock.recvfrom(256)
         elapsed = (time.time() - t0) * 1000
@@ -70,7 +70,7 @@ print("\n=== Test from DJI RC ADB (WiFi) -> RK3588:9999 ===")
 subprocess.run(["adb", "connect", DJI], capture_output=True, timeout=5)
 r = subprocess.run(
     ["adb", "-s", DJI, "shell",
-     "for i in 1 2 3 4 5; do echo PING | nc -u -w 2 192.168.88.66 9999 2>/dev/null && echo OK || echo FAIL; done"],
+     "for i in 1 2 3 4 5; do echo PING | nc -u -w 2 192.168.144.66 9999 2>/dev/null && echo OK || echo FAIL; done"],
     capture_output=True, text=True, timeout=15
 )
 print(r.stdout.strip())

@@ -4,7 +4,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect("192.168.88.66", username="xlong", password="1234", timeout=10)
+c.connect("192.168.144.66", username="xlong", password="1234", timeout=10)
 S = "echo '1234' | sudo -S"
 
 def run(cmd, timeout=10):
@@ -44,5 +44,5 @@ time.sleep(2)
 run(f"{S} systemctl status tun_web --no-pager 2>&1 | head -8")
 run("ss -tlnp 2>/dev/null | grep 8080")
 
-print("Done. Web panel at http://192.168.88.66:8080")
+print("Done. Web panel at http://192.168.144.66:8080")
 c.close()

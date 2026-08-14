@@ -87,7 +87,7 @@ run(f"{S} systemctl status tun_nat_hub --no-pager 2>&1 | head -3")
 
 print("\n" + "=" * 60)
 print("Web panel deployed!")
-print("Access: http://192.168.88.66:8080")
+print("Access: http://192.168.144.66:8080")
 print("=" * 60)
 
 c.close()

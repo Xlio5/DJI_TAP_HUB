@@ -1,7 +1,7 @@
 """Probe V3s system info via SSH."""
 import paramiko, sys
 
-HOST = "192.168.88.66"
+HOST = "192.168.144.66"
 DIAG_CMD = (
     "uname -a && echo '--MODEL--' && "
     "cat /proc/device-tree/model 2>/dev/null || echo no-dtb-model && echo '--MEM--' && "

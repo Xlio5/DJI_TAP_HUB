@@ -4,7 +4,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect("192.168.88.66", username="xlong", password="1234", timeout=10)
+c.connect("192.168.144.66", username="xlong", password="1234", timeout=10)
 
 def run(cmd, timeout=10):
     stdin, stdout, stderr = c.exec_command(cmd, timeout=timeout)
@@ -48,7 +48,7 @@ print()
 print("=" * 50)
 print("TEST 2: Camera ping (LAN)")
 print("=" * 50)
-r = subprocess.run(["ping", "-c", "10", "192.168.88.101"], capture_output=True, text=True, timeout=15)
+r = subprocess.run(["ping", "-c", "10", "192.168.144.101"], capture_output=True, text=True, timeout=15)
 for line in r.stdout.split("\n"):
     if "rtt" in line.lower() or "packet" in line.lower() or "avg" in line.lower():
         print("  " + line.strip())
@@ -63,7 +63,7 @@ for i in range(10):
         t0 = time.time()
         sock = socket.socket()
         sock.settimeout(3)
-        sock.connect(("192.168.88.101", 554))
+        sock.connect(("192.168.144.101", 554))
         t1 = time.time()
         sock.close()
         connects.append((t1 - t0) * 1000)

@@ -2,7 +2,7 @@
 import paramiko, time
 
 DJI_IP = "10.248.133.209"
-RK3588 = "192.168.88.66"
+RK3588 = "192.168.144.66"
 APK_REMOTE = "/tmp/app-debug.apk"
 
 c = paramiko.SSHClient()

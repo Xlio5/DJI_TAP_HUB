@@ -38,7 +38,7 @@ def sweep_subnet(subnet: str, ports: list[int], workers: int = 200):
     return found
 
 if __name__ == "__main__":
-    targets = sys.argv[1:] if len(sys.argv) > 1 else ["192.168.144", "192.168.88"]
+    targets = sys.argv[1:] if len(sys.argv) > 1 else ["192.168.144", "192.168.144"]
     ports = [554, 80, 8080, 8000, 8554, 443]
     for s in targets:
         result = sweep_subnet(s, ports)

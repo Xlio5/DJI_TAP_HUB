@@ -37,7 +37,7 @@ def sweep(subnet: str, workers: int = 100) -> list[str]:
     return sorted(found, key=lambda ip: [int(x) for x in ip.split(".")])
 
 if __name__ == "__main__":
-    targets = sys.argv[1:] if len(sys.argv) > 1 else ["192.168.144", "192.168.88"]
+    targets = sys.argv[1:] if len(sys.argv) > 1 else ["192.168.144", "192.168.144"]
     all_found = {}
     for s in targets:
         all_found[s] = sweep(s)

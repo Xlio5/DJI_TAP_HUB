@@ -2,7 +2,7 @@
 import paramiko, base64, time, sys
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-HOST = "192.168.88.66"
+HOST = "192.168.144.66"
 S = "echo '1234' | sudo -S"
 
 c = paramiko.SSHClient()
@@ -71,7 +71,7 @@ for i in range(3):
         s = socket.socket()
         s.settimeout(2)
         t0 = time.time()
-        s.connect(("192.168.88.66", 9999))
+        s.connect(("192.168.144.66", 9999))
         t1 = time.time()
         s.send(b"hello")
         s.recv(256)

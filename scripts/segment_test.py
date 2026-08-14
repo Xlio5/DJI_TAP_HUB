@@ -2,7 +2,7 @@
 import paramiko, base64, subprocess, time, sys, os, tempfile
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-HOST = "192.168.88.66"
+HOST = "192.168.144.66"
 DJI = "172.24.91.112:33625"
 
 # ══════════════════════════════════════════════
@@ -160,7 +160,7 @@ if r.stderr.strip():
 print("\n" + "=" * 60)
 print("Step 4: RK3588 -> Camera RTT (LAN)")
 print("=" * 60)
-ssh("ping -c 10 192.168.88.101 2>&1")
+ssh("ping -c 10 192.168.144.101 2>&1")
 
 # ══════════════════════════════════════════════
 # Summary

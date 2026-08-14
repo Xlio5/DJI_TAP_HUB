@@ -3,7 +3,7 @@ import paramiko, base64, time
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect("192.168.88.66", username="xlong", password="1234", timeout=10)
+c.connect("192.168.144.66", username="xlong", password="1234", timeout=10)
 
 # Kill old
 c.exec_command("killall -9 python3 2>/dev/null; true", timeout=5)

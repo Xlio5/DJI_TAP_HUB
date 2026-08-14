@@ -3,7 +3,7 @@ import paramiko, base64, time, os
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect("192.168.88.66", username="xlong", password="1234", timeout=15)
+c.connect("192.168.144.66", username="xlong", password="1234", timeout=15)
 BASE = r"c:\my_project\TUN_NAT_HUB"
 
 def chan_upload(remote, data):

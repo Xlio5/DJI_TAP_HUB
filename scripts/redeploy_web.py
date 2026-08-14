@@ -3,7 +3,7 @@ import paramiko, base64, time
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect("192.168.88.66", username="xlong", password="1234", timeout=10)
+c.connect("192.168.144.66", username="xlong", password="1234", timeout=10)
 
 with open(r"c:\my_project\TUN_NAT_HUB\ubuntu\web_panel.py", "rb") as f:
     data = f.read().replace(b"\r\n", b"\n")

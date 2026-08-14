@@ -1,7 +1,7 @@
 """Single reboot test — reboot, wait, verify."""
 import paramiko, base64, time, os
 
-WIRED = "192.168.88.66"
+WIRED = "192.168.144.66"
 WIFI = "172.24.91.129"
 
 # 1. Connect and setup crontab + upload

@@ -1,11 +1,11 @@
 #!/bin/bash
 # deploy_ubuntu.sh — 部署 Ubuntu 服务端到 RK3588
 # 用法: ./scripts/deploy_ubuntu.sh [target_ip]
-# 默认目标: root@192.168.88.x (需在 RK3588 上配置 SSH)
+# 默认目标: root@192.168.144.x (需在 RK3588 上配置 SSH)
 
 set -e
 
-TARGET_IP="${1:-192.168.88.200}"
+TARGET_IP="${1:-192.168.144.200}"
 TARGET="root@${TARGET_IP}"
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/ubuntu/build/native"

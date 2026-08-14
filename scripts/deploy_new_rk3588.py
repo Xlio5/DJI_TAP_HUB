@@ -3,7 +3,7 @@ import paramiko, base64, time
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect("192.168.88.66", username="xlong", password="1234", timeout=15)
+c.connect("192.168.144.66", username="xlong", password="1234", timeout=15)
 
 def chan_write(remote_path, content_bytes):
     b64 = base64.b64encode(content_bytes).decode()
