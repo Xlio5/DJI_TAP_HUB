@@ -50,6 +50,7 @@ object CrsfBridge {
             } catch (e: Exception) {
                 DatagramSocket()  // 兜底: 系统默认
             }.apply { soTimeout = 1000 }
+            Log.i(TAG, "socket 创建: VPN建立? ${com.tunnathub.app.service.TunNatVpnService.isRunningState.value} host=$host")
             rxThread = Thread {
                 val buf = ByteArray(4 + 62)
                 while (running.get()) {

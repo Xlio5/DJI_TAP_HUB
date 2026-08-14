@@ -335,27 +335,29 @@ object LuaEngine {
         g.set("EVT_TOUCH_TAP", LuaValue.valueOf(EVT_TOUCH_TAP))
     }
 
-    /** 构造 CRSF 扩展帧: [addr][len][type][dest][orig][payload][crc] */
+    /** 构造 CRSF 扩展帧: [addr][len][type][dest][orig][payload][crc]
+     *  参考 elrs_lua_python/crsf.py build_extended_frame:
+     *  addr=0xEE(CRSF TX 模块), CRC 只对 [type][dest][orig][payload] 计算 (不含 addr/len) */
     private fun buildCrsfFrame(type: Int, payload: ByteArray): ByteArray {
         if (payload.size < 2) return ByteArray(0)
         val data = payload.copyOfRange(2, payload.size)
         val plen = data.size
         val len = plen + 4
         val frame = ByteArray(len + 2)
-        frame[0] = 0xC8.toByte()
+        frame[0] = 0xEE.toByte()
         frame[1] = len.toByte()
         frame[2] = type.toByte()
         frame[3] = payload[0]
         frame[4] = payload[1]
         if (plen > 0) data.copyInto(frame, 5)
-        frame[len + 1] = crc8(frame, len)
+        frame[len + 1] = crc8(frame, 2, len)
         return frame
     }
 
     private val crcTable = crcTable()
-    private fun crc8(data: ByteArray, len: Int): Byte {
+    private fun crc8(data: ByteArray, from: Int, to: Int): Byte {
         var c = 0
-        for (i in 0 until len) {
+        for (i in from until to) {
             c = crcTable[(c xor (data[i].toInt() and 0xFF)) and 0xFF]
         }
         return c.toByte()

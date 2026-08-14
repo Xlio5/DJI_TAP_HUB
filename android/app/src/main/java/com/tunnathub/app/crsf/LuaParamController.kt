@@ -140,22 +140,23 @@ class LuaParamController(private val context: Context) {
 
     fun getRows(): List<ParamRow> = rows
 
-    /** Device_Ping 扩展帧: [0xC8][4][0x28][dest=0xEE][orig=0xEA][crc] */
+    /** Device_Ping 扩展帧: [0xEE][4][0x28][dest=0x00广播][orig=0xEA][crc]
+     *  参考 elrs_lua_python: addr=0xEE, dest=0x00, CRC 只对 [type][dest][orig] */
     private fun buildDevicePing(): ByteArray {
-        val frame = ByteArray(7)
-        frame[0] = 0xC8.toByte()
+        val frame = ByteArray(6)
+        frame[0] = 0xEE.toByte()
         frame[1] = 0x04
         frame[2] = 0x28.toByte()
-        frame[3] = 0xEE.toByte()
+        frame[3] = 0x00
         frame[4] = 0xEA.toByte()
-        frame[5] = crc8(frame, 5)
+        frame[5] = crc8(frame, 2, 5)
         return frame
     }
 
     private val crcTable = crcTable()
-    private fun crc8(data: ByteArray, len: Int): Byte {
+    private fun crc8(data: ByteArray, from: Int, to: Int): Byte {
         var c = 0
-        for (i in 0 until len) c = crcTable[(c xor (data[i].toInt() and 0xFF)) and 0xFF]
+        for (i in from until to) c = crcTable[(c xor (data[i].toInt() and 0xFF)) and 0xFF]
         return c.toByte()
     }
     private fun crcTable(): IntArray {
