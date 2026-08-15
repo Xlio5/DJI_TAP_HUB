@@ -1301,6 +1301,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             var srcCfg by remember { mutableStateOf(SRC_CFG_GROUPS.flatMap { it.second }.associate { it.key to it.def }) }
             var srcCfgLoaded by remember { mutableStateOf(false) }
             var selectedSourceChannel by remember { mutableStateOf<Int?>(null) }
+            var advancedExpanded by remember { mutableStateOf(false) }
             var roMsg by remember { mutableStateOf("") }
             var roReload by remember { mutableStateOf(0) }
             var loaded by remember { mutableStateOf(false) }
@@ -1487,7 +1488,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         }
                         WorkbenchButton("载入配置") { roMsg = "载入配置入口已预留" }
                         WorkbenchButton("配置另存") { roMsg = "配置另存入口已预留" }
-                        WorkbenchButton("参数管理") { roMsg = "参数管理入口已预留" }
+                        WorkbenchButton("参数管理", advancedExpanded) { advancedExpanded = !advancedExpanded }
                         Spacer(Modifier.weight(1f))
                         WorkbenchButton("SBUS", roMode == "sbus") { roMode = "sbus" }
                         WorkbenchButton("CRSF", roMode == "crsf") { roMode = "crsf" }
@@ -1525,6 +1526,25 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 RangeEditor(source, srcCfg) { k, v -> srcCfg = srcCfg + (k to v) }
                             }
                             if (idx != channelSources.lastIndex) Spacer(Modifier.height(4.dp))
+                        }
+                    }
+                    if (advancedExpanded) {
+                        Spacer(Modifier.height(10.dp))
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF111827), RoundedCornerShape(8.dp))
+                                .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(8.dp))
+                                .padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text("高级参数管理", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+                            Text("保留完整 src_cfg 调参项，用于 mode / shot / 方向键等多档位控件。", fontSize = 9.sp, color = Color(0xFF64748B))
+                            SRC_CFG_GROUPS.forEach { (name, rows) ->
+                                SrcCfgGroup(name, rows, srcCfg) { key, value ->
+                                    srcCfg = srcCfg + (key to value)
+                                }
+                            }
                         }
                     }
                     Spacer(Modifier.height(10.dp))
