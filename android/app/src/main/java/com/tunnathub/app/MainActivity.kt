@@ -1210,14 +1210,14 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
 
         @Composable
         fun StatusChip(label: String, value: String, active: Boolean, modifier: Modifier = Modifier) {
-            Surface(color = if (active) Color(0xFF14532D) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp), modifier = modifier) {
+            Surface(color = if (active) Color(0xFF14532D) else Color(0xFF1E293B), shape = RoundedCornerShape(5.dp), modifier = modifier) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 3.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(label, fontSize = 9.sp, color = Color(0xFF94A3B8), maxLines = 1)
-                    Text(value, fontSize = 10.sp, color = if (active) Color(0xFF22C55E) else Color(0xFFE2E8F0), fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, maxLines = 1)
+                    Text(label, fontSize = 8.sp, color = Color(0xFF94A3B8), maxLines = 1)
+                    Text(value, fontSize = 9.sp, color = if (active) Color(0xFF22C55E) else Color(0xFFE2E8F0), fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, maxLines = 1)
                 }
             }
         }
@@ -1279,27 +1279,23 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
 
         @Composable
         fun ButtonStatusGrid() {
-            @Composable
-            fun Group(title: String, items: List<Pair<String, Int>>, modifier: Modifier = Modifier) {
-                Column(modifier = modifier) {
-                    Text(title, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF94A3B8))
-                    Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        items.forEach { (name, value) ->
-                            Box(modifier = Modifier.weight(1f)) {
-                                StatusChip(name, value.takeIf { it != 0 }?.toString() ?: "OFF", value != 0)
-                            }
+            // 紧凑 4 列网格: 去掉分组标题, 14 个按键/拨轮 chip 密排
+            val items = listOf(
+                "C1" to rcC1, "C2" to rcC2, "C3" to rcC3, "REC" to rcRec,
+                "RTH" to rcRth, "STOP" to rcStop, "BACK" to rcBack, "FOCUS" to rcFocus,
+                "SHOT" to rcShot, "DIAL" to rcDial, "BTN" to rcBtn, "AIR" to rcAircraft,
+            )
+            items.chunked(4).forEach { row ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    row.forEach { (name, value) ->
+                        Box(modifier = Modifier.weight(1f)) {
+                            StatusChip(name, value.takeIf { it != 0 }?.toString() ?: "OFF", value != 0)
                         }
                     }
+                    repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
                 }
+                Spacer(Modifier.height(4.dp))
             }
-            Group("C1/C2/C3", listOf("C1" to rcC1, "C2" to rcC2, "C3" to rcC3))
-            Spacer(Modifier.height(10.dp))
-            Group("REC/RTH/STOP/BACK", listOf("REC" to rcRec, "RTH" to rcRth, "STOP" to rcStop, "BACK" to rcBack))
-            Spacer(Modifier.height(10.dp))
-            Group("FOCUS/SHOT/DIAL", listOf("FOCUS" to rcFocus, "SHOT" to rcShot, "DIAL" to rcDial))
-            Spacer(Modifier.height(10.dp))
-            Group("BTN/AIRCRAFT", listOf("BTN" to rcBtn, "AIR" to rcAircraft))
         }
 
         @Composable
