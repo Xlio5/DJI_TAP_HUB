@@ -131,7 +131,7 @@ extern const char *rc_cfg_names[CFG_COUNT];
 /* 填默认值 (默认 = 原硬编码行为) */
 void rc_cfg_defaults(rc_src_cfg_t *cfg);
 
-/* 清理配置值: _rev 归一 0/1, 其余钳位 [1000,2000], 防非法脉宽 */
+/* 清理配置值: _rev 归一 0/1, 其余钳位 [800,2200], 防非法脉宽 */
 void rc_cfg_sanitize(rc_src_cfg_t *cfg);
 
 /* 设置源配置; cfg==NULL 恢复默认。rc_map_build 读此配置。 */

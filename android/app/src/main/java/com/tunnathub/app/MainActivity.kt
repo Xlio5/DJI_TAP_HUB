@@ -1381,10 +1381,10 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     shape = RoundedCornerShape(6.dp),
                     border = androidx.compose.foundation.BorderStroke(1.dp, if (active) Color(0xFF38BDF8) else Color(0xFF334155)),
                     onClick = onClick,
-                    modifier = modifier.height(34.dp)
+                    modifier = modifier.height(30.dp)
                 ) {
-                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
-                        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (active) Color.Black else Color(0xFFE2E8F0), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
+                        Text(label, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (active) Color.Black else Color(0xFFE2E8F0), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -1392,10 +1392,10 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             @Composable
             fun ChannelScale(value: Int, modifier: Modifier = Modifier) {
                 val pct = ((value - 800).coerceIn(0, 1400) / 1400f)
-                Box(modifier = modifier.height(32.dp)) {
+                Box(modifier = modifier.height(30.dp)) {
                     Box(modifier = Modifier.align(Alignment.Center).fillMaxWidth().height(4.dp).background(Color(0xFF334155), RoundedCornerShape(2.dp)))
                     Box(modifier = Modifier.align(Alignment.CenterStart).fillMaxWidth(pct).height(4.dp).background(Color(0xFF0EA5E9), RoundedCornerShape(2.dp)))
-                    Box(modifier = Modifier.align(Alignment.TopStart).fillMaxWidth(pct.coerceIn(0.02f, 0.98f)).height(22.dp)) {
+                    Box(modifier = Modifier.align(Alignment.TopStart).fillMaxWidth(pct.coerceIn(0.02f, 0.98f)).height(20.dp)) {
                         Box(modifier = Modifier.align(Alignment.TopEnd).background(Color(0xFF0369A1), RoundedCornerShape(3.dp)).padding(horizontal = 5.dp, vertical = 1.dp)) {
                             Text("$value", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
                         }
@@ -1409,19 +1409,19 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             @Composable
             fun RangeEditor(source: String, values: Map<String, Int>, enabled: Boolean, onValue: (String, Int) -> Unit) {
                 if (!enabled) {
-                    Text("固件不支持", fontSize = 9.sp, color = Color(0xFF475569), modifier = Modifier.width(132.dp))
+                    Text("固件不支持", fontSize = 9.sp, color = Color(0xFF475569), modifier = Modifier.width(128.dp))
                     return
                 }
                 val keys = sourceKeys(source)
                 if (keys.minKey.isEmpty() || keys.maxKey.isEmpty()) {
-                    Text("不可调", fontSize = 9.sp, color = Color(0xFF475569), modifier = Modifier.width(132.dp))
+                    Text("不可调", fontSize = 9.sp, color = Color(0xFF475569), modifier = Modifier.width(128.dp))
                     return
                 }
                 val minVal = values[keys.minKey] ?: 1000
                 val maxVal = values[keys.maxKey] ?: 2000
                 var minText by remember(source, minVal) { mutableStateOf(minVal.toString()) }
                 var maxText by remember(source, maxVal) { mutableStateOf(maxVal.toString()) }
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(138.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(128.dp)) {
                     BasicTextField(
                         value = minText,
                         onValueChange = { txt ->
@@ -1435,7 +1435,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         singleLine = true,
                         textStyle = androidx.compose.ui.text.TextStyle(fontSize = 10.sp, color = Color(0xFFE2E8F0)),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.weight(1f).height(32.dp).background(Color(0xFF0F172A), RoundedCornerShape(5.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(5.dp)).padding(horizontal = 6.dp, vertical = 8.dp)
+                        modifier = Modifier.weight(1f).height(30.dp).background(Color(0xFF0F172A), RoundedCornerShape(5.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(5.dp)).padding(horizontal = 6.dp, vertical = 7.dp)
                     )
                     Text(",", fontSize = 10.sp, color = Color(0xFF64748B))
                     BasicTextField(
@@ -1451,7 +1451,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         singleLine = true,
                         textStyle = androidx.compose.ui.text.TextStyle(fontSize = 10.sp, color = Color(0xFFE2E8F0)),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.weight(1f).height(32.dp).background(Color(0xFF0F172A), RoundedCornerShape(5.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(5.dp)).padding(horizontal = 6.dp, vertical = 8.dp)
+                        modifier = Modifier.weight(1f).height(30.dp).background(Color(0xFF0F172A), RoundedCornerShape(5.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(5.dp)).padding(horizontal = 6.dp, vertical = 7.dp)
                     )
                 }
             }
@@ -1494,7 +1494,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             val channelSources = channelMapToList(roMap)
             val channelLocks = channelLocksToList(roLocks)
             Surface(color = Color(0xFF0F172A), shape = RoundedCornerShape(10.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(12.dp)) {
+                Column(modifier = Modifier.padding(10.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column {
                             Text("通道设置", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
@@ -1502,7 +1502,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         }
                         Text(if (loaded) "● 已连接" else "○ 未连接", fontSize = 9.sp, color = if (loaded) Color(0xFF22C55E) else Color(0xFFF59E0B))
                     }
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                         WorkbenchButton("默认配置") {
                             roPreset = "default"
@@ -1518,57 +1518,50 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         WorkbenchButton("SBUS", roMode == "sbus") { roMode = "sbus" }
                         WorkbenchButton("CRSF", roMode == "crsf") { roMode = "crsf" }
                     }
-                    Spacer(Modifier.height(12.dp))
-                    Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF111827), RoundedCornerShape(8.dp)).border(1.dp, Color(0xFF1E293B), RoundedCornerShape(8.dp)).padding(8.dp)) {
-                        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("通道", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(42.dp))
-                            Text("控件", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(112.dp))
+                    Spacer(Modifier.height(8.dp))
+                    Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF111827), RoundedCornerShape(8.dp)).border(1.dp, Color(0xFF1E293B), RoundedCornerShape(8.dp)).padding(6.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("通道", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(40.dp))
+                            Text("控件", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(96.dp))
                             Text("当前输出值", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.weight(1f))
+                            Text("反向", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(48.dp))
+                            Text("自锁", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(48.dp))
+                            Text("范围", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(128.dp))
                         }
                         channelSources.forEachIndexed { idx, source ->
                             val keys = sourceKeys(source)
                             val value = channelOutputValue(rcChs, idx)
                             val lockEnabled = sourceSupportsLock(source)
-                            Column(
-                                modifier = Modifier.fillMaxWidth().heightIn(min = 76.dp).background(if (idx % 2 == 0) Color(0xFF0F172A) else Color(0xFF111827), RoundedCornerShape(4.dp)).border(0.5.dp, Color(0xFF1E293B), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 6.dp),
-                                verticalArrangement = Arrangement.spacedBy(5.dp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth().height(42.dp).background(if (idx % 2 == 0) Color(0xFF0F172A) else Color(0xFF111827), RoundedCornerShape(4.dp)).border(0.5.dp, Color(0xFF1E293B), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                    Text("CH${idx + 1}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0), modifier = Modifier.width(42.dp))
-                                    WorkbenchButton(sourceDisplayLabel(source), modifier = Modifier.width(112.dp)) { selectedSourceChannel = idx }
-                                    Spacer(Modifier.width(8.dp))
-                                    ChannelScale(value, modifier = Modifier.weight(1f))
-                                }
-                                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(72.dp)) {
-                                        Text("反向", fontSize = 9.sp, color = Color(0xFF64748B))
-                                        Checkbox(
-                                            checked = (srcCfg[keys.revKey] ?: 0) != 0,
-                                            enabled = srcCfgLoaded && keys.revKey.isNotEmpty(),
-                                            onCheckedChange = { checked ->
-                                                if (keys.revKey.isNotEmpty()) srcCfg = srcCfg + (keys.revKey to if (checked) 1 else 0)
-                                            },
-                                            modifier = Modifier.size(34.dp)
-                                        )
-                                    }
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(82.dp)) {
-                                        Text("自锁", fontSize = 9.sp, color = if (lockEnabled) Color(0xFF94A3B8) else Color(0xFF475569))
-                                        Checkbox(
-                                            checked = channelLocks.getOrElse(idx) { false },
-                                            enabled = lockEnabled,
-                                            onCheckedChange = { checked ->
-                                                val next = channelLocks.toMutableList()
-                                                next[idx] = checked
-                                                roLocks = channelLocksToString(next)
-                                            },
-                                            modifier = Modifier.size(34.dp)
-                                        )
-                                    }
-                                    Spacer(Modifier.weight(1f))
-                                    RangeEditor(source, srcCfg, srcCfgLoaded) { k, v -> srcCfg = srcCfg + (k to v) }
-                                }
+                                Text("CH${idx + 1}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0), modifier = Modifier.width(40.dp))
+                                WorkbenchButton(sourceDisplayLabel(source), modifier = Modifier.width(96.dp)) { selectedSourceChannel = idx }
+                                Spacer(Modifier.width(8.dp))
+                                ChannelScale(value, modifier = Modifier.weight(1f))
+                                Spacer(Modifier.width(8.dp))
+                                Checkbox(
+                                    checked = (srcCfg[keys.revKey] ?: 0) != 0,
+                                    enabled = srcCfgLoaded && keys.revKey.isNotEmpty(),
+                                    onCheckedChange = { checked ->
+                                        if (keys.revKey.isNotEmpty()) srcCfg = srcCfg + (keys.revKey to if (checked) 1 else 0)
+                                    },
+                                    modifier = Modifier.size(40.dp)
+                                )
+                                Checkbox(
+                                    checked = channelLocks.getOrElse(idx) { false },
+                                    enabled = lockEnabled,
+                                    onCheckedChange = { checked ->
+                                        val next = channelLocks.toMutableList()
+                                        next[idx] = checked
+                                        roLocks = channelLocksToString(next)
+                                    },
+                                    modifier = Modifier.size(40.dp)
+                                )
+                                RangeEditor(source, srcCfg, srcCfgLoaded) { k, v -> srcCfg = srcCfg + (k to v) }
                             }
-                            if (idx != channelSources.lastIndex) Spacer(Modifier.height(4.dp))
+                            if (idx != channelSources.lastIndex) Spacer(Modifier.height(3.dp))
                         }
                     }
                     if (advancedExpanded) {

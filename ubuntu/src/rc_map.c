@@ -161,9 +161,9 @@ void rc_cfg_sanitize(rc_src_cfg_t *cfg)
         if (len >= 4 && strcmp(rc_cfg_names[i] + len - 4, "_rev") == 0) {
             cfg->v[i] = cfg->v[i] ? 1 : 0;          /* 反向标志归一 0/1 */
         } else {
-            /* 钳到 SBUS/CRSF 编码器实际输出域 [1000,2000], 防非法脉宽 */
-            if (cfg->v[i] < 1000) cfg->v[i] = 1000;
-            if (cfg->v[i] > 2000) cfg->v[i] = 2000;
+            /* 允许端点微调到 [800,2200], 与 App 通道范围编辑保持一致 */
+            if (cfg->v[i] < 800) cfg->v[i] = 800;
+            if (cfg->v[i] > 2200) cfg->v[i] = 2200;
         }
     }
     /* 摇杆/dial 的 min/max 排序, 防 min>max 反向映射静默生效 (反向请用 rev) */
