@@ -1231,9 +1231,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 value > 1500 -> Color(0xFF38BDF8)
                 else -> Color(0xFFF59E0B)
             }
-            Row(modifier = modifier.padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(modifier = modifier.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(label, fontSize = 10.sp, color = Color(0xFF94A3B8), modifier = Modifier.width(34.dp))
-                Box(modifier = Modifier.weight(1f).height(14.dp).background(Color(0xFF1E293B), RoundedCornerShape(4.dp))) {
+                Box(modifier = Modifier.weight(1f).height(12.dp).background(Color(0xFF1E293B), RoundedCornerShape(4.dp))) {
                     Box(modifier = Modifier.fillMaxWidth(pct).fillMaxHeight().background(col, RoundedCornerShape(4.dp)))
                     Box(modifier = Modifier.align(Alignment.Center).width(2.dp).fillMaxHeight().background(Color(0xAAE2E8F0)))
                 }
@@ -1253,9 +1253,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 listOf("S", "N", "F").forEach { pos ->
                     Surface(
                         color = if (mode == pos) Color(0xFF0EA5E9) else Color(0xFF1E293B),
-                        shape = RoundedCornerShape(6.dp)
+                        shape = RoundedCornerShape(5.dp)
                     ) {
-                        Text(pos, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (mode == pos) Color.Black else Color(0xFF64748B), modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp))
+                        Text(pos, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (mode == pos) Color.Black else Color(0xFF64748B), modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
                     }
                 }
             }
@@ -1273,7 +1273,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     }
                     if (rowStart + 1 >= channels.size) Spacer(modifier = Modifier.weight(1f))
                 }
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(2.dp))
             }
         }
 
@@ -1302,9 +1302,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         fun DpadStatus() {
             @Composable
             fun Pad(label: String, active: Boolean, modifier: Modifier = Modifier) {
-                Surface(color = if (active) Color(0xFF14532D) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp), modifier = modifier.height(34.dp)) {
+                Surface(color = if (active) Color(0xFF14532D) else Color(0xFF1E293B), shape = RoundedCornerShape(5.dp), modifier = modifier.height(22.dp)) {
                     Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (active) Color(0xFF22C55E) else Color(0xFF64748B))
+                        Text(label, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = if (active) Color(0xFF22C55E) else Color(0xFF64748B))
                     }
                 }
             }
@@ -1314,13 +1314,13 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     Pad("UP", rcUp != 0, Modifier.weight(1f))
                     Spacer(Modifier.weight(1f))
                 }
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(3.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Pad("LEFT", rcLeft != 0, Modifier.weight(1f))
                     Pad("BTN", rcBtn != 0, Modifier.weight(1f))
                     Pad("RIGHT", rcRight != 0, Modifier.weight(1f))
                 }
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(3.dp))
                 Row(modifier = Modifier.fillMaxWidth()) {
                     Spacer(Modifier.weight(1f))
                     Pad("DOWN", rcDown != 0, Modifier.weight(1f))
@@ -1651,30 +1651,30 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 }
                 ModeSwitch(rcMode)
             }
-            Spacer(Modifier.height(14.dp))
-
-            Text("SBUS CH1-CH16", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
             Spacer(Modifier.height(8.dp))
+
+            Text("SBUS CH1-CH16", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+            Spacer(Modifier.height(5.dp))
             SbusChannelGrid()
 
-            Spacer(Modifier.height(8.dp))
-            Text("三档开关", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
+            Text("三档开关", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+            Spacer(Modifier.height(5.dp))
             ModeSwitch(rcMode)
 
-            Spacer(Modifier.height(14.dp))
-            Text("按键 / 拨轮", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
+            Text("按键 / 拨轮", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+            Spacer(Modifier.height(5.dp))
             ButtonStatusGrid()
 
-            Spacer(Modifier.height(10.dp))
-            Text("方向键", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
+            Text("方向键", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+            Spacer(Modifier.height(5.dp))
             DpadStatus()
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(8.dp))
             HorizontalDivider(color = Color(0xFF1E293B))
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
             RemoteChannelConfig()
         }
     }
