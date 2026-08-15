@@ -1434,9 +1434,10 @@ int main(int argc, char **argv)
         }
 
         // 每 2s 检测输出配置变化 (web_server 保存后进程内热重配, 避免 execv 崩溃)
-        // bridge 模式: 保持 CRSF bridge 配置, 跳过 SPI config 热重配
+        // bridge 模式: load_rc_output_cfg 仍会更新 src_cfg/map/lock (反向/范围/映射即时生效),
+        // 但跳过 mode/baud 变化导致的 UART0 角色重开 (保持 CRSF bridge 波特率/转发不受干扰)。
         static int64_t last_cfg_check = 0;
-        if (!g_crsf_bridge && n - last_cfg_check > 2000000LL) {
+        if (n - last_cfg_check > 2000000LL) {
             last_cfg_check = n;
             char cm; int cb; bool cs;
             // DBG#baud: 记录 load_rc_output_cfg 读取结果, 定位热重配为何不触发
@@ -1449,8 +1450,11 @@ int main(int argc, char **argv)
                             cm, cb, cs ? 1 : 0, diff ? 1 : 0);
                 std::fflush(stdout);
             }
-            if (cfgOk &&
-                (cm != g_out_mode.load() || cb != g_out_baud.load() || cs != g_sbus_std)) {
+            /* bridge 模式: 只重载 src_cfg/map/lock (load_rc_output_cfg 已更新),
+             * 跳过 mode/baud 变化 (bridge 固定 CRSF 400000, 不应被 SPI 配置改波特率)。 */
+            bool modeDiff = (cm != g_out_mode.load() || cb != g_out_baud.load() || cs != g_sbus_std);
+            bool reconfigureIo = cfgOk && modeDiff && !g_crsf_bridge;
+            if (reconfigureIo) {
                 std::printf("[dji_rc] 输出配置变化 mode=%c baud=%d sbus_std=%d → 热重配\n",
                             cm, cb, cs ? 1 : 0);
                 std::fflush(stdout);
