@@ -1044,6 +1044,26 @@ static std::string cfg_json_str(const std::string &json, const std::string &key)
     return v;
 }
 
+/* 深度匹配提取 key 对应的嵌套 {...} 对象子串 (含花括号)。
+ * 与浅匹配 json.find("{", pos) 不同: 遇到内嵌对象 (如 rc_output 里嵌套 src_cfg)
+ * 不会在首个 } 处截断。找不到返回空串。 */
+static std::string cfg_json_obj(const std::string &json, const std::string &key) {
+    std::string pat = "\"" + key + "\"";
+    auto pos = json.find(pat);
+    if (pos == std::string::npos) return "";
+    pos = json.find(":", pos + pat.size());
+    if (pos == std::string::npos) return "";
+    pos++;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\n')) pos++;
+    if (pos >= json.size() || json[pos] != '{') return "";
+    int depth = 0;
+    for (size_t i = pos; i < json.size(); i++) {
+        if (json[i] == '{') depth++;
+        else if (json[i] == '}') { depth--; if (depth == 0) return json.substr(pos, i - pos + 1); }
+    }
+    return "";
+}
+
 /* 从 SPI flash config (/dev/mtdblock0 @0xFD000) 读 rc_output 配置。
  * 返回 false 表示无 rc_output 段 (保持命令行默认)。成功则写 mode/baud/sbus_std 并
  * 可能更新 g_ch_map / g_ch_map_valid。 */
@@ -1060,12 +1080,9 @@ static bool load_rc_output_cfg(char &mode, int &baud, bool &sbus_std)
     ::close(fd);
     if (got != (ssize_t)len) return false;
 
-    auto rp = json.find("\"rc_output\"");
-    if (rp == std::string::npos) return false;
-    auto rs = json.find("{", rp);
-    auto re = json.find("}", rs);
-    if (rs == std::string::npos || re == std::string::npos) return false;
-    std::string obj = json.substr(rs, re - rs + 1);
+    /* 深度匹配提取整个 rc_output 对象 (内嵌套 src_cfg, 浅匹配首个 } 会停在 src_cfg 闭括号) */
+    std::string obj = cfg_json_obj(json, "rc_output");
+    if (obj.empty()) return false;
 
     auto modeS = cfg_json_str(obj, "mode");
     if (modeS == "crsf") { mode = 'c'; found = true; }
@@ -1110,6 +1127,19 @@ static bool load_rc_output_cfg(char &mode, int &baud, bool &sbus_std)
             if (idx >= CH_COUNT) g_ch_map_valid.store(true, std::memory_order_release);
         }
     }
+    /* src_cfg: 每输入源输出值 (缺省保持默认)。持锁调用 rc_map_set_cfg,
+     * 与 out_send (rx_thread) 持锁调用 rc_map_build 串行化, 防 g_cfg 撕裂读。 */
+    rc_src_cfg_t srcCfg;
+    rc_cfg_defaults(&srcCfg);
+    std::string sc = cfg_json_obj(obj, "src_cfg");
+    if (!sc.empty()) {
+        for (int i = 0; i < CFG_COUNT; i++) {
+            std::string vs = cfg_json_str(sc, rc_cfg_names[i]);
+            if (!vs.empty()) srcCfg.v[i] = (uint16_t)std::atoi(vs.c_str());
+        }
+        rc_cfg_sanitize(&srcCfg);   /* 钳位非法值, 防 SBUS/CRSF 垃圾脉宽 */
+    }
+    rc_map_set_cfg(&srcCfg);
     g_mtx.unlock();
     return found;
 }

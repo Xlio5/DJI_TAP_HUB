@@ -72,44 +72,175 @@ void rc_map_apply_preset(rc_map_preset_t p, uint8_t map[CH_COUNT]) {
     }
 }
 
-/* 单源取值 (us 1000~2000) */
+/* ── 源配置 (每输入源的输出值, 表驱动, 与 App/固件共享) ── */
+
+const char *rc_cfg_names[CFG_COUNT] = {
+    /* 摇杆 ch1-6 */
+    "st1_min", "st1_max", "st1_mid", "st1_rev",
+    "st2_min", "st2_max", "st2_mid", "st2_rev",
+    "st3_min", "st3_max", "st3_mid", "st3_rev",
+    "st4_min", "st4_max", "st4_mid", "st4_rev",
+    "st5_min", "st5_max", "st5_mid", "st5_rev",
+    "st6_min", "st6_max", "st6_mid", "st6_rev",
+    /* DIAL */
+    "dial_min", "dial_max", "dial_rev",
+    /* MODE */
+    "mode_s", "mode_n", "mode_f",
+    /* 2档开关 */
+    "rec_off", "rec_on",
+    "rth_off", "rth_on",
+    "stop_off", "stop_on",
+    "focus_off", "focus_on",
+    "c1_off", "c1_on",
+    "c2_off", "c2_on",
+    "c3_off", "c3_on",
+    "aircraft_off", "aircraft_on",
+    "back_off", "back_on",
+    "btn_off", "btn_on",
+    "up_off", "up_on",
+    "down_off", "down_on",
+    "left_off", "left_on",
+    "right_off", "right_on",
+    /* SHOT */
+    "shot_lo", "shot_mid", "shot_hi",
+    /* C12 */
+    "c12_0", "c12_1", "c12_2", "c12_3",
+    /* DIR */
+    "dir_0", "dir_1", "dir_2", "dir_3", "dir_4", "dir_5",
+};
+
+void rc_cfg_defaults(rc_src_cfg_t *cfg)
+{
+    static const uint16_t defs[CFG_COUNT] = {
+        /* st1-6: min max mid rev = 1000/2000/1500/0 (原行为) */
+        1000,2000,1500,0, 1000,2000,1500,0, 1000,2000,1500,0,
+        1000,2000,1500,0, 1000,2000,1500,0, 1000,2000,1500,0,
+        /* dial (min max rev) */
+        1000,2000,0,
+        /* mode S/N/F */
+        1000,1500,2000,
+        /* 14 个 2档开关 off/on (FOCUS 半按=1500, 其余 1000/2000) */
+        1000,2000, 1000,2000, 1000,2000, 1000,1500, 1000,2000,
+        1000,2000, 1000,2000, 1000,2000, 1000,2000, 1000,2000,
+        1000,2000, 1000,2000, 1000,2000, 1000,2000,
+        /* shot 松/focus/全按 */
+        1000,1500,2000,
+        /* c12 无/C1/C2/C1+C2 */
+        1000,1333,1667,2000,
+        /* dir 无/UP/DN/L/R/BTN */
+        1000,1200,1400,1600,1800,2000,
+    };
+    memcpy(cfg->v, defs, sizeof(defs));
+}
+
+static rc_src_cfg_t g_cfg;
+static bool g_cfg_init = false;
+
+static void ensure_cfg(void)
+{
+    if (!g_cfg_init) { rc_cfg_defaults(&g_cfg); g_cfg_init = true; }
+}
+
+static const rc_src_cfg_t *rc_cfg_get(void)
+{
+    ensure_cfg();
+    return &g_cfg;
+}
+
+void rc_map_set_cfg(const rc_src_cfg_t *cfg)
+{
+    ensure_cfg();
+    if (cfg) g_cfg = *cfg;
+    else rc_cfg_defaults(&g_cfg);
+}
+
+void rc_cfg_sanitize(rc_src_cfg_t *cfg)
+{
+    for (int i = 0; i < CFG_COUNT; i++) {
+        size_t len = strlen(rc_cfg_names[i]);
+        if (len >= 4 && strcmp(rc_cfg_names[i] + len - 4, "_rev") == 0) {
+            cfg->v[i] = cfg->v[i] ? 1 : 0;          /* 反向标志归一 0/1 */
+        } else {
+            /* 钳到 SBUS/CRSF 编码器实际输出域 [1000,2000], 防非法脉宽 */
+            if (cfg->v[i] < 1000) cfg->v[i] = 1000;
+            if (cfg->v[i] > 2000) cfg->v[i] = 2000;
+        }
+    }
+    /* 摇杆/dial 的 min/max 排序, 防 min>max 反向映射静默生效 (反向请用 rev) */
+    for (int s = 0; s < 6; s++) {
+        int mi = CFG_ST1_MIN + s * 4;
+        int ma = mi + 1;
+        if (cfg->v[mi] > cfg->v[ma]) {
+            uint16_t t = cfg->v[mi]; cfg->v[mi] = cfg->v[ma]; cfg->v[ma] = t;
+        }
+    }
+    if (cfg->v[CFG_DIAL_MIN] > cfg->v[CFG_DIAL_MAX]) {
+        uint16_t t = cfg->v[CFG_DIAL_MIN];
+        cfg->v[CFG_DIAL_MIN] = cfg->v[CFG_DIAL_MAX];
+        cfg->v[CFG_DIAL_MAX] = t;
+    }
+}
+
+/* 单源取值 (us 1000~2000, 应用源配置) */
 static uint16_t src_value(const rc_state_t *st, rc_src_t s) {
+    const rc_src_cfg_t *c = rc_cfg_get();
     switch (s) {
         case SRC_NONE: return 1000;
         case SRC_CH1: case SRC_CH2: case SRC_CH3:
         case SRC_CH4: case SRC_CH5: case SRC_CH6: {
-            int16_t v = st->ch[s - SRC_CH1];   /* -660~+660 */
+            int idx = s - SRC_CH1;                       /* 0..5 */
+            int16_t v = st->ch[idx];                     /* -660~+660 */
             if (v < -660) v = -660;
             if (v >  660) v =  660;
-            return (uint16_t)(1500 + (int)v * 500 / 660);
+            const uint16_t *f = &c->v[CFG_ST1_MIN + idx * 4];   /* min max mid rev */
+            int16_t mn = f[0], mx = f[1], mid = f[2];
+            if (f[3]) v = -v;                            /* 反向 */
+            /* 两段线性: 中心为 mid, 端点按 min/max */
+            if (v < 0) return (uint16_t)(mid + (mid - mn) * v / 660);
+            return (uint16_t)(mid + (mx - mid) * v / 660);
         }
-        case SRC_MODE:
-            return (st->mode == 'S') ? 1000 : (st->mode == 'N') ? 1500 :
-                   (st->mode == 'F') ? 2000 : 1500;
-        case SRC_REC:   return st->rec ? 2000 : 1000;
-        case SRC_RTH:   return st->rth ? 2000 : 1000;
-        case SRC_STOP:  return st->stop ? 2000 : 1000;
-        case SRC_FOCUS: return st->focus ? 1500 : 1000;   /* 半按 */
-        case SRC_SHOT:  return st->shot ? 2000 : (st->focus ? 1500 : 1000);
-        case SRC_C1:    return st->c1 ? 2000 : 1000;
-        case SRC_C2:    return st->c2 ? 2000 : 1000;
-        case SRC_C3:    return st->c3 ? 2000 : 1000;
-        case SRC_DIAL:  return (uint16_t)(1000 + (int)st->dial * 1000 / 255);
-        case SRC_AIRCRAFT: return st->aircraft ? 2000 : 1000;
-        case SRC_BACK:  return st->back ? 2000 : 1000;
-        case SRC_BTN:   return st->btn ? 2000 : 1000;
-        case SRC_UP:    return st->up ? 2000 : 1000;
-        case SRC_DOWN:  return st->down ? 2000 : 1000;
-        case SRC_LEFT:  return st->left ? 2000 : 1000;
-        case SRC_RIGHT: return st->right ? 2000 : 1000;
+        case SRC_MODE: {
+            const uint16_t *f = &c->v[CFG_MODE_S];
+            return (st->mode == 'S') ? f[0] : (st->mode == 'N') ? f[1] :
+                   (st->mode == 'F') ? f[2] : f[1];
+        }
+        case SRC_REC:   return st->rec ? c->v[CFG_REC_ON] : c->v[CFG_REC_OFF];
+        case SRC_RTH:   return st->rth ? c->v[CFG_RTH_ON] : c->v[CFG_RTH_OFF];
+        case SRC_STOP:  return st->stop ? c->v[CFG_STOP_ON] : c->v[CFG_STOP_OFF];
+        case SRC_FOCUS: return st->focus ? c->v[CFG_FOCUS_ON] : c->v[CFG_FOCUS_OFF];
+        case SRC_C1:    return st->c1 ? c->v[CFG_C1_ON] : c->v[CFG_C1_OFF];
+        case SRC_C2:    return st->c2 ? c->v[CFG_C2_ON] : c->v[CFG_C2_OFF];
+        case SRC_C3:    return st->c3 ? c->v[CFG_C3_ON] : c->v[CFG_C3_OFF];
+        case SRC_DIAL: {
+            const uint16_t *f = &c->v[CFG_DIAL_MIN];   /* min max rev */
+            int d = st->dial;
+            if (d < 0) d = 0;
+            if (d > 255) d = 255;
+            int16_t mn = f[0], mx = f[1];
+            if (f[2]) d = 255 - d;                       /* 反向 */
+            return (uint16_t)(mn + (mx - mn) * d / 255);
+        }
+        case SRC_AIRCRAFT: return st->aircraft ? c->v[CFG_AIRCRAFT_ON] : c->v[CFG_AIRCRAFT_OFF];
+        case SRC_BACK:  return st->back ? c->v[CFG_BACK_ON] : c->v[CFG_BACK_OFF];
+        case SRC_BTN:   return st->btn ? c->v[CFG_BTN_ON] : c->v[CFG_BTN_OFF];
+        case SRC_UP:    return st->up ? c->v[CFG_UP_ON] : c->v[CFG_UP_OFF];
+        case SRC_DOWN:  return st->down ? c->v[CFG_DOWN_ON] : c->v[CFG_DOWN_OFF];
+        case SRC_LEFT:  return st->left ? c->v[CFG_LEFT_ON] : c->v[CFG_LEFT_OFF];
+        case SRC_RIGHT: return st->right ? c->v[CFG_RIGHT_ON] : c->v[CFG_RIGHT_OFF];
+        case SRC_SHOT: {
+            const uint16_t *f = &c->v[CFG_SHOT_LO];
+            return st->shot ? f[2] : st->focus ? f[1] : f[0];
+        }
         case SRC_C12: {
-            static const uint16_t lvl[4] = {1000, 1333, 1667, 2000};
-            int l = ((st->c2 & 1) << 1) | (st->c1 & 1);
-            return lvl[l];
+            const uint16_t *f = &c->v[CFG_C12_0];
+            int l = ((st->c2 & 1) << 1) | (st->c1 & 1);   /* 0..3 */
+            return f[l];
         }
-        case SRC_DIR:
-            return st->btn ? 2000 : st->up ? 1200 : st->down ? 1400 :
-                   st->left ? 1600 : st->right ? 1800 : 1000;
+        case SRC_DIR: {
+            const uint16_t *f = &c->v[CFG_DIR_0];
+            return st->btn ? f[5] : st->up ? f[1] : st->down ? f[2] :
+                   st->left ? f[3] : st->right ? f[4] : f[0];
+        }
         default: return 1000;
     }
 }

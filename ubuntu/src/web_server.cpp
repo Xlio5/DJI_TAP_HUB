@@ -198,6 +198,9 @@ struct Config {
     int         rcOutCrsfMs = 10;         // CRSF 发送周期 (ms, 预留)
     bool        rcOutCrsfTelem = true;    // CRSF 接收回传
     bool        rcOutSbusStd = true;      // SBUS 标准模式: true=100k 8E2, false=115200 8N1
+    rc_src_cfg_t rcSrcCfg;                // 每输入源输出值 (min/max/mid/rev + 开关触发值)
+
+    Config() { rc_cfg_defaults(&rcSrcCfg); }
 };
 
 /* 前置声明: apiConfig 会调用它 */
@@ -234,6 +237,29 @@ static int jsonInt(const std::string& json, const std::string& key) {
     auto s = jsonVal(json, key);
     if (s.empty()) return 0;
     try { return std::stoi(s); } catch (...) { return 0; }
+}
+
+/* key 是否存在且非空 (jsonInt 对缺失返回 0, 无法区分 "缺" 与 "值为0") */
+static bool jsonHas(const std::string& json, const std::string& key) {
+    return !jsonVal(json, key).empty();
+}
+
+/* 提取 key 对应的嵌套 {...} 对象子串 (含花括号)。找不到返回空串。 */
+static std::string jsonObj(const std::string& json, const std::string& key) {
+    std::string pat = "\"" + key + "\"";
+    auto pos = json.find(pat);
+    if (pos == std::string::npos) return "";
+    pos = json.find(":", pos + pat.size());
+    if (pos == std::string::npos) return "";
+    pos++;
+    while (pos < json.size() && (json[pos]==' '||json[pos]=='\n'||json[pos]=='\t')) pos++;
+    if (pos >= json.size() || json[pos] != '{') return "";
+    int depth = 0;
+    for (size_t i = pos; i < json.size(); i++) {
+        if (json[i] == '{') depth++;
+        else if (json[i] == '}') { depth--; if (depth == 0) return json.substr(pos, i - pos + 1); }
+    }
+    return "";
 }
 
 static std::string jsonRaw(const std::string& json, const std::string& key) {
@@ -390,6 +416,13 @@ static Config loadConfig(bool* outChanged = nullptr) {
             if (!tb.empty()) cfg.rcOutCrsfTelem = (tb == "true");
             auto ss = jsonStr(ro, "sbus_std");
             if (!ss.empty()) cfg.rcOutSbusStd = (ss == "true");
+            /* src_cfg: 每输入源输出值 (缺省保持默认) */
+            auto sc = jsonObj(ro, "src_cfg");
+            for (int i = 0; i < CFG_COUNT; i++) {
+                if (jsonHas(sc, rc_cfg_names[i]))
+                    cfg.rcSrcCfg.v[i] = (uint16_t)jsonInt(sc, rc_cfg_names[i]);
+            }
+            rc_cfg_sanitize(&cfg.rcSrcCfg);   /* 防 flash 里坏值产生非法脉宽 */
         }
     }
 
@@ -433,7 +466,13 @@ static void saveConfig(const Config& cfg) {
     ss << "    \"map\": \"" << cfg.rcOutMap << "\",\n";
     ss << "    \"crsf_period_ms\": " << cfg.rcOutCrsfMs << ",\n";
     ss << "    \"crsf_telem\": " << (cfg.rcOutCrsfTelem ? "true" : "false") << ",\n";
-    ss << "    \"sbus_std\": " << (cfg.rcOutSbusStd ? "true" : "false") << "\n";
+    ss << "    \"sbus_std\": " << (cfg.rcOutSbusStd ? "true" : "false") << ",\n";
+    ss << "    \"src_cfg\": {\n";
+    for (int i = 0; i < CFG_COUNT; i++) {
+        ss << "      \"" << rc_cfg_names[i] << "\": " << cfg.rcSrcCfg.v[i];
+        ss << (i + 1 < CFG_COUNT ? ",\n" : "\n");
+    }
+    ss << "    }\n";
     ss << "  }\n}\n";
     std::string json = ss.str();
     if (json.size() > CFG_MAX - 2) {
@@ -1120,6 +1159,20 @@ static std::string apiRcOutput(const Config& cfg) {
         srcs += rc_src_name((rc_src_t)i);
     }
     obj.pair("sources", JsonValue::string(srcs));
+    /* src_cfg_names: 逗号分隔的参数 key 列表 (App 判断固件是否支持) */
+    std::string cfgNames;
+    for (int i = 0; i < CFG_COUNT; i++) {
+        if (i) cfgNames += ",";
+        cfgNames += rc_cfg_names[i];
+    }
+    obj.pair("src_cfg_names", JsonValue::string(cfgNames));
+    /* src_cfg: 每输入源输出值对象 */
+    std::string scJson;
+    for (int i = 0; i < CFG_COUNT; i++) {
+        if (i) scJson += ",";
+        scJson += "\"" + std::string(rc_cfg_names[i]) + "\":" + std::to_string(cfg.rcSrcCfg.v[i]);
+    }
+    obj.body += ",\"src_cfg\":{" + scJson + "}";
     return obj.done();
 }
 
@@ -1247,6 +1300,13 @@ static Response handleRequest(const Request& req) {
             if (ss == "true" || ss == "false") cfg.rcOutSbusStd = (ss == "true");
             int per = jsonInt(req.body, "crsf_period_ms");
             if (per >= 5 && per <= 100) cfg.rcOutCrsfMs = per;
+            /* src_cfg: 每输入源输出值 (只覆盖 body 里出现的 key) */
+            auto sc = jsonObj(req.body, "src_cfg");
+            for (int i = 0; i < CFG_COUNT; i++) {
+                if (jsonHas(sc, rc_cfg_names[i]))
+                    cfg.rcSrcCfg.v[i] = (uint16_t)jsonInt(sc, rc_cfg_names[i]);
+            }
+            rc_cfg_sanitize(&cfg.rcSrcCfg);   /* 钳位非法值, 防 SBUS/CRSF 垃圾脉宽 */
             saveConfig(cfg);
             JsonObj obj;
             obj.pair("ok", JsonValue::boolean(true));

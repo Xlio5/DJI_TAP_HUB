@@ -74,6 +74,69 @@ void rc_map_default(uint8_t map[CH_COUNT]);
 /* 预设 -> map 数组。预设只重排 CH1-4, 其余同默认。 */
 void rc_map_apply_preset(rc_map_preset_t p, uint8_t map[CH_COUNT]);
 
+/* ── 源配置 (每输入源的输出值, 参考 EdgeTX 混控) ──
+ * 每个输入源可自定义其映射到输出通道时的数值:
+ *   摇杆/Dial: min/max/mid/rev (两段线性缩放)
+ *   MODE/SHOT : 三档值 (S/N/F 或 松/focus/全按)
+ *   2档开关   : off/on 触发值
+ *   C12 4档 / DIR 6档: 每档位值
+ * 表驱动存 71 个 uint16 (rc_cfg_names 给出 JSON key), web_server/dji_rc/App 共享。 */
+
+#define RC_CFG_NUM 71   /* 源配置参数总数 */
+
+/* 源配置参数索引 (顺序与 rc_cfg_names/默认值表一致, 勿乱序) */
+enum {
+    /* 摇杆 ch1-6 (每源 4 项: min max mid rev) */
+    CFG_ST1_MIN = 0, CFG_ST1_MAX, CFG_ST1_MID, CFG_ST1_REV,
+    CFG_ST2_MIN, CFG_ST2_MAX, CFG_ST2_MID, CFG_ST2_REV,
+    CFG_ST3_MIN, CFG_ST3_MAX, CFG_ST3_MID, CFG_ST3_REV,
+    CFG_ST4_MIN, CFG_ST4_MAX, CFG_ST4_MID, CFG_ST4_REV,
+    CFG_ST5_MIN, CFG_ST5_MAX, CFG_ST5_MID, CFG_ST5_REV,
+    CFG_ST6_MIN, CFG_ST6_MAX, CFG_ST6_MID, CFG_ST6_REV,
+    /* DIAL 旋钮 (线性 min→max, 无中位) */
+    CFG_DIAL_MIN, CFG_DIAL_MAX, CFG_DIAL_REV,
+    /* MODE 三档 S/N/F */
+    CFG_MODE_S, CFG_MODE_N, CFG_MODE_F,
+    /* 2档开关 (每源 2 项: off on) */
+    CFG_REC_OFF, CFG_REC_ON,
+    CFG_RTH_OFF, CFG_RTH_ON,
+    CFG_STOP_OFF, CFG_STOP_ON,
+    CFG_FOCUS_OFF, CFG_FOCUS_ON,
+    CFG_C1_OFF, CFG_C1_ON,
+    CFG_C2_OFF, CFG_C2_ON,
+    CFG_C3_OFF, CFG_C3_ON,
+    CFG_AIRCRAFT_OFF, CFG_AIRCRAFT_ON,
+    CFG_BACK_OFF, CFG_BACK_ON,
+    CFG_BTN_OFF, CFG_BTN_ON,
+    CFG_UP_OFF, CFG_UP_ON,
+    CFG_DOWN_OFF, CFG_DOWN_ON,
+    CFG_LEFT_OFF, CFG_LEFT_ON,
+    CFG_RIGHT_OFF, CFG_RIGHT_ON,
+    /* SHOT 三档 (松/focus 半按/全按) */
+    CFG_SHOT_LO, CFG_SHOT_MID, CFG_SHOT_HI,
+    /* C12 四档 (无/C1/C2/C1+C2) */
+    CFG_C12_0, CFG_C12_1, CFG_C12_2, CFG_C12_3,
+    /* DIR 六档 (无/UP/DN/L/R/BTN) */
+    CFG_DIR_0, CFG_DIR_1, CFG_DIR_2, CFG_DIR_3, CFG_DIR_4, CFG_DIR_5,
+    CFG_COUNT   /* = RC_CFG_NUM = 71 */
+};
+
+typedef struct {
+    uint16_t v[RC_CFG_NUM];
+} rc_src_cfg_t;
+
+/* 参数名表 (JSON key, 顺序与 CFG_* 索引一致) */
+extern const char *rc_cfg_names[CFG_COUNT];
+
+/* 填默认值 (默认 = 原硬编码行为) */
+void rc_cfg_defaults(rc_src_cfg_t *cfg);
+
+/* 清理配置值: _rev 归一 0/1, 其余钳位 [1000,2000], 防非法脉宽 */
+void rc_cfg_sanitize(rc_src_cfg_t *cfg);
+
+/* 设置源配置; cfg==NULL 恢复默认。rc_map_build 读此配置。 */
+void rc_map_set_cfg(const rc_src_cfg_t *cfg);
+
 #ifdef __cplusplus
 }
 #endif
