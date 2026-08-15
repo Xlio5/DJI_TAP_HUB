@@ -205,6 +205,13 @@ PB = bank 1 → bank offset 0x24
 - **验证**：src_cfg_names 85 项（含 14 `_lp`），rec_lp 保存/读回 0↔1 正常；真机按键验证待老大操作
 - **审查结论**（2026-08-15）：无 CRITICAL；修复 1 个 HIGH（长按污染复合源）+ 4 个 LOW（注释/死变量/时间戳）
 
+### 波特率热重配修复（commit ad666ec，固件 v1.6.22）
+- **问题**：热重配切波特率时 `g_out_fd < 0` 才重开输出口，SBUS 无回传线程时 fd 不关闭 → 波特率不变（实测仍 400k）
+- **修复**：热重配无条件关闭旧 fd 再重开 uart_open_out
+- **验证**：115200 8N1↔100k 8E2 双向热重配都生效；老大实测 115200 正常
+- **固化**：web OTA 双槽 v1.6.22（A/B 槽前 4.2MB md5 一致 `b4f6d4ce`）
+- 附：App v1.6.28 配置页选标准/兼容联动 roBaud=auto（commit a2d3e4a）
+
 ### bridge(ELRS Lua) 按 SPI mode 自动启停（commit 0102938，固件 v1.6.21）
 - **问题**：dji_rc 以 `--crsf-bridge` 启动强制 CRSF 输出，用户切 SBUS 后无输出（S99 固定传 --crsf-bridge）
 - **修复**：启动读 SPI mode，sbus 则禁用 bridge（UART0 输出 SBUS），crsf 则启用 bridge；热重配时动态启停 bridge 线程
