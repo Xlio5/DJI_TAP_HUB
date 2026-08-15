@@ -1197,18 +1197,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         fun sbusPct(v: Int): Float = ((v - 1000f) / (2000f - 1000f)).coerceIn(0f, 1f)
 
         @Composable
-        fun SmallChip(label: String, active: Boolean, value: String = "") {
-            Surface(color = if (active) Color(0xFF14532D) else Color(0xFF1E293B), shape = RoundedCornerShape(4.dp)) {
-                Text(
-                    text = if (value.isNotEmpty()) "$label:$value" else label,
-                    fontSize = 9.sp,
-                    color = if (active) Color(0xFF22C55E) else Color(0xFF64748B),
-                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
-                )
-            }
-        }
-
-        @Composable
         fun StatusChip(label: String, value: String, active: Boolean, modifier: Modifier = Modifier) {
             Surface(color = if (active) Color(0xFF14532D) else Color(0xFF1E293B), shape = RoundedCornerShape(5.dp), modifier = modifier) {
                 Row(
@@ -1216,8 +1204,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(label, fontSize = 8.sp, color = Color(0xFF94A3B8), maxLines = 1)
-                    Text(value, fontSize = 9.sp, color = if (active) Color(0xFF22C55E) else Color(0xFFE2E8F0), fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, maxLines = 1)
+                    Text(label, fontSize = 9.sp, color = Color(0xFF94A3B8), maxLines = 1)
+                    Text(value, fontSize = 10.sp, color = if (active) Color(0xFF22C55E) else Color(0xFFE2E8F0), fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, maxLines = 1)
                 }
             }
         }
@@ -1279,7 +1267,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
 
         @Composable
         fun ButtonStatusGrid() {
-            // 紧凑 4 列网格: 去掉分组标题, 14 个按键/拨轮 chip 密排
+            // 紧凑 4 列网格: 去掉分组标题, 12 个按键/拨轮 chip 密排 (方向键在 DpadStatus 单独展示)
             val items = listOf(
                 "C1" to rcC1, "C2" to rcC2, "C3" to rcC3, "REC" to rcRec,
                 "RTH" to rcRth, "STOP" to rcStop, "BACK" to rcBack, "FOCUS" to rcFocus,
@@ -1289,7 +1277,10 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     row.forEach { (name, value) ->
                         Box(modifier = Modifier.weight(1f)) {
-                            StatusChip(name, value.takeIf { it != 0 }?.toString() ?: "OFF", value != 0)
+                            // DIAL 拨轮显示数值, 其余按键显示 ON/OFF (激活态高亮)
+                            val v = if (name == "DIAL") value.takeIf { it != 0 }?.toString() ?: "0"
+                                    else if (value != 0) "ON" else "OFF"
+                            StatusChip(name, v, value != 0)
                         }
                     }
                     repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
@@ -1304,7 +1295,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             fun Pad(label: String, active: Boolean, modifier: Modifier = Modifier) {
                 Surface(color = if (active) Color(0xFF14532D) else Color(0xFF1E293B), shape = RoundedCornerShape(5.dp), modifier = modifier.height(22.dp)) {
                     Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                        Text(label, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = if (active) Color(0xFF22C55E) else Color(0xFF64748B))
+                        Text(label, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (active) Color(0xFF22C55E) else Color(0xFF64748B))
                     }
                 }
             }
@@ -1656,11 +1647,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             Text("SBUS CH1-CH16", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
             Spacer(Modifier.height(5.dp))
             SbusChannelGrid()
-
-            Spacer(Modifier.height(6.dp))
-            Text("三档开关", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
-            Spacer(Modifier.height(5.dp))
-            ModeSwitch(rcMode)
 
             Spacer(Modifier.height(6.dp))
             Text("按键 / 拨轮", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
