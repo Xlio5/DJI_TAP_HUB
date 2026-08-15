@@ -1,8 +1,28 @@
 # TUN_NAT_HUB 项目交接文档
 
-> 更新日期: 2026-08-08
+> 更新日期: 2026-08-16
 > 用途: 复制到新会话继续工作
 > 基于完整会话整理, 冲突处以最后一次确认为准
+
+---
+
+## 〇、当前进行中任务（2026-08-16 优先看）
+
+### 摇杆 CRSF 输出 + Lua 桥同时工作（未完成）
+- **目标**：crsf 模式既能输出摇杆 CRSF（飞控），又能配置 ELRS Lua（接收机页）
+- **固件 v1.6.25（ringbuf 版）已在 V3s 运行**，但 Lua 配置未打通
+- **关键发现：V3s BOTHER 设 400000 实际输出 460800**（不是 400k）！
+  - 460800 采样能正确解析标准 CRSF（`C8 21 16` 摇杆帧），400000 采样乱码
+  - 影响：400k 电脑桥乱码 = 波特率不匹配，非固件 bug
+- **发送架构**：v1.6.25 用 ringbuf（`g_tx_ring` 4096B），摇杆帧+Lua 帧统一入队，主循环 15ms 定时 `tx_flush` 批量写 UART0（单一写者无竞态）
+- **现状**：摇杆帧正常（COM30 460800 抓到 999 帧 0x16）；V3s bridge 收到 451 次 Lua 命令；但 **COM30 抓不到 Lua 帧 → ELRS 未响应**
+- **待解决**：① 确认 Lua 帧是否被 tx_flush 发出（可能 ringbuf 被摇杆占满挤掉，或 ELRS 未响应）；② ELRS 波特率需匹配 460800
+- **详细**：[docs/crsf_lua_bridge_plan.md §6.5](docs/crsf_lua_bridge_plan.md)
+
+### 调试环境
+- 电脑转发桥 COM10↔COM30（`tmp/_serial_bridge.py`），COM30 连 V3s UART0，COM10 连 ELRS
+- **波特率用 460800**（V3s 实际输出），解析脚本 `tmp/_parse_crsf_frames.py`
+- V3s 当前 dji_rc 输出 460800 8N1（/tmp ringbuf 版）
 
 ---
 

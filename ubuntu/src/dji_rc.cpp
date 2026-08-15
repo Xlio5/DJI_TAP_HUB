@@ -69,6 +69,36 @@ static std::mutex g_mtx;
 static std::atomic<bool> g_stop{false};
 static std::atomic<bool> g_crsf_stop{false};   /* 独立控制 CRSF 回传线程 (t3), 不干扰 t1/t2 */
 static std::atomic<bool> g_bridge_stop{false}; /* 独立控制 bridge 下行线程 (t4), 避免与 t3 的 g_crsf_stop 互相干扰 */
+
+/* ── UART0 发送缓冲 (ringbuf): 摇杆帧 + Lua 帧统一入队, 主循环定时批量写 ──
+ * 生产者: out_send(摇杆) / crsf_bridge_rx_thread(Lua) 入队, 不直接写串口。
+ * 消费者: 主循环每 15ms 取全部待发字节写 UART0 → 单一写者, 无竞态。 */
+static constexpr size_t TX_RING_SIZE = 4096;
+static uint8_t   g_tx_ring[TX_RING_SIZE];
+static size_t    g_tx_head = 0;   // 消费者读位置
+static size_t    g_tx_tail = 0;   // 生产者写位置
+static std::mutex g_tx_mtx;       // 保护 head/tail
+
+static void tx_enqueue(const uint8_t *data, size_t len) {
+    std::lock_guard<std::mutex> lock(g_tx_mtx);
+    for (size_t i = 0; i < len; i++) {
+        size_t next = (g_tx_tail + 1) % TX_RING_SIZE;
+        if (next == g_tx_head) break;   // 满, 丢帧
+        g_tx_ring[g_tx_tail] = data[i];
+        g_tx_tail = next;
+    }
+}
+
+static size_t tx_dequeue(uint8_t *out, size_t max) {
+    std::lock_guard<std::mutex> lock(g_tx_mtx);
+    size_t n = 0;
+    while (g_tx_head != g_tx_tail && n < max) {
+        out[n++] = g_tx_ring[g_tx_head];
+        g_tx_head = (g_tx_head + 1) % TX_RING_SIZE;
+    }
+    return n;
+}
+
 static int g_debug_fd = -1;
 static int64_t g_last_debug_us = 0;
 
@@ -78,6 +108,24 @@ static std::atomic<int> g_out_fd{-1};
 static std::atomic<char> g_out_mode{'s'}; // 's' = SBUS, 'c' = CRSF
 static std::atomic<int>  g_out_baud{100000}; // 实际波特率 (SBUS标准=100000, SBUS非标=115200, CRSF=115200)
 static std::mutex g_out_write_mtx;        // CO-4: 保护对 g_out_fd 的写 (out_send + crsf_rx_thread 并发)
+
+/* 主循环调用: 取发送缓冲全部待发字节, 批量写 UART0。单一消费者, 无竞态。 */
+static void tx_flush(void) {
+    int fd = g_out_fd.load();            // C1: atomic load
+    if (fd < 0) return;
+    uint8_t buf[512];
+    size_t n = tx_dequeue(buf, sizeof(buf));
+    if (n > 0) {
+        std::lock_guard<std::mutex> lock(g_out_write_mtx);
+        if (g_out_fd.load() != fd) return;   // fd 已被替换
+        ssize_t w = ::write(fd, buf, n);
+        if (w != (ssize_t)n) {
+            std::printf("[dji_rc] tx flush 写 %zu 得 %zd\n", n, w);
+            std::fflush(stdout);
+        }
+    }
+}
+
 static bool g_sbus_std = true;          // SBUS 标准模式: true=100k 8E2, false=115200 8N1
 static bool g_crsf_telem = true;        // CRSF 是否接收回传
 static std::atomic<bool> g_ch_map_valid{false};  // CRIT#2: atomic, 主线程热重配写 + rx_thread 读
@@ -844,36 +892,28 @@ static void out_send(const rc_state_t &m)
     // 否则 reader 可能在 writer 写入过程中读到 torn map (g_ch_map_valid 永不复位的场景)。
     build_output_channels(m, ch, true);
 
-    int n = 0;
+    /* 编码帧后入发送缓冲 (ringbuf), 不直接写串口 — 主循环 15ms 定时批量写 UART0。
+       摇杆帧/Lua 帧统一入队, 单一消费者写串口, 无竞态。 */
     if (outMode == 'c') {
         uint8_t frame[CRSF_FRAME_MAX];
-        n = crsf_pack_channels(ch, frame);
+        int n = crsf_pack_channels(ch, frame);
         if (n > 0) {
-            std::lock_guard<std::mutex> lock(g_out_write_mtx);   // CO-4: 串口写互斥, 防 CRSF 帧交错
-            if (g_out_fd.load() != outFd) return;                // CO-5: fd 已被替换, 丢弃本次输出
-            ssize_t w = ::write(outFd, frame, (size_t)n);
+            tx_enqueue(frame, (size_t)n);
             out_attempts++;
-            if (w != n) { out_errors++; }
         }
     } else {
         uint8_t frame[SBUS_FRAME_LEN];
         sbus_encode(ch, frame);
-        std::lock_guard<std::mutex> lock(g_out_write_mtx);       // CO-4: 串口写互斥
-        if (g_out_fd.load() != outFd) return;                    // CO-5: fd 已被替换
-        ssize_t w = ::write(outFd, frame, SBUS_FRAME_LEN);
+        tx_enqueue(frame, SBUS_FRAME_LEN);
         out_attempts++;
-        if (w != SBUS_FRAME_LEN) { out_errors++; }
     }
 
     if (out_errors && out_attempts <= 10) {
-        std::printf("[dji_rc] out write fail attempts=%u errors=%u errno=%d\n",
-                    out_attempts, out_errors, errno);
-        debug_log("[dji_rc][dbg] out write fail attempts=%u errors=%u errno=%d",
-                  out_attempts, out_errors, errno);
+        std::printf("[dji_rc] out enq fail attempts=%u errors=%u\n", out_attempts, out_errors);
     } else if ((out_attempts <= 10 || (out_attempts % 100) == 0) && out_errors == 0) {
-        std::printf("[dji_rc] out ok mode=%c attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u\n",
+        std::printf("[dji_rc] out enq mode=%c attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u\n",
                     outMode, out_attempts, ch[0], ch[1], ch[2], ch[3]);
-        debug_log("[dji_rc][dbg] out ok mode=%c attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u",
+        debug_log("[dji_rc][dbg] out enq mode=%c attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u",
                   outMode, out_attempts, ch[0], ch[1], ch[2], ch[3]);
     }
 }
@@ -1025,21 +1065,9 @@ static void crsf_bridge_rx_thread()
                             n, flen, (long)(n - 4), ofd);
                 std::fflush(stdout);
                 if (flen + 2 == (uint8_t)(n - 4) && ofd >= 0) {
-                    /* 与 out_send (摇杆 CRSF) 互斥, 防 UART0 帧交错。
-                       摇杆帧占满 TX 时 O_NONBLOCK write 会 EAGAIN 丢参数帧,
-                       必须重试直到写入 (参数帧比摇杆帧重要) */
-                    std::lock_guard<std::mutex> lock(g_out_write_mtx);
-                    if (g_out_fd.load() != ofd) continue;   // fd 已被热重配替换, 丢弃本帧
-                    ssize_t w = -1;
-                    for (int r = 0; r < 100 && w < 0; r++) {
-                        w = ::write(ofd, pkt + 4, (size_t)(n - 4));
-                        if (w < 0 && errno == EAGAIN) { ::usleep(500); continue; }
-                        break;
-                    }
-                    if (w < 0) {
-                        std::printf("[dji_rc] bridge fwd write 失败 errno=%d\n", errno);
-                        std::fflush(stdout);
-                    }
+                    /* Lua 帧入发送缓冲 (ringbuf), 由主循环定时批量写 UART0。
+                       与摇杆帧统一排队, 单一消费者写串口, 无竞态。 */
+                    tx_enqueue(pkt + 4, (size_t)(n - 4));
                 }
             }
         } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
@@ -1432,6 +1460,15 @@ int main(int argc, char **argv)
     while (!g_stop.load(std::memory_order_relaxed)) {
         struct timespec ts = {0, interval_ms * 1000000L};
         nanosleep(&ts, nullptr);
+
+        /* 定时批量发送 UART0 发送缓冲 (摇杆帧 + Lua 帧, ~15ms 周期)。
+           单一消费者, 生产者 (out_send/bridge) 只入队, 无竞态。 */
+        static int64_t last_tx = 0;
+        int64_t now_ns = now_us();
+        if (now_ns - last_tx >= 15000LL) {
+            last_tx = now_ns;
+            tx_flush();
+        }
 
         rc_state_t s20, s0;
         uint32_t g20, g0, rx20, rx0;
