@@ -93,7 +93,7 @@ App 收到网口 CRSF 帧 (Settings_Entry/Device_Info)
 | **M2** | App 集成 LuaJ + crossfireTelemetryPush 绑定 | App 能跑简单 Lua | ✅ complete |
 | **M3** | 移植 elrsV3.lua + lcd 绑定 | 参数界面显示 | ✅ complete |
 | **M4** | 参数读写 (读/写射频参数) | 真机改 ELRS 模块参数 | ✅ complete |
-| **M5** | RC 通道输出配置入口（src_cfg 源配置 + App 遥控页卡片） | 客户在遥控页配置通道/摇杆范围/开关值 | 🔄 in-progress（固件 v1.6.14 + App v1.6.16 已实现, 真机验证待完成）|
+| **M5** | RC 通道输出配置入口（src_cfg 源配置 + App 遥控页卡片） | 客户在遥控页配置通道/摇杆范围/开关值 | ✅ complete（固件 v1.6.18 + App v1.6.19，真机验证通过）|
 
 ---
 
@@ -116,10 +116,18 @@ V3s 输出 SBUS/CRSF 控制飞控。已有通道映射（rc_map）+ 输入源配
 ### 6.4 验证状态
 - ✅ 固件编译通过 + src_cfg API 保存（st1_min 1000→1100 读回成功）
 - ✅ 固件 OTA v1.6.14 + App v1.6.16 部署
-- ⏳ 真机验证配置卡片交互（需 adb 点 USB 授权确认 → 遥控页）
+- ✅ 真机验证配置卡片交互（adb 点 USB 授权确认 → 遥控页）
+- ✅ **bridge 模式 src_cfg 热重配修复**（v1.6.17，commit b865ca9）：反向/范围/映射运行中修改即时生效（值变了输出没变 → 根因 bridge 跳过热重配）
+- ✅ **自锁修复**（v1.6.18，commit de235f2）：bridge 模式主循环推进 latch（out_send 被跳过导致 latch 永不 toggle）
+- ✅ **低端点 900 显示修复**（App v1.6.19，commit de235f2）：ChannelScale 气泡独立 offset 定位不裁剪
+- ✅ 真机确认：自锁 + 900 显示均正常（2026-08-15）
 
-### 6.5 提交
+### 6.5 后续已知问题
+- **DJI RC 上 adb 注入滚动不可靠**（swipe 回弹锁死）——调试环境限制，非产品 bug；可考虑把通道设置卡片入口前置
+
+### 6.6 提交
 `d5b3c02`（固件 src_cfg）· `ad62a0a`（App 卡片）· `ce0a316`（固件 v1.6.14 OTA 空间）· `0ef8426`（PRD 进度）
+`b865ca9`（v1.6.17 热重配修复）· `de235f2`（v1.6.18 自锁 + App v1.6.19 900 显示）· `11a11d3`（文档）
 
 ## 五、风险
 

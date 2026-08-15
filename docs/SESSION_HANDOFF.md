@@ -195,6 +195,14 @@ PB = bank 1 → bank offset 0x24
 - **验证**：运行中 POST st1_mid=1800 → ch1 即时 1500→1800；恢复 1500 即时生效
 - **固件版本 1.6.16 → 1.6.17**，已 OTA 固化到 A 槽（rootfs_v1617.squashfs，dji_rc md5 `ebb2fcc7`，web_server md5 `d8a0bf5a`）
 
+### 修复：自锁不生效 + 低端点 900 显示不全（commit de235f2）
+- **自锁没用**：bridge 模式 `out_send` 被跳过（UART0 专用于 CRSF-Lua 桥），自锁 latch 只在 `out_send → build_output_channels(advance_latch=true)` 推进，主循环 write_state_file/send_rcmsg 用 false（只应用不推进）→ latch 永不 toggle
+  - 修复：send_rcmsg/write_state_file 改用 `g_crsf_bridge` 作为 advance_latch（bridge 主循环推进；非 bridge 保持 out_send 推进避免重复 toggle）
+- **900 显示不全**：ChannelScale 值气泡在 `fillMaxWidth(pct)` 容器 TopEnd，pct=7% 时标签超出左边界被裁剪
+  - 修复：气泡改独立 BoxWithConstraints + offset 定位，中心跟随 pct 但 clamp 在容器内永不裁剪
+- **固件 v1.6.17 → 1.6.18**（rootfs_v1618，dji_rc md5 `9a9ab0cb`）；**App v1.6.18 → 1.6.19**（versionCode 58）
+- ✅ 老大真机确认两项正常
+
 ### App 通道配置页验证
 - ✅ 通道设置卡片加载固件配置（"● 已连接"，范围 900/2000 正确显示）
 - ✅ 范围编辑输入框获得焦点（软键盘弹出）+ 低端点 900 保存生效
