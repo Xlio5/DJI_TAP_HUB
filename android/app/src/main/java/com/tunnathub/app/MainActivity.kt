@@ -173,6 +173,9 @@ private fun sourceSupportsLock(source: String): Boolean =
         "up", "down", "left", "right"
     )
 
+// 长按触发只对按键源有意义 (与自锁源集合一致)
+private fun sourceSupportsLongPress(source: String): Boolean = sourceSupportsLock(source)
+
 private fun responseSupportsSrcCfg(response: String): Boolean =
     Regex("\"src_cfg_names\"\\s*:").containsMatchIn(response)
 
@@ -196,6 +199,10 @@ private fun sourceKeys(source: String): SourceKeys = when {
         SourceKeys("${source}_off", "${source}_on", "", "")
     else -> SourceKeys()
 }
+
+// 长按触发的 src_cfg key (按键源): rec→rec_lp
+private fun sourceLpKey(source: String): String =
+    if (sourceSupportsLongPress(source)) "${source}_lp" else ""
 
 private fun sourceDisplayLabel(source: String): String = when (source) {
     "none" -> "无"
@@ -1536,6 +1543,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                             Text("当前输出值", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.weight(1f))
                             Text("反向", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(48.dp))
                             Text("自锁", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(48.dp))
+                            Text("长按", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(48.dp))
                             Text("范围", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(128.dp))
                         }
                         channelSources.forEachIndexed { idx, source ->
@@ -1566,6 +1574,15 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                         val next = channelLocks.toMutableList()
                                         next[idx] = checked
                                         roLocks = channelLocksToString(next)
+                                    },
+                                    modifier = Modifier.size(40.dp)
+                                )
+                                val lpKey = sourceLpKey(source)
+                                Checkbox(
+                                    checked = (srcCfg[lpKey] ?: 0) != 0,
+                                    enabled = srcCfgLoaded && lpKey.isNotEmpty(),
+                                    onCheckedChange = { checked ->
+                                        if (lpKey.isNotEmpty()) srcCfg = srcCfg + (lpKey to if (checked) 1 else 0)
                                     },
                                     modifier = Modifier.size(40.dp)
                                 )
