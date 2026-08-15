@@ -2028,7 +2028,12 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                         roBaud = jsonString(text, "baud") ?: "auto"
                                         roPreset = jsonString(text, "map_preset") ?: "default"
                                         roMap = jsonString(text, "map") ?: ""
-                                        roSbusStd = (jsonString(text, "sbus_std") ?: "true") == "true"
+                                        // sbus_std 是布尔(false 无引号), jsonString 正则只匹配带引号字符串 → 会误读。
+                                        // 用布尔正则: 匹配 true/false 字面量
+                                        roSbusStd = when {
+                                            Regex("\"sbus_std\"\\s*:\\s*false").containsMatchIn(text) -> false
+                                            else -> true
+                                        }
                                         roMsg = if (roReload > 0) "已读取配置" else ""
                                     } else {
                                         roMsg = result.second
