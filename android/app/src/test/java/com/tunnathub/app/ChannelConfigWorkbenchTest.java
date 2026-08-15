@@ -8,6 +8,8 @@ public final class ChannelConfigWorkbenchTest {
         clampsAndOrdersRangeValues();
         mapsSourceToStickRangeKeys();
         mapsSwitchSourceToOnOffKeys();
+        usesFirmwareDefaultChannelMap();
+        detectsSrcCfgSupportFromResponse();
         labelsKnownSourcesForTheWorkbench();
     }
 
@@ -47,6 +49,19 @@ public final class ChannelConfigWorkbenchTest {
         assertEquals("rec_on", keys[1], "switch on key");
         assertEquals("", keys[2], "switch mid key");
         assertEquals("", keys[3], "switch rev key");
+    }
+
+    private static void usesFirmwareDefaultChannelMap() {
+        assertEquals(
+            "ch1,ch2,ch3,ch4,ch5,ch6,mode,rec,rth,focus,aircraft,dial,stop,c12,c3,dir",
+            MainActivityKt.defaultChannelMapForTest(),
+            "firmware default map"
+        );
+    }
+
+    private static void detectsSrcCfgSupportFromResponse() {
+        assertEquals(true, MainActivityKt.responseSupportsSrcCfgForTest("{\"src_cfg_names\":\"st1_min\"}"), "src_cfg supported");
+        assertEquals(false, MainActivityKt.responseSupportsSrcCfgForTest("{\"mode\":\"sbus\"}"), "src_cfg unsupported");
     }
 
     private static void labelsKnownSourcesForTheWorkbench() {

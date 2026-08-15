@@ -127,6 +127,11 @@ private val SRC_CFG_GROUPS: List<Pair<String, List<SrcCfgRow>>> = buildList {
 }
 
 private const val CHANNEL_COUNT = 16
+private val DEFAULT_CHANNEL_SOURCES = listOf(
+    "ch1", "ch2", "ch3", "ch4", "ch5", "ch6",
+    "mode", "rec", "rth", "focus", "aircraft", "dial", "stop", "c12", "c3", "dir"
+)
+private val DEFAULT_CHANNEL_MAP = channelMapToString(DEFAULT_CHANNEL_SOURCES)
 
 private data class SourceKeys(
     val minKey: String = "",
@@ -143,6 +148,9 @@ private fun channelMapToList(map: String): List<String> {
 private fun channelMapToString(values: List<String>): String =
     List(CHANNEL_COUNT) { idx -> values.getOrNull(idx)?.takeIf { it.isNotBlank() } ?: "none" }
         .joinToString(",")
+
+private fun responseSupportsSrcCfg(response: String): Boolean =
+    Regex("\"src_cfg_names\"\\s*:").containsMatchIn(response)
 
 private fun sanitizeChannelRange(min: Int, max: Int): Pair<Int, Int> {
     val a = min.coerceIn(800, 2200)
@@ -197,6 +205,8 @@ private fun sourceDisplayLabel(source: String): String = when (source) {
 
 fun channelMapToListForTest(map: String): List<String> = channelMapToList(map)
 fun channelMapToStringForTest(values: List<String>): String = channelMapToString(values)
+fun defaultChannelMapForTest(): String = DEFAULT_CHANNEL_MAP
+fun responseSupportsSrcCfgForTest(response: String): Boolean = responseSupportsSrcCfg(response)
 fun sanitizeChannelRangeForTest(min: Int, max: Int): IntArray {
     val r = sanitizeChannelRange(min, max)
     return intArrayOf(r.first, r.second)
@@ -1322,8 +1332,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     roPreset = jsonString(res, "map_preset") ?: "default"
                     roMap = channelMapToString(channelMapToList(jsonString(res, "map") ?: ""))
                     roSources = (jsonString(res, "sources") ?: "").split(",").filter { it.isNotEmpty() }
-                    if (jsonString(res, "src_cfg_names") != null) {
-                        srcCfgLoaded = true
+                    val supportsSrcCfg = responseSupportsSrcCfg(res)
+                    srcCfgLoaded = supportsSrcCfg
+                    if (supportsSrcCfg) {
                         SRC_CFG_GROUPS.flatMap { it.second }.forEach { row ->
                             srcCfg = srcCfg + (row.key to jsonInt(res, row.key, row.def))
                         }
@@ -1389,7 +1400,11 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             }
 
             @Composable
-            fun RangeEditor(source: String, values: Map<String, Int>, onValue: (String, Int) -> Unit) {
+            fun RangeEditor(source: String, values: Map<String, Int>, enabled: Boolean, onValue: (String, Int) -> Unit) {
+                if (!enabled) {
+                    Text("固件不支持", fontSize = 9.sp, color = Color(0xFF475569), modifier = Modifier.width(132.dp))
+                    return
+                }
                 val keys = sourceKeys(source)
                 if (keys.minKey.isEmpty() || keys.maxKey.isEmpty()) {
                     Text("不可调", fontSize = 9.sp, color = Color(0xFF475569), modifier = Modifier.width(132.dp))
@@ -1482,7 +1497,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                         WorkbenchButton("默认配置") {
                             roPreset = "default"
-                            roMap = channelMapToString(List(CHANNEL_COUNT) { "ch${it + 1}" })
+                            roMap = DEFAULT_CHANNEL_MAP
                             srcCfg = SRC_CFG_GROUPS.flatMap { it.second }.associate { it.key to it.def }
                             roMsg = "已恢复默认, 保存后生效"
                         }
@@ -1517,13 +1532,14 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 if (keys.revKey.isNotEmpty()) {
                                     Checkbox(
                                         checked = (srcCfg[keys.revKey] ?: 0) != 0,
+                                        enabled = srcCfgLoaded,
                                         onCheckedChange = { checked -> srcCfg = srcCfg + (keys.revKey to if (checked) 1 else 0) },
                                         modifier = Modifier.width(50.dp)
                                     )
                                 } else {
                                     Text("-", fontSize = 11.sp, color = Color(0xFF475569), modifier = Modifier.width(50.dp))
                                 }
-                                RangeEditor(source, srcCfg) { k, v -> srcCfg = srcCfg + (k to v) }
+                                RangeEditor(source, srcCfg, srcCfgLoaded) { k, v -> srcCfg = srcCfg + (k to v) }
                             }
                             if (idx != channelSources.lastIndex) Spacer(Modifier.height(4.dp))
                         }
@@ -1540,10 +1556,14 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         ) {
                             Text("高级参数管理", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
                             Text("保留完整 src_cfg 调参项，用于 mode / shot / 方向键等多档位控件。", fontSize = 9.sp, color = Color(0xFF64748B))
-                            SRC_CFG_GROUPS.forEach { (name, rows) ->
-                                SrcCfgGroup(name, rows, srcCfg) { key, value ->
-                                    srcCfg = srcCfg + (key to value)
+                            if (srcCfgLoaded) {
+                                SRC_CFG_GROUPS.forEach { (name, rows) ->
+                                    SrcCfgGroup(name, rows, srcCfg) { key, value ->
+                                        srcCfg = srcCfg + (key to value)
+                                    }
                                 }
+                            } else {
+                                Text("当前固件未上报 src_cfg_names，高级参数仅在支持固件上开放。", fontSize = 9.sp, color = Color(0xFFF59E0B))
                             }
                         }
                     }
