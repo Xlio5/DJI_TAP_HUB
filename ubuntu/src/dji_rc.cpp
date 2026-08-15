@@ -1521,10 +1521,13 @@ int main(int argc, char **argv)
                     t4.join();
                     g_bridge_stop.store(false);
                 }
-                /* 重开输出 fd: SBUS标准=8E2, SBUS非标=8N1, CRSF=8N1 */
+                /* 重开输出 fd (无条件): 确保波特率/校验更新。
+                 * 若 t3/t4 未 joinable (SBUS 无回传线程) 旧 fd 不会自动关闭,
+                 * 直接关旧 fd 再重开, 否则 g_out_fd>=0 跳过重开 → 波特率不变。 */
                 bool even2 = (g_out_mode.load() == 's') && g_sbus_std;
-                if (g_out_fd.load() < 0)
-                    g_out_fd.store(uart_open_out(out_dev, g_out_baud.load(), even2));   // C1: atomic
+                int oldOutFd = g_out_fd.exchange(-1);   // C1: atomic 取走旧 fd
+                if (oldOutFd >= 0) { ::close(oldOutFd); }
+                g_out_fd.store(uart_open_out(out_dev, g_out_baud.load(), even2));   // C1: atomic
                 if (g_out_fd.load() < 0)
                     std::fprintf(stderr, "[dji_rc] 热重配输出打开失败\n");
 
