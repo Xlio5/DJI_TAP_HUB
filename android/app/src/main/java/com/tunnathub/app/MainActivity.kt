@@ -2054,11 +2054,11 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         Text("标准 SBUS", fontSize = 11.sp, color = Color(0xFF94A3B8), modifier = Modifier.width(66.dp))
                                         Surface(color = if (roSbusStd) Color(0xFF0EA5E9) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp),
-                                            onClick = { roSbusStd = true }) {
+                                            onClick = { roSbusStd = true; roBaud = "auto" }) {
                                             Text("100k 8E2", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (roSbusStd) Color.Black else Color(0xFF64748B), modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp))
                                         }
                                         Surface(color = if (!roSbusStd) Color(0xFF0EA5E9) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp),
-                                            onClick = { roSbusStd = false }) {
+                                            onClick = { roSbusStd = false; roBaud = "auto" }) {
                                             Text("115200 8N1", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (!roSbusStd) Color.Black else Color(0xFF64748B), modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp))
                                         }
                                         Text(if (roSbusStd) "标准" else "兼容", fontSize = 9.sp, color = if (roSbusStd) Color(0xFF22C55E) else Color(0xFFF59E0B))
