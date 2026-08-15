@@ -205,6 +205,12 @@ PB = bank 1 → bank offset 0x24
 - **验证**：src_cfg_names 85 项（含 14 `_lp`），rec_lp 保存/读回 0↔1 正常；真机按键验证待老大操作
 - **审查结论**（2026-08-15）：无 CRITICAL；修复 1 个 HIGH（长按污染复合源）+ 4 个 LOW（注释/死变量/时间戳）
 
+### bridge(ELRS Lua) 按 SPI mode 自动启停（commit 0102938，固件 v1.6.21）
+- **问题**：dji_rc 以 `--crsf-bridge` 启动强制 CRSF 输出，用户切 SBUS 后无输出（S99 固定传 --crsf-bridge）
+- **修复**：启动读 SPI mode，sbus 则禁用 bridge（UART0 输出 SBUS），crsf 则启用 bridge；热重配时动态启停 bridge 线程
+- **效果**：切 SBUS → SBUS 输出无 Lua 桥；切 CRSF → CRSF 输出 + ELRS Lua 桥（接收机页可用）
+- **验证**：sbus 启动 SBUS 8E2 fd=5 无 bridge；切 crsf bridge 线程启动（65532 监听）；切回 sbus bridge 停
+
 ### App 配置界面清理（commit 7b2ef64）
 - 删配置页"RC 遥控器"占位区块 + RC 输出区块通道映射编辑（遥控页通道工作台已有）
 - 播放引擎 + 解码器合并为组合式下拉（UDP_SELF 下列出各 H264 解码器）
