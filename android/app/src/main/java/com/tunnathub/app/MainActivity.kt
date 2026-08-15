@@ -2065,20 +2065,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     }
                                 }
 
-                                // 预设
-                                Spacer(Modifier.height(8.dp))
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Text("预设", fontSize = 11.sp, color = Color(0xFF94A3B8), modifier = Modifier.width(44.dp))
-                                    listOf("default" to "默认", "aetr" to "AETR", "taer" to "TAER", "custom" to "自定义").forEach { (v, label) ->
-                                        Surface(color = if (roPreset == v) Color(0xFF0EA5E9) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp),
-                                            onClick = { roPreset = v }, modifier = Modifier.weight(1f)) {
-                                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth()) {
-                                                Text(label, fontSize = 10.sp, fontWeight = FontWeight.Medium, color = if (roPreset == v) Color.Black else Color(0xFF64748B), modifier = Modifier.padding(vertical = 6.dp))
-                                            }
-                                        }
-                                    }
-                                }
-
                                 // 波特率
                                 Spacer(Modifier.height(8.dp))
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2098,7 +2084,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
                                         }
                                     } else {
-                                        Text(if (rcOutMode == "crsf") "→ 420000" else "→ 100000", fontSize = 10.sp, color = Color(0xFF22C55E))
+                                        // auto: 实际波特率由固件按 sbus_std 决定 (std→100k, 非std→115200; CRSF→420k)
+                                        Text(if (rcOutMode == "crsf") "→ 420000" else if (roSbusStd) "→ 100000" else "→ 115200",
+                                            fontSize = 10.sp, color = Color(0xFF22C55E))
                                     }
                                 }
 
