@@ -115,7 +115,7 @@ We'll know we're right when **4Mbps RTSP 视频流持续稳定播放 >30 分钟�
 
 ### 🆕 RC 通道配置入口（2026-08-15）
 - **固件 src_cfg 移植**（v1.6.14）：RC 通道源配置系统（每输入源 min/max/mid/rev + 开关触发值）
-  - rc_map.h/c: rc_src_cfg_t (71 参数) + rc_cfg_names + defaults/sanitize/set_cfg
+  - rc_map.h/c: rc_src_cfg_t (85 参数) + rc_cfg_names + defaults/sanitize/set_cfg
   - web_server: 读/存/API 响应 src_cfg + src_cfg_names
   - dji_rc: load_rc_output_cfg 应用 src_cfg
   - **验证**: st1_min 1000→1100 保存读回成功 ✅
@@ -128,6 +128,11 @@ We'll know we're right when **4Mbps RTSP 视频流持续稳定播放 >30 分钟�
   - **根因**：dji_rc --crsf-bridge 跳过整个热重配 → 反向/范围/映射运行中修改不生效（值变了输出没变）
   - **修复**：bridge 也调用 load_rc_output_cfg（src_cfg/map/lock 即时生效），仅跳过 mode/baud 角色重开
   - **验证**：运行中 POST st1_mid=1800 → ch1 即时 1500→1800 ✅
+- **按键长按触发**（v1.6.20，commit 042a3e4 + ee6cb8f）：14 按键源加长按触发开关
+  - 需按住 ≥500ms 才输出 on 值，短按不触发（防误触）；阈值固定
+  - **仅独立按键源生效**：复合源（C12/SHOT/DIR）读原始字段不受影响
+  - 入口：遥控页通道工作台每行"长按"开关
+- **App 配置界面清理**（v1.6.23，commit 7b2ef64）：删 RC 遥控器占位 + 通道映射编辑（遥控页已有），播放引擎/解码器合并组合下拉
 - ⚠️ **已知问题**: App USB 授权弹窗反复弹（DJI RC 不保存 USB 授权, hasPermission 反复 false）→ 待修
 3. 固件未固化（V3s 跑 /tmp 调试版 dji_rc）→ 待固化（M7）
 
