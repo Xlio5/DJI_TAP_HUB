@@ -123,6 +123,11 @@ We'll know we're right when **4Mbps RTSP 视频流持续稳定播放 >30 分钟�
   - 输出协议 (SBUS/CRSF) + 预设 + 通道映射 (CH1-16) + 输入源微调 (分组折叠)
   - apiPost 加回调反馈 (保存成功/失败)
 - **OTA 空间修复**（v1.6.14）：web_server tmpPath /var/log→/tmp（dji_rc.log 撑满 /var/log 导致 OTA write 失败）
+- **OTA 稳定性验证**（v1.6.16→1.6.17，2026-08-15）：MEMERASE + full compare + A/B 切换 3/3 通过，槽内容逐字节一致
+- **bridge 模式 src_cfg 热重配修复**（v1.6.17，commit b865ca9）：
+  - **根因**：dji_rc --crsf-bridge 跳过整个热重配 → 反向/范围/映射运行中修改不生效（值变了输出没变）
+  - **修复**：bridge 也调用 load_rc_output_cfg（src_cfg/map/lock 即时生效），仅跳过 mode/baud 角色重开
+  - **验证**：运行中 POST st1_mid=1800 → ch1 即时 1500→1800 ✅
 - ⚠️ **已知问题**: App USB 授权弹窗反复弹（DJI RC 不保存 USB 授权, hasPermission 反复 false）→ 待修
 3. 固件未固化（V3s 跑 /tmp 调试版 dji_rc）→ 待固化（M7）
 

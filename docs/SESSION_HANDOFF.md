@@ -181,6 +181,31 @@ PB = bank 1 → bank offset 0x24
 | App 强制重启叠加多修复 | 过度修改导致连接不稳，回退到能连上的基线 |
 | 权限广播依赖 | DJI RC 不触发标准广播，改轮询 |
 
+## 九·五、本轮验证与修复（2026-08-15，feature/crsf-lua-m4）
+
+### OTA 反复测试（固件 1.6.16 → 1.6.17，3/3 通过）
+- 连续 3 次 A↔B 循环升级，每次上传返回 `{"ok":true}` HTTP 200，启动槽正确切换（mtdblock3↔4）
+- **MEMERASE + full compare + OTA ctl 写入全部稳定**，A/B 槽前 4.2MB 内容与本地 rootfs 逐字节一致（md5 `e2320890...`）
+- 顺带确认：**V3s 的 dropbear host key 每次重启都会变**（SSH 需先探测当前指纹）
+
+### 修复：bridge 模式 src_cfg 热重配不生效（commit b865ca9）
+- **现象**：App 改反向/范围/映射，固件 API 值变了但 SBUS/CRSF 输出没变
+- **根因**：dji_rc 以 `--crsf-bridge` 运行时，热重配 `if (!g_crsf_bridge && ...)` 跳过整个 SPI config 重载 → src_cfg 只在启动时加载，运行中修改不生效
+- **修复**：去掉 bridge 对 load_rc_output_cfg 的跳过（src_cfg/map/lock 即时更新），仅跳过 mode/baud 导致的 UART0 角色重开（`reconfigureIo = cfgOk && modeDiff && !g_crsf_bridge`）
+- **验证**：运行中 POST st1_mid=1800 → ch1 即时 1500→1800；恢复 1500 即时生效
+- **固件版本 1.6.16 → 1.6.17**，已 OTA 固化到 A 槽（rootfs_v1617.squashfs，dji_rc md5 `ebb2fcc7`，web_server md5 `d8a0bf5a`）
+
+### App 通道配置页验证
+- ✅ 通道设置卡片加载固件配置（"● 已连接"，范围 900/2000 正确显示）
+- ✅ 范围编辑输入框获得焦点（软键盘弹出）+ 低端点 900 保存生效
+- ✅ 保存链路（App POST → 固件 SPI 保存 → 读回）
+- ✅ 反向 checkbox 点击/状态显示正确
+- ⚠️ 自锁输出效果需 **PB6 上拉（协议输出模式）** 才能观察（latch 在 out_send 推进）；当前 PB6 接地 debug 模式无法看
+
+### 遗留/注意
+- **PB6 接地 = debug 模式，UART0 不输出协议**（老大调试用；恢复上拉才输出）
+- 板上 dji_rc 从 /usr/local/bin 运行（rootfs 固化版）；调试期可 base64 传 /tmp 跑新版本
+
 ## 十、当前进度
 
 - ✅ PB6 运行中自动切换：完整修复验证
