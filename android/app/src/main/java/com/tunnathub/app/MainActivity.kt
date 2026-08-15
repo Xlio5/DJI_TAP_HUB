@@ -621,7 +621,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     // ── 解码器选择 ──
     val savedPlaybackEngine = remember { RtspPlaybackEngine.fromPref(prefs.getString("playback_engine", null)) }
     var playbackEngine by remember { mutableStateOf(savedPlaybackEngine) }
-    var playbackEngineDropdown by remember { mutableStateOf(false) }
     val savedCodec = remember {
         val codec = prefs.getString("forced_codec", null)
         if (codec.isNullOrBlank() || codec == "auto") LowLatencyRtspPlayer.DEFAULT_H264_CODEC else codec
@@ -2116,40 +2115,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     }
                                 }
 
-                                // 自定义通道映射
-                                if (roPreset == "custom") {
-                                    Spacer(Modifier.height(8.dp))
-                                    Text("通道映射 (CH1-CH16)", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
-                                    val mapArr = remember(roMap) {
-                                        if (roMap.isEmpty()) List(16) { "ch${it + 1}" } else roMap.split(",").filter { it.isNotEmpty() }.take(16)
-                                    }
-                                    for (i in 0 until 16) {
-                                        var dOpen by remember { mutableStateOf(false) }
-                                        val cur = if (i < mapArr.size) mapArr[i] else "none"
-                                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Text("CH${i + 1}", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(32.dp))
-                                            Box(modifier = Modifier.weight(1f)) {
-                                                Row(modifier = Modifier.fillMaxWidth().height(26.dp).background(Color(0xFF0F172A), RoundedCornerShape(4.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(4.dp)).clickable { dOpen = !dOpen }.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                                                    Text(cur, fontSize = 9.sp, color = Color(0xFF38BDF8), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                                    Text(if (dOpen) "▲" else "▼", fontSize = 8.sp, color = Color(0xFF64748B))
-                                                }
-                                                DropdownMenu(expanded = dOpen, onDismissRequest = { dOpen = false }, modifier = Modifier.background(Color(0xFF1E293B))) {
-                                                    (listOf("none") + roSources).forEach { s ->
-                                                        DropdownMenuItem(text = { Text(s, fontSize = 9.sp, color = Color(0xFFE2E8F0)) },
-                                                            onClick = {
-                                                                val nl = mapArr.toMutableList()
-                                                                while (nl.size < 16) nl.add("none")
-                                                                nl[i] = s
-                                                                roMap = nl.joinToString(",")
-                                                                dOpen = false
-                                                            },
-                                                            modifier = Modifier.background(if (s == cur) Color(0xFF334155) else Color(0xFF1E293B)))
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                // 通道映射已移到左侧栏"遥控"页的通道设置工作台
 
                                 // 保存 + 刷新
                                 Spacer(Modifier.height(10.dp))
@@ -2198,42 +2164,12 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     Text(tlText, fontSize = 9.sp, color = Color(0xFF64748B), lineHeight = 13.sp)
                                 }
 
-                                // ── RC 遥控器 ──
+                                // ── 播放引擎 + 解码器 (组合式下拉) ──
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
-                                SectionHdr("RC 遥控器")
-                                Text("已移到左侧栏“遥控”页，显示 CH1-CH16、raw_ch1-raw_ch6、C1/C2/BACK 等按键。", fontSize = 10.sp, color = Color(0xFF64748B), lineHeight = 15.sp)
-
-                                Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
-                                SectionHdr("播放引擎")
-                                Box(modifier = Modifier.fillMaxWidth()) {
-                                    Row(modifier = Modifier.fillMaxWidth().height(32.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).clickable { playbackEngineDropdown = !playbackEngineDropdown }.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Text(playbackEngine.label(), fontSize = 10.sp, color = if (playbackEngine == RtspPlaybackEngine.GST_QGC) Color(0xFF22C55E) else Color(0xFFF59E0B), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                                        Text(if (playbackEngineDropdown) "▲" else "▼", fontSize = 9.sp, color = Color(0xFF64748B))
-                                    }
-                                    DropdownMenu(expanded = playbackEngineDropdown, onDismissRequest = { playbackEngineDropdown = false }, modifier = Modifier.background(Color(0xFF1E293B))) {
-                                        RtspPlaybackEngine.values().forEach { engine ->
-                                            DropdownMenuItem(text = { Text(engine.label(), fontSize = 10.sp, color = Color(0xFFE2E8F0)) }, onClick = {
-                                                playbackEngine = engine
-                                                playbackEngineDropdown = false
-                                                prefs.edit().putString("playback_engine", engine.prefValue()).apply()
-                                                AppLog.i("Player", "播放引擎切换: ${engine.prefValue()}")
-                                            }, modifier = Modifier.background(if (engine == playbackEngine) Color(0xFF334155) else Color(0xFF1E293B)))
-                                        }
-                                    }
-                                }
-                                Text(when (playbackEngine) {
-                                    RtspPlaybackEngine.MEDIA3_UDP -> "Media3 默认 UDP 优先，用于验证摄像头/RTP UDP 是否可通。"
-                                    RtspPlaybackEngine.QGC_SOFTWARE -> "QGC风格对照路径：自建UDP低缓冲 + Android软件H264解码。"
-                                    RtspPlaybackEngine.GST_QGC -> "GStreamer引擎：rtspsrc+decodebin3+GL sink，完全参考 QGC 逻辑。"
-                                    RtspPlaybackEngine.UDP_SELF -> "默认低延迟硬解路径，固定 c2.qti.avc.decoder.low_latency。"
-                                }, fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.padding(top = 3.dp))
-
-                                Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
-                                SectionHdr("解码器")
+                                SectionHdr("播放引擎 / 解码器")
                                 var selectedCodec by remember { mutableStateOf(LowLatencyRtspPlayer.getForcedCodec()) }
                                 var codecList by remember { mutableStateOf(listOf("auto")) }
-                                var codecDropdown by remember { mutableStateOf(false) }
-                                var codecSaved by remember { mutableStateOf(false) }
+                                var comboDropdown by remember { mutableStateOf(false) }
                                 // H-5: JNI 原生调用放 IO 线程, 避免阻塞主线程
                                 LaunchedEffect(Unit) {
                                     val decoders = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -2241,21 +2177,47 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     }
                                     codecList = listOf("auto") + decoders
                                 }
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Box(modifier = Modifier.weight(1f)) {
-                                        Row(modifier = Modifier.fillMaxWidth().height(32.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).clickable { codecDropdown = !codecDropdown }.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Text(selectedCodec.let { if (it == "auto") "auto" else if (it.contains("low_latency")) it + " ⚡" else it }, fontSize = 10.sp, color = if (selectedCodec == "auto") Color(0xFF22C55E) else Color(0xFFF59E0B), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                                            Text(if (codecDropdown) "▲" else "▼", fontSize = 9.sp, color = Color(0xFF64748B))
-                                        }
-                                        DropdownMenu(expanded = codecDropdown, onDismissRequest = { codecDropdown = false }, modifier = Modifier.background(Color(0xFF1E293B))) {
-                                            codecList.forEach { c -> DropdownMenuItem(text = { Text(c, fontSize = 10.sp, color = Color(0xFFE2E8F0)) }, onClick = { selectedCodec = c; codecDropdown = false; codecSaved = false }, modifier = Modifier.background(if (c == selectedCodec) Color(0xFF334155) else Color(0xFF1E293B))) }
+                                // 组合选项: 非 UDP_SELF 引擎单个选项(自动解码); UDP_SELF 每解码器一个选项
+                                val comboLabel: String = if (playbackEngine == RtspPlaybackEngine.UDP_SELF) {
+                                    "${playbackEngine.label()}:${selectedCodec.let { if (it == "auto") "自动" else if (it.contains("low_latency")) it.replace("c2.qti.avc.decoder.", "") + " ⚡" else it }}"
+                                } else playbackEngine.label()
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    Row(modifier = Modifier.fillMaxWidth().height(32.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).clickable { comboDropdown = !comboDropdown }.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(comboLabel, fontSize = 10.sp, color = if (playbackEngine == RtspPlaybackEngine.GST_QGC) Color(0xFF22C55E) else Color(0xFFF59E0B), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                        Text(if (comboDropdown) "▲" else "▼", fontSize = 9.sp, color = Color(0xFF64748B))
+                                    }
+                                    DropdownMenu(expanded = comboDropdown, onDismissRequest = { comboDropdown = false }, modifier = Modifier.background(Color(0xFF1E293B))) {
+                                        RtspPlaybackEngine.values().forEach { engine ->
+                                            if (engine == RtspPlaybackEngine.UDP_SELF) {
+                                                codecList.forEach { c ->
+                                                    val cLabel = c.let { if (it == "auto") "自动" else if (it.contains("low_latency")) it.replace("c2.qti.avc.decoder.", "") + " ⚡" else it }
+                                                    DropdownMenuItem(text = { Text("${engine.label()}: $cLabel", fontSize = 10.sp, color = Color(0xFFE2E8F0)) }, onClick = {
+                                                        playbackEngine = engine
+                                                        selectedCodec = c
+                                                        comboDropdown = false
+                                                        LowLatencyRtspPlayer.setForcedCodec(c)
+                                                        prefs.edit().putString("playback_engine", engine.prefValue()).putString("forced_codec", c).apply()
+                                                        AppLog.i("Player", "组合选择: ${engine.prefValue()} codec=$c")
+                                                    }, modifier = Modifier.background(if (engine == playbackEngine && c == selectedCodec) Color(0xFF334155) else Color(0xFF1E293B)))
+                                                }
+                                            } else {
+                                                DropdownMenuItem(text = { Text(engine.label(), fontSize = 10.sp, color = Color(0xFFE2E8F0)) }, onClick = {
+                                                    playbackEngine = engine
+                                                    selectedCodec = "auto"
+                                                    comboDropdown = false
+                                                    prefs.edit().putString("playback_engine", engine.prefValue()).apply()
+                                                    AppLog.i("Player", "播放引擎切换: ${engine.prefValue()}")
+                                                }, modifier = Modifier.background(if (engine == playbackEngine) Color(0xFF334155) else Color(0xFF1E293B)))
+                                            }
                                         }
                                     }
-                                    Spacer(Modifier.width(6.dp))
-                                    Button(onClick = { LowLatencyRtspPlayer.setForcedCodec(selectedCodec); codecSaved = true; prefs.edit().putString("forced_codec", selectedCodec).apply() },
-                                        modifier = Modifier.height(30.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))) { Text("应用", fontSize = 10.sp) }
                                 }
-                                if (codecSaved) Text("解码器已切换, 重启播放生效", fontSize = 9.sp, color = Color(0xFFF59E0B), modifier = Modifier.padding(top = 2.dp))
+                                Text(when (playbackEngine) {
+                                    RtspPlaybackEngine.MEDIA3_UDP -> "Media3 默认 UDP 优先，用于验证摄像头/RTP UDP 是否可通。"
+                                    RtspPlaybackEngine.QGC_SOFTWARE -> "QGC风格对照路径：自建UDP低缓冲 + Android软件H264解码。"
+                                    RtspPlaybackEngine.GST_QGC -> "GStreamer引擎：rtspsrc+decodebin3+GL sink，完全参考 QGC 逻辑。"
+                                    RtspPlaybackEngine.UDP_SELF -> "自建UDP低延迟硬解，下拉中可指定 H264 解码器。"
+                                }, fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.padding(top = 3.dp))
                                 Spacer(Modifier.height(6.dp))
                                 Button(onClick = { doRunCodecBenchmark() }, enabled = !codecBenchmarkRunning && vpnRunning,
                                     modifier = Modifier.fillMaxWidth().height(30.dp),
