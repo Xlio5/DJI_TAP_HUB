@@ -107,26 +107,53 @@ static int64_t g_last_debug_us = 0;
 static std::atomic<int> g_out_fd{-1};
 static std::atomic<char> g_out_mode{'s'}; // 's' = SBUS, 'c' = CRSF
 static std::atomic<int>  g_out_baud{100000}; // 实际波特率 (SBUS标准=100000, SBUS非标=115200, CRSF=115200)
+static bool g_sbus_std = true;          // SBUS 标准模式: true=100k 8E2, false=115200 8N1
 static std::mutex g_out_write_mtx;        // CO-4: 保护对 g_out_fd 的写 (out_send + crsf_rx_thread 并发)
 
-/* 主循环调用: 取发送缓冲全部待发字节, 批量写 UART0。单一消费者, 无竞态。 */
+static int uart_open_out(const char *dev, int baud, bool even2);   /* forward */
+static const char *g_out_dev = "/dev/ttyS0";   /* 协议输出口, tx_recover 重开用 */
+
+/* UART0 硬件卡死自动恢复: 写连续失败 N 次 → 重开输出口。
+ * 卡死特征: write 返回 -1 (EIO/EAGAIN) 持续, UART0 TX 不再发送。 */
+static void tx_recover(void) {
+    bool even2 = (g_out_mode.load() == 's') && g_sbus_std;
+    int oldFd = g_out_fd.exchange(-1);   // C1: atomic 取走旧 fd
+    if (oldFd >= 0) { ::close(oldFd); }
+    int newFd = uart_open_out(g_out_dev, g_out_baud.load(), even2);
+    g_out_fd.store(newFd);   // C1: atomic
+    std::printf("[dji_rc] UART0 卡死自动恢复: 旧fd=%d 新fd=%d @%d\n",
+                oldFd, newFd, g_out_baud.load());
+    std::fflush(stdout);
+}
+
+/* 主循环调用: 取发送缓冲全部待发字节, 批量写 UART0。单一消费者, 无竞态。
+ * 写连续失败 TX_FLUSH_ERR_LIMIT 次判定 UART0 硬件卡死 → 自动重开。 */
 static void tx_flush(void) {
+    static int err_cnt = 0;
+    const int TX_FLUSH_ERR_LIMIT = 20;   /* 连续 20 次写失败(约 300ms)判卡死 */
     int fd = g_out_fd.load();            // C1: atomic load
     if (fd < 0) return;
     uint8_t buf[512];
     size_t n = tx_dequeue(buf, sizeof(buf));
     if (n > 0) {
         std::lock_guard<std::mutex> lock(g_out_write_mtx);
-        if (g_out_fd.load() != fd) return;   // fd 已被替换
+        if (g_out_fd.load() != fd) { err_cnt = 0; return; }   // fd 已被替换
         ssize_t w = ::write(fd, buf, n);
         if (w != (ssize_t)n) {
-            std::printf("[dji_rc] tx flush 写 %zu 得 %zd\n", n, w);
+            err_cnt++;
+            std::printf("[dji_rc] tx flush 写 %zu 得 %zd errno=%d(%s) err_cnt=%d\n",
+                        n, w, errno, std::strerror(errno), err_cnt);
             std::fflush(stdout);
+            if (err_cnt >= TX_FLUSH_ERR_LIMIT) {
+                err_cnt = 0;
+                tx_recover();   /* 自动重开 UART0 */
+            }
+        } else {
+            err_cnt = 0;   /* 写成功, 复位计数 */
         }
     }
 }
 
-static bool g_sbus_std = true;          // SBUS 标准模式: true=100k 8E2, false=115200 8N1
 static bool g_crsf_telem = true;        // CRSF 是否接收回传
 static std::atomic<bool> g_ch_map_valid{false};  // CRIT#2: atomic, 主线程热重配写 + rx_thread 读
 static uint8_t g_ch_map[CH_COUNT];      // 通道映射表 (读写受 g_mtx 保护)
