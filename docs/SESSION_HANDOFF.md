@@ -205,6 +205,12 @@ PB = bank 1 → bank offset 0x24
 - **验证**：src_cfg_names 85 项（含 14 `_lp`），rec_lp 保存/读回 0↔1 正常；真机按键验证待老大操作
 - **审查结论**（2026-08-15）：无 CRITICAL；修复 1 个 HIGH（长按污染复合源）+ 4 个 LOW（注释/死变量/时间戳）
 
+### crsf 模式同时摇杆输出 + Lua 桥 + 审查修复（commit cf61938，固件 v1.6.23/App v1.6.32）
+- **需求**：crsf 模式既要输出摇杆 CRSF 又能配 Lua
+- **实现**：去掉 sbus_send_if_p20 的 `!g_crsf_bridge` 跳过（之前 bridge 不输出摇杆），bridge 下行线程写 UART0 加 g_out_write_mtx 与 out_send 互斥防帧交错
+- **审查修复**：g_crsf_bridge 改 atomic；App 工作台 sbus_std 硬编码 true → 加载回传；CRSF 波特率三处统一 115200；手动默认按 sbus_std；配置页保存加 onResult
+- **验证**：crsf 模式 `out ok mode=c`（摇杆帧）+ bridge 线程启动（Lua 桥 65532）
+
 ### 波特率热重配修复（commit ad666ec，固件 v1.6.22）
 - **问题**：热重配切波特率时 `g_out_fd < 0` 才重开输出口，SBUS 无回传线程时 fd 不关闭 → 波特率不变（实测仍 400k）
 - **修复**：热重配无条件关闭旧 fd 再重开 uart_open_out
