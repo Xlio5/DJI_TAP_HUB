@@ -126,6 +126,87 @@ private val SRC_CFG_GROUPS: List<Pair<String, List<SrcCfgRow>>> = buildList {
     ))
 }
 
+private const val CHANNEL_COUNT = 16
+
+private data class SourceKeys(
+    val minKey: String = "",
+    val maxKey: String = "",
+    val midKey: String = "",
+    val revKey: String = ""
+)
+
+private fun channelMapToList(map: String): List<String> {
+    val values = map.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+    return List(CHANNEL_COUNT) { idx -> values.getOrNull(idx) ?: "none" }
+}
+
+private fun channelMapToString(values: List<String>): String =
+    List(CHANNEL_COUNT) { idx -> values.getOrNull(idx)?.takeIf { it.isNotBlank() } ?: "none" }
+        .joinToString(",")
+
+private fun sanitizeChannelRange(min: Int, max: Int): Pair<Int, Int> {
+    val a = min.coerceIn(800, 2200)
+    val b = max.coerceIn(800, 2200)
+    return if (a <= b) a to b else b to a
+}
+
+private fun sourceKeys(source: String): SourceKeys = when {
+    source.matches(Regex("ch[1-6]")) -> {
+        val n = source.removePrefix("ch")
+        SourceKeys("st${n}_min", "st${n}_max", "st${n}_mid", "st${n}_rev")
+    }
+    source == "dial" -> SourceKeys("dial_min", "dial_max", "", "dial_rev")
+    source == "mode" -> SourceKeys("mode_s", "mode_f", "mode_n", "")
+    source == "shot" -> SourceKeys("shot_lo", "shot_hi", "shot_mid", "")
+    source == "c12" -> SourceKeys("c12_0", "c12_3", "", "")
+    source == "dir" -> SourceKeys("dir_0", "dir_5", "", "")
+    source in setOf("rec", "rth", "stop", "focus", "c1", "c2", "c3", "aircraft", "back", "btn", "up", "down", "left", "right") ->
+        SourceKeys("${source}_off", "${source}_on", "", "")
+    else -> SourceKeys()
+}
+
+private fun sourceDisplayLabel(source: String): String = when (source) {
+    "none" -> "无"
+    "ch1" -> "J1"
+    "ch2" -> "J2"
+    "ch3" -> "J3"
+    "ch4" -> "J4"
+    "ch5" -> "J5"
+    "ch6" -> "J6"
+    "dial" -> "V1"
+    "mode" -> "飞行模式"
+    "rec" -> "REC"
+    "rth" -> "RTH"
+    "stop" -> "STOP"
+    "focus" -> "FOCUS"
+    "c1" -> "C1"
+    "c2" -> "C2"
+    "c3" -> "C3"
+    "aircraft" -> "AIRCRAFT"
+    "back" -> "BACK"
+    "btn" -> "BTN"
+    "up" -> "UP"
+    "down" -> "DOWN"
+    "left" -> "LEFT"
+    "right" -> "RIGHT"
+    "shot" -> "快门"
+    "c12" -> "C1/C2"
+    "dir" -> "方向键"
+    else -> source
+}
+
+fun channelMapToListForTest(map: String): List<String> = channelMapToList(map)
+fun channelMapToStringForTest(values: List<String>): String = channelMapToString(values)
+fun sanitizeChannelRangeForTest(min: Int, max: Int): IntArray {
+    val r = sanitizeChannelRange(min, max)
+    return intArrayOf(r.first, r.second)
+}
+fun sourceRangeKeysForTest(source: String): Array<String> {
+    val keys = sourceKeys(source)
+    return arrayOf(keys.minKey, keys.maxKey, keys.midKey, keys.revKey)
+}
+fun sourceDisplayLabelForTest(source: String): String = sourceDisplayLabel(source)
+
 /** 输入源数值编辑行: rev 渲染为开关, 其余为数字输入框 */
 @androidx.compose.runtime.Composable
 private fun SrcCfgEditRow(row: SrcCfgRow, value: Int, onValue: (Int) -> Unit) {
@@ -1209,7 +1290,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             }
         }
 
-        // ── 通道配置卡片 (客户友好: 输出协议 + 通道映射 + 输入源微调) ──
+        // ── 通道设置工作台: 参考 F20 内容结构, 保持 TUN_NAT_HUB 暗色风格 ──
         @Composable
         fun RemoteChannelConfig() {
             var roMode by remember { mutableStateOf("sbus") }
@@ -1219,13 +1300,11 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             var roSources by remember { mutableStateOf(listOf<String>()) }
             var srcCfg by remember { mutableStateOf(SRC_CFG_GROUPS.flatMap { it.second }.associate { it.key to it.def }) }
             var srcCfgLoaded by remember { mutableStateOf(false) }
-            var mapExpanded by remember { mutableStateOf(false) }
-            var srcCfgExpanded by remember { mutableStateOf(false) }
+            var selectedSourceChannel by remember { mutableStateOf<Int?>(null) }
             var roMsg by remember { mutableStateOf("") }
             var roReload by remember { mutableStateOf(0) }
             var loaded by remember { mutableStateOf(false) }
 
-            // 加载当前配置
             LaunchedEffect(vpnRunning, roReload) {
                 if (!vpnRunning) return@LaunchedEffect
                 roMsg = "读取中..."
@@ -1240,12 +1319,12 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     roMode = jsonString(res, "mode") ?: "sbus"
                     roBaud = jsonString(res, "baud") ?: "auto"
                     roPreset = jsonString(res, "map_preset") ?: "default"
-                    roMap = jsonString(res, "map") ?: ""
+                    roMap = channelMapToString(channelMapToList(jsonString(res, "map") ?: ""))
                     roSources = (jsonString(res, "sources") ?: "").split(",").filter { it.isNotEmpty() }
                     if (jsonString(res, "src_cfg_names") != null) {
                         srcCfgLoaded = true
                         SRC_CFG_GROUPS.flatMap { it.second }.forEach { row ->
-                            (jsonInt(res, row.key) ?: row.def).let { srcCfg = srcCfg + (row.key to it) }
+                            srcCfg = srcCfg + (row.key to jsonInt(res, row.key, row.def))
                         }
                     }
                     roMsg = "已读取配置"
@@ -1255,106 +1334,199 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 }
             }
 
-            // 卡片容器
-            Surface(color = Color(0xFF0F172A), shape = RoundedCornerShape(10.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    // 标题 + 状态
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Column {
-                            Text("通道配置", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
-                            Text("输出协议 / 通道映射 / 摇杆范围", fontSize = 9.sp, color = Color(0xFF64748B))
-                        }
-                        Text(if (loaded) "● 已连接" else "○ 未连接", fontSize = 9.sp, color = if (loaded) Color(0xFF22C55E) else Color(0xFFF59E0B))
-                    }
-                    Spacer(Modifier.height(10.dp))
+            fun sourceCurrentValue(source: String): Int = when (source) {
+                "ch1" -> rcChs.getOrElse(0) { 1500 }
+                "ch2" -> rcChs.getOrElse(1) { 1500 }
+                "ch3" -> rcChs.getOrElse(2) { 1500 }
+                "ch4" -> rcChs.getOrElse(3) { 1500 }
+                "ch5" -> rcChs.getOrElse(4) { 1500 }
+                "ch6" -> rcChs.getOrElse(5) { 1500 }
+                "dial" -> rcDial.takeIf { it != 0 } ?: 1500
+                "mode" -> when (rcMode) { "S" -> srcCfg["mode_s"] ?: 1000; "N" -> srcCfg["mode_n"] ?: 1500; "F" -> srcCfg["mode_f"] ?: 2000; else -> 1500 }
+                "rec" -> if (rcRec != 0) srcCfg["rec_on"] ?: 2000 else srcCfg["rec_off"] ?: 1000
+                "rth" -> if (rcRth != 0) srcCfg["rth_on"] ?: 2000 else srcCfg["rth_off"] ?: 1000
+                "stop" -> if (rcStop != 0) srcCfg["stop_on"] ?: 2000 else srcCfg["stop_off"] ?: 1000
+                "focus" -> if (rcFocus != 0) srcCfg["focus_on"] ?: 1500 else srcCfg["focus_off"] ?: 1000
+                "c1" -> if (rcC1 != 0) srcCfg["c1_on"] ?: 2000 else srcCfg["c1_off"] ?: 1000
+                "c2" -> if (rcC2 != 0) srcCfg["c2_on"] ?: 2000 else srcCfg["c2_off"] ?: 1000
+                "c3" -> if (rcC3 != 0) srcCfg["c3_on"] ?: 2000 else srcCfg["c3_off"] ?: 1000
+                "aircraft" -> if (rcAircraft != 0) srcCfg["aircraft_on"] ?: 2000 else srcCfg["aircraft_off"] ?: 1000
+                "back" -> if (rcBack != 0) srcCfg["back_on"] ?: 2000 else srcCfg["back_off"] ?: 1000
+                "btn" -> if (rcBtn != 0) srcCfg["btn_on"] ?: 2000 else srcCfg["btn_off"] ?: 1000
+                "up" -> if (rcUp != 0) srcCfg["up_on"] ?: 2000 else srcCfg["up_off"] ?: 1000
+                "down" -> if (rcDown != 0) srcCfg["down_on"] ?: 2000 else srcCfg["down_off"] ?: 1000
+                "left" -> if (rcLeft != 0) srcCfg["left_on"] ?: 2000 else srcCfg["left_off"] ?: 1000
+                "right" -> if (rcRight != 0) srcCfg["right_on"] ?: 2000 else srcCfg["right_off"] ?: 1000
+                else -> sourceKeys(source).midKey.takeIf { it.isNotEmpty() }?.let { srcCfg[it] } ?: 1500
+            }.coerceIn(800, 2200)
 
-                    // ① 输出协议
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("协议", fontSize = 10.sp, color = Color(0xFF94A3B8), modifier = Modifier.width(38.dp))
-                        listOf("sbus" to "SBUS", "crsf" to "CRSF").forEach { (v, label) ->
-                            Surface(color = if (roMode == v) Color(0xFF0EA5E9) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp),
-                                onClick = { roMode = v }) {
-                                Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (roMode == v) Color.Black else Color(0xFF64748B),
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+            @Composable
+            fun WorkbenchButton(label: String, active: Boolean = false, modifier: Modifier = Modifier, onClick: () -> Unit) {
+                Surface(
+                    color = if (active) Color(0xFF0EA5E9) else Color(0xFF1E293B),
+                    shape = RoundedCornerShape(6.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, if (active) Color(0xFF38BDF8) else Color(0xFF334155)),
+                    onClick = onClick,
+                    modifier = modifier.height(34.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+                        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (active) Color.Black else Color(0xFFE2E8F0), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+
+            @Composable
+            fun ChannelScale(value: Int, modifier: Modifier = Modifier) {
+                val pct = ((value - 800).coerceIn(0, 1400) / 1400f)
+                Box(modifier = modifier.height(32.dp)) {
+                    Box(modifier = Modifier.align(Alignment.Center).fillMaxWidth().height(4.dp).background(Color(0xFF334155), RoundedCornerShape(2.dp)))
+                    Box(modifier = Modifier.align(Alignment.CenterStart).fillMaxWidth(pct).height(4.dp).background(Color(0xFF0EA5E9), RoundedCornerShape(2.dp)))
+                    Box(modifier = Modifier.align(Alignment.TopCenter).background(Color(0xFF0369A1), RoundedCornerShape(3.dp)).padding(horizontal = 5.dp, vertical = 1.dp)) {
+                        Text("$value", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+                }
+            }
+
+            @Composable
+            fun RangeEditor(source: String, values: Map<String, Int>, onValue: (String, Int) -> Unit) {
+                val keys = sourceKeys(source)
+                if (keys.minKey.isEmpty() || keys.maxKey.isEmpty()) {
+                    Text("不可调", fontSize = 9.sp, color = Color(0xFF475569), modifier = Modifier.width(132.dp))
+                    return
+                }
+                val minVal = values[keys.minKey] ?: 1000
+                val maxVal = values[keys.maxKey] ?: 2000
+                var minText by remember(source, minVal) { mutableStateOf(minVal.toString()) }
+                var maxText by remember(source, maxVal) { mutableStateOf(maxVal.toString()) }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(138.dp)) {
+                    BasicTextField(
+                        value = minText,
+                        onValueChange = { txt ->
+                            minText = txt.filter { it.isDigit() }.take(4)
+                            minText.toIntOrNull()?.let { v ->
+                                val r = sanitizeChannelRange(v, maxVal)
+                                onValue(keys.minKey, r.first)
+                                onValue(keys.maxKey, r.second)
                             }
-                        }
-                        Spacer(Modifier.weight(1f))
-                        Text(if (roMode == "crsf") "双向回传" else "单向", fontSize = 9.sp, color = if (roMode == "crsf") Color(0xFF22C55E) else Color(0xFF64748B))
-                    }
-
-                    // ② 预设 (通道排列)
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("预设", fontSize = 10.sp, color = Color(0xFF94A3B8), modifier = Modifier.width(38.dp))
-                        listOf("default" to "默认", "aetr" to "AETR", "taer" to "TAER", "custom" to "自定义").forEach { (v, label) ->
-                            Surface(color = if (roPreset == v) Color(0xFF0EA5E9) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp),
-                                onClick = { roPreset = v }, modifier = Modifier.weight(1f)) {
-                                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth()) {
-                                    Text(label, fontSize = 10.sp, fontWeight = FontWeight.Medium, color = if (roPreset == v) Color.Black else Color(0xFF64748B), modifier = Modifier.padding(vertical = 5.dp))
-                                }
+                        },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 10.sp, color = Color(0xFFE2E8F0)),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f).height(32.dp).background(Color(0xFF0F172A), RoundedCornerShape(5.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(5.dp)).padding(horizontal = 6.dp, vertical = 8.dp)
+                    )
+                    Text(",", fontSize = 10.sp, color = Color(0xFF64748B))
+                    BasicTextField(
+                        value = maxText,
+                        onValueChange = { txt ->
+                            maxText = txt.filter { it.isDigit() }.take(4)
+                            maxText.toIntOrNull()?.let { v ->
+                                val r = sanitizeChannelRange(minVal, v)
+                                onValue(keys.minKey, r.first)
+                                onValue(keys.maxKey, r.second)
                             }
-                        }
-                    }
+                        },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 10.sp, color = Color(0xFFE2E8F0)),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f).height(32.dp).background(Color(0xFF0F172A), RoundedCornerShape(5.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(5.dp)).padding(horizontal = 6.dp, vertical = 8.dp)
+                    )
+                }
+            }
 
-                    // ③ 通道映射 (可展开)
-                    Spacer(Modifier.height(8.dp))
-                    Surface(color = Color(0xFF1E293B), shape = RoundedCornerShape(6.dp), onClick = { mapExpanded = !mapExpanded }, modifier = Modifier.fillMaxWidth()) {
-                        Text("${if (mapExpanded) "▼" else "▶"} 通道映射 (CH1-CH16 各输出接哪个输入)", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0),
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp))
-                    }
-                    if (mapExpanded) {
-                        Spacer(Modifier.height(6.dp))
-                        val mapArr = remember(roMap) {
-                            if (roMap.isEmpty()) List(16) { "ch${it + 1}" } else roMap.split(",").filter { it.isNotEmpty() }.take(16)
-                        }
-                        for (i in 0 until 16) {
-                            var dOpen by remember { mutableStateOf(false) }
-                            val cur = if (i < mapArr.size) mapArr[i] else "none"
-                            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text("CH${i + 1}", fontSize = 10.sp, color = Color(0xFF94A3B8), modifier = Modifier.width(36.dp))
-                                Text("←", fontSize = 10.sp, color = Color(0xFF334155))
-                                Box(modifier = Modifier.weight(1f).padding(start = 6.dp)) {
-                                    Row(modifier = Modifier.fillMaxWidth().height(26.dp).background(Color(0xFF0F172A), RoundedCornerShape(4.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(4.dp)).clickable { dOpen = !dOpen }.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                                        Text(cur, fontSize = 9.sp, color = Color(0xFF38BDF8), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(if (dOpen) "▲" else "▼", fontSize = 8.sp, color = Color(0xFF64748B))
-                                    }
-                                    DropdownMenu(expanded = dOpen, onDismissRequest = { dOpen = false }, modifier = Modifier.background(Color(0xFF1E293B))) {
-                                        (listOf("none") + roSources).forEach { s ->
-                                            DropdownMenuItem(text = { Text(s, fontSize = 9.sp, color = Color(0xFFE2E8F0)) },
-                                                onClick = {
-                                                    val nl = mapArr.toMutableList()
-                                                    while (nl.size < 16) nl.add("none")
-                                                    nl[i] = s
-                                                    roMap = nl.joinToString(",")
-                                                    dOpen = false
-                                                },
-                                                modifier = Modifier.background(if (s == cur) Color(0xFF334155) else Color(0xFF1E293B)))
+            @Composable
+            fun SourcePickerDialog(channelIndex: Int, current: String, sources: List<String>, onPick: (String) -> Unit, onDismiss: () -> Unit) {
+                val known = if (sources.isEmpty()) {
+                    listOf("ch1", "ch2", "ch3", "ch4", "ch5", "ch6", "dial", "mode", "rec", "rth", "stop", "focus", "c1", "c2", "c3", "aircraft", "back", "btn", "up", "down", "left", "right", "shot", "c12", "dir", "none")
+                } else {
+                    sources + "none"
+                }
+                val groups = listOf(
+                    "摇杆&旋钮" to listOf("ch1", "ch2", "ch3", "ch4", "ch5", "ch6", "dial"),
+                    "开关/按键" to listOf("rec", "rth", "stop", "focus", "c1", "c2", "c3", "aircraft", "back", "btn"),
+                    "功能键" to listOf("mode", "shot", "c12", "dir", "up", "down", "left", "right", "none")
+                )
+                AlertDialog(
+                    onDismissRequest = onDismiss,
+                    containerColor = Color(0xFF0F172A),
+                    title = { Text("CH${channelIndex + 1} 控件选择", color = Color(0xFFE2E8F0), fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            groups.forEach { (name, items) ->
+                                Text(name, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+                                items.filter { known.contains(it) }.chunked(4).forEach { rowItems ->
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        rowItems.forEach { src ->
+                                            WorkbenchButton(sourceDisplayLabel(src), active = src == current, modifier = Modifier.width(92.dp)) { onPick(src) }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
+                    },
+                    confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
+                )
+            }
 
-                    // ④ 输入源微调 (可展开)
-                    Spacer(Modifier.height(8.dp))
-                    Surface(color = Color(0xFF1E293B), shape = RoundedCornerShape(6.dp), onClick = { srcCfgExpanded = !srcCfgExpanded }, modifier = Modifier.fillMaxWidth()) {
-                        Text("${if (srcCfgExpanded) "▼" else "▶"} 输入源微调 (摇杆范围 / 开关触发值)", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0),
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp))
+            val channelSources = channelMapToList(roMap)
+            Surface(color = Color(0xFF0F172A), shape = RoundedCornerShape(10.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column {
+                            Text("通道设置", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+                            Text("CH1-CH16 输出源 / 范围 / 反向", fontSize = 9.sp, color = Color(0xFF64748B))
+                        }
+                        Text(if (loaded) "● 已连接" else "○ 未连接", fontSize = 9.sp, color = if (loaded) Color(0xFF22C55E) else Color(0xFFF59E0B))
                     }
-                    if (srcCfgExpanded) {
-                        Spacer(Modifier.height(6.dp))
-                        if (srcCfgLoaded) {
-                            SRC_CFG_GROUPS.forEach { (gname, rows) ->
-                                SrcCfgGroup(gname, rows, srcCfg) { k, v -> srcCfg = srcCfg + (k to v) }
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        WorkbenchButton("默认配置") {
+                            roPreset = "default"
+                            roMap = channelMapToString(List(CHANNEL_COUNT) { "ch${it + 1}" })
+                            srcCfg = SRC_CFG_GROUPS.flatMap { it.second }.associate { it.key to it.def }
+                            roMsg = "已恢复默认, 保存后生效"
+                        }
+                        WorkbenchButton("载入配置") { roMsg = "载入配置入口已预留" }
+                        WorkbenchButton("配置另存") { roMsg = "配置另存入口已预留" }
+                        WorkbenchButton("参数管理") { roMsg = "参数管理入口已预留" }
+                        Spacer(Modifier.weight(1f))
+                        WorkbenchButton("SBUS", roMode == "sbus") { roMode = "sbus" }
+                        WorkbenchButton("CRSF", roMode == "crsf") { roMode = "crsf" }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF111827), RoundedCornerShape(8.dp)).border(1.dp, Color(0xFF1E293B), RoundedCornerShape(8.dp)).padding(8.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("通道", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(42.dp))
+                            Text("控件", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(84.dp))
+                            Text("当前值", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.weight(1f))
+                            Text("反向", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(58.dp))
+                            Text("范围", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(138.dp))
+                        }
+                        channelSources.forEachIndexed { idx, source ->
+                            val keys = sourceKeys(source)
+                            val value = sourceCurrentValue(source)
+                            Row(
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp).background(if (idx % 2 == 0) Color(0xFF0F172A) else Color(0xFF111827), RoundedCornerShape(4.dp)).border(0.5.dp, Color(0xFF1E293B), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("CH${idx + 1}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0), modifier = Modifier.width(42.dp))
+                                WorkbenchButton(sourceDisplayLabel(source), modifier = Modifier.width(76.dp)) { selectedSourceChannel = idx }
+                                Spacer(Modifier.width(8.dp))
+                                ChannelScale(value, modifier = Modifier.weight(1f))
+                                Spacer(Modifier.width(8.dp))
+                                if (keys.revKey.isNotEmpty()) {
+                                    Checkbox(
+                                        checked = (srcCfg[keys.revKey] ?: 0) != 0,
+                                        onCheckedChange = { checked -> srcCfg = srcCfg + (keys.revKey to if (checked) 1 else 0) },
+                                        modifier = Modifier.width(50.dp)
+                                    )
+                                } else {
+                                    Text("-", fontSize = 11.sp, color = Color(0xFF475569), modifier = Modifier.width(50.dp))
+                                }
+                                RangeEditor(source, srcCfg) { k, v -> srcCfg = srcCfg + (k to v) }
                             }
-                            Text("提示: 摇杆中心=中位, 端点=min/max; 反向翻转方向。开关触发值作用于所有映射到该源的通道。", fontSize = 8.sp, color = Color(0xFF64748B), lineHeight = 11.sp)
-                        } else {
-                            Text("固件暂不支持输入源微调 (需升级)", fontSize = 9.sp, color = Color(0xFFF59E0B))
+                            if (idx != channelSources.lastIndex) Spacer(Modifier.height(4.dp))
                         }
                     }
-
-                    // ⑤ 保存 + 刷新
                     Spacer(Modifier.height(10.dp))
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Button(onClick = {
@@ -1362,15 +1534,25 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                             val scJson = SRC_CFG_GROUPS.flatMap { it.second }
                                 .joinToString(",") { "\"${it.key}\":${srcCfg[it.key] ?: it.def}" }
                             val scPart = if (srcCfgLoaded) ""","src_cfg":{$scJson}""" else ""
-                            val body = """{"mode":"$roMode","baud":"$roBaud","map_preset":"$roPreset","map":"$roMap","sbus_std":true$scPart}"""
+                            val body = """{"mode":"$roMode","baud":"$roBaud","map_preset":"$roPreset","map":"${channelMapToString(channelSources)}","sbus_std":true$scPart}"""
                             apiPost("/api/rc/output", body) { ok ->
                                 roMsg = if (ok) "已保存, V3s 将自动应用" else "保存失败, 请检查连接"
                             }
-                        }, modifier = Modifier.height(32.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)) { Text("保存并应用", fontSize = 11.sp) }
-                        Button(onClick = { roReload++ }, modifier = Modifier.height(32.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)) { Text("刷新", fontSize = 11.sp) }
+                        }, modifier = Modifier.height(34.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)) { Text("保存并应用", fontSize = 11.sp) }
+                        Button(onClick = { roReload++ }, modifier = Modifier.height(34.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)) { Text("刷新", fontSize = 11.sp) }
+                        if (!srcCfgLoaded) Text("固件未上报 src_cfg, 范围/反向保存将跳过", fontSize = 8.sp, color = Color(0xFFF59E0B))
                         if (roMsg.isNotEmpty()) Text(roMsg, fontSize = 9.sp, color = Color(0xFF94A3B8), modifier = Modifier.weight(1f))
                     }
                 }
+            }
+            selectedSourceChannel?.let { idx ->
+                SourcePickerDialog(idx, channelSources[idx], roSources, onPick = { src ->
+                    val next = channelSources.toMutableList()
+                    next[idx] = src
+                    roMap = channelMapToString(next)
+                    roPreset = "custom"
+                    selectedSourceChannel = null
+                }, onDismiss = { selectedSourceChannel = null })
             }
         }
 
