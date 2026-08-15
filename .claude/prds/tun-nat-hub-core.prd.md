@@ -112,6 +112,18 @@ We'll know we're right when **4Mbps RTSP 视频流持续稳定播放 >30 分钟�
 ### ⚠️ 卡点（已解决 2026-08-14）
 1. ~~Device_Info(36B) 偶发不到 App~~ → ✅ 根因: crsf_rx_thread 未启动 + 摇杆帧干扰, 已修复
 2. ~~参数渲染偶发 0 行~~ → ✅ 依赖 #1, 已随修复解决
+
+### 🆕 RC 通道配置入口（2026-08-15）
+- **固件 src_cfg 移植**（v1.6.14）：RC 通道源配置系统（每输入源 min/max/mid/rev + 开关触发值）
+  - rc_map.h/c: rc_src_cfg_t (71 参数) + rc_cfg_names + defaults/sanitize/set_cfg
+  - web_server: 读/存/API 响应 src_cfg + src_cfg_names
+  - dji_rc: load_rc_output_cfg 应用 src_cfg
+  - **验证**: st1_min 1000→1100 保存读回成功 ✅
+- **App 遥控页通道配置卡片**（v1.6.16）：客户友好界面
+  - 输出协议 (SBUS/CRSF) + 预设 + 通道映射 (CH1-16) + 输入源微调 (分组折叠)
+  - apiPost 加回调反馈 (保存成功/失败)
+- **OTA 空间修复**（v1.6.14）：web_server tmpPath /var/log→/tmp（dji_rc.log 撑满 /var/log 导致 OTA write 失败）
+- ⚠️ **已知问题**: App USB 授权弹窗反复弹（DJI RC 不保存 USB 授权, hasPermission 反复 false）→ 待修
 3. 固件未固化（V3s 跑 /tmp 调试版 dji_rc）→ 待固化（M7）
 
 ### 🔧 调试方法
