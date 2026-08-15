@@ -41,7 +41,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.14"   // 固件版本 — 改这里全局生效
+#define VERSION     "1.6.15"   // 固件版本 — 改这里全局生效
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
@@ -195,6 +195,7 @@ struct Config {
     std::string rcOutBaud = "auto";       // "auto" | 具体波特率
     std::string rcOutPreset = "default";  // "default" | "aetr" | "taer" | "custom"
     std::string rcOutMap = "";            // 逗号分隔 source: "ch1,ch2,...,dir"
+    std::string rcOutLock = "";           // 逗号分隔 16 路自锁: "0,1,..."
     int         rcOutCrsfMs = 10;         // CRSF 发送周期 (ms, 预留)
     bool        rcOutCrsfTelem = true;    // CRSF 接收回传
     bool        rcOutSbusStd = true;      // SBUS 标准模式: true=100k 8E2, false=115200 8N1
@@ -410,6 +411,8 @@ static Config loadConfig(bool* outChanged = nullptr) {
             if (!mv.empty()) cfg.rcOutPreset = mv;
             mv = jsonStr(ro, "map");
             if (!mv.empty()) cfg.rcOutMap = mv;
+            mv = jsonStr(ro, "lock");
+            if (!mv.empty()) cfg.rcOutLock = mv;
             cfg.rcOutCrsfMs = jsonInt(ro, "crsf_period_ms");
             if (cfg.rcOutCrsfMs < 5) cfg.rcOutCrsfMs = 10;
             auto tb = jsonStr(ro, "crsf_telem");
@@ -464,6 +467,7 @@ static void saveConfig(const Config& cfg) {
     ss << "    \"baud\": \"" << cfg.rcOutBaud << "\",\n";
     ss << "    \"map_preset\": \"" << cfg.rcOutPreset << "\",\n";
     ss << "    \"map\": \"" << cfg.rcOutMap << "\",\n";
+    ss << "    \"lock\": \"" << cfg.rcOutLock << "\",\n";
     ss << "    \"crsf_period_ms\": " << cfg.rcOutCrsfMs << ",\n";
     ss << "    \"crsf_telem\": " << (cfg.rcOutCrsfTelem ? "true" : "false") << ",\n";
     ss << "    \"sbus_std\": " << (cfg.rcOutSbusStd ? "true" : "false") << ",\n";
@@ -1146,6 +1150,7 @@ static std::string apiRcOutput(const Config& cfg) {
     obj.pair("map_preset", JsonValue::string(cfg.rcOutPreset));
     std::string mapStr = cfg.rcOutMap.empty() ? default_map_str() : cfg.rcOutMap;
     obj.pair("map", JsonValue::string(mapStr));
+    obj.pair("lock", JsonValue::string(cfg.rcOutLock));
     obj.pair("crsf_period_ms", JsonValue::number(cfg.rcOutCrsfMs));
     obj.pair("crsf_telem", JsonValue::boolean(cfg.rcOutCrsfTelem));
     obj.pair("sbus_std", JsonValue::boolean(cfg.rcOutSbusStd));
@@ -1294,6 +1299,8 @@ static Response handleRequest(const Request& req) {
             auto mp = jsonStr(req.body, "map");
             if (!mp.empty()) cfg.rcOutMap = mp;
             else if (ps != "custom") cfg.rcOutMap = "";   /* 预设非自定义时清空自定义 map */
+            auto lk = jsonStr(req.body, "lock");
+            if (!lk.empty()) cfg.rcOutLock = lk;
             auto tb = jsonStr(req.body, "crsf_telem");
             if (tb == "true" || tb == "false") cfg.rcOutCrsfTelem = (tb == "true");
             auto ss = jsonStr(req.body, "sbus_std");

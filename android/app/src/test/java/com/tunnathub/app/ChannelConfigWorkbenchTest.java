@@ -10,6 +10,8 @@ public final class ChannelConfigWorkbenchTest {
         mapsSwitchSourceToOnOffKeys();
         usesFirmwareDefaultChannelMap();
         detectsSrcCfgSupportFromResponse();
+        readsDisplayedValueFromOutputChannel();
+        normalizesLockConfigToSixteenFlags();
         labelsKnownSourcesForTheWorkbench();
     }
 
@@ -62,6 +64,27 @@ public final class ChannelConfigWorkbenchTest {
     private static void detectsSrcCfgSupportFromResponse() {
         assertEquals(true, MainActivityKt.responseSupportsSrcCfgForTest("{\"src_cfg_names\":\"st1_min\"}"), "src_cfg supported");
         assertEquals(false, MainActivityKt.responseSupportsSrcCfgForTest("{\"mode\":\"sbus\"}"), "src_cfg unsupported");
+    }
+
+    private static void readsDisplayedValueFromOutputChannel() {
+        List<Integer> values = java.util.Arrays.asList(
+            1001, 1002, 1003, 1004, 1005, 1006, 1707, 1808,
+            1909, 1510, 1611, 1712, 1813, 1914, 2015, 1116
+        );
+        assertEquals(1707, MainActivityKt.channelOutputValueForTest(values, 6), "CH7 output value");
+        assertEquals(1116, MainActivityKt.channelOutputValueForTest(values, 15), "CH16 output value");
+    }
+
+    private static void normalizesLockConfigToSixteenFlags() {
+        List<Boolean> locks = MainActivityKt.channelLocksToListForTest("1,0,true,false,on,off,yes,no");
+        assertEquals(16, locks.size(), "lock count");
+        assertEquals(true, locks.get(0), "lock 1");
+        assertEquals(false, locks.get(1), "lock 2");
+        assertEquals(true, locks.get(2), "lock true");
+        assertEquals(false, locks.get(3), "lock false");
+        assertEquals(true, locks.get(4), "lock on");
+        assertEquals(false, locks.get(15), "lock fallback");
+        assertEquals("1,0,1,0,1,0,1,0,0,0,0,0,0,0,0,0", MainActivityKt.channelLocksToStringForTest(locks), "lock string");
     }
 
     private static void labelsKnownSourcesForTheWorkbench() {

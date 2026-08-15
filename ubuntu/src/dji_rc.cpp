@@ -83,6 +83,12 @@ static bool g_crsf_telem = true;        // CRSF 是否接收回传
 static std::atomic<bool> g_ch_map_valid{false};  // CRIT#2: atomic, 主线程热重配写 + rx_thread 读
 static uint8_t g_ch_map[CH_COUNT];      // 通道映射表 (读写受 g_mtx 保护)
 static crsf_telem_t g_telem;            // 最近回传数据 (CRSF 回传线程写)
+static bool g_ch_lock[CH_COUNT] = {};
+static bool g_lock_state[CH_COUNT] = {};
+static bool g_lock_prev_high[CH_COUNT] = {};
+static uint16_t g_lock_on_value[CH_COUNT] = {};
+static uint16_t g_lock_off_value[CH_COUNT] = {};
+static std::mutex g_lock_mtx;
 static bool g_pb6_debug = false;        // PB6 接地=true → UART0 作为 debug 串口, 不输出协议
 
 // ── CRSF 参数表 (供 Device_Ping/Parameter_Read 响应, ELRS 协议) ──
@@ -488,6 +494,8 @@ static uint32_t button_bits(const rc_state_t &st)
     return b;
 }
 
+static void build_output_channels(const rc_state_t &st, uint16_t ch[CH_COUNT], bool advance_latch);
+
 static void send_rcmsg(int fd, const sockaddr_in &dst, const rc_state_t &st,
                        bool valid, uint32_t seq, int64_t ts_us)
 {
@@ -506,7 +514,7 @@ static void send_rcmsg(int fd, const sockaddr_in &dst, const rc_state_t &st,
     rc_state_t neutral{};
     neutral.mode = '?';
     const rc_state_t &src = valid ? st : neutral;
-    chmap_build(&src, msg.ch);
+    build_output_channels(src, msg.ch, false);
     for (int i = 0; i < 6; i++) msg.raw_ch[i] = src.ch[i];
     msg.buttons = valid ? button_bits(st) : 0;
 
@@ -667,7 +675,7 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
                              uint32_t rx1, uint32_t rx2, int64_t ts_us)
 {
     uint16_t ch[CH_COUNT];
-    chmap_build(&st, ch);
+    build_output_channels(st, ch, false);
 
     char buf[2048];
     int w = snprintf(buf, sizeof(buf),
@@ -707,6 +715,83 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
 
 // ── 协议输出: P20 每解一帧就立刻发 (SBUS/CRSF 由 g_out_mode 决定) ──────
 
+static bool src_lockable(rc_src_t s)
+{
+    switch (s) {
+        case SRC_REC: case SRC_RTH: case SRC_STOP: case SRC_FOCUS:
+        case SRC_C1: case SRC_C2: case SRC_C3:
+        case SRC_AIRCRAFT: case SRC_BACK: case SRC_BTN:
+        case SRC_UP: case SRC_DOWN: case SRC_LEFT: case SRC_RIGHT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool src_lock_active(const rc_state_t &st, rc_src_t s)
+{
+    switch (s) {
+        case SRC_REC: return st.rec != 0;
+        case SRC_RTH: return st.rth != 0;
+        case SRC_STOP: return st.stop != 0;
+        case SRC_FOCUS: return st.focus != 0;
+        case SRC_C1: return st.c1 != 0;
+        case SRC_C2: return st.c2 != 0;
+        case SRC_C3: return st.c3 != 0;
+        case SRC_AIRCRAFT: return st.aircraft != 0;
+        case SRC_BACK: return st.back != 0;
+        case SRC_BTN: return st.btn != 0;
+        case SRC_UP: return st.up != 0;
+        case SRC_DOWN: return st.down != 0;
+        case SRC_LEFT: return st.left != 0;
+        case SRC_RIGHT: return st.right != 0;
+        default: return false;
+    }
+}
+
+static void apply_channel_locks(const rc_state_t &st, uint16_t ch[CH_COUNT],
+                                const uint8_t map[CH_COUNT], const bool locks[CH_COUNT],
+                                bool advance_latch)
+{
+    std::lock_guard<std::mutex> lock(g_lock_mtx);
+    for (int i = 0; i < CH_COUNT; i++) {
+        rc_src_t src = (rc_src_t)map[i];
+        bool enabled = locks[i] && src_lockable(src);
+        if (!enabled) {
+            g_lock_state[i] = false;
+            g_lock_prev_high[i] = false;
+            g_lock_on_value[i] = 0;
+            g_lock_off_value[i] = 0;
+            continue;
+        }
+        bool high = src_lock_active(st, src);
+        if (advance_latch) {
+            if (high) g_lock_on_value[i] = ch[i];
+            else g_lock_off_value[i] = ch[i];
+            if (high && !g_lock_prev_high[i]) g_lock_state[i] = !g_lock_state[i];
+            g_lock_prev_high[i] = high;
+        }
+        uint16_t onValue = g_lock_on_value[i] ? g_lock_on_value[i] : ch[i];
+        uint16_t offValue = g_lock_off_value[i] ? g_lock_off_value[i] : ch[i];
+        ch[i] = g_lock_state[i] ? onValue : offValue;
+    }
+}
+
+static void build_output_channels(const rc_state_t &st, uint16_t ch[CH_COUNT], bool advance_latch)
+{
+    uint8_t mapSnap[CH_COUNT];
+    bool lockSnap[CH_COUNT];
+    rc_map_default(mapSnap);
+    std::memset(lockSnap, 0, sizeof(lockSnap));
+    {
+        std::lock_guard<std::mutex> lock(g_mtx);
+        if (g_ch_map_valid.load(std::memory_order_acquire)) std::memcpy(mapSnap, g_ch_map, CH_COUNT);
+        std::memcpy(lockSnap, g_ch_lock, CH_COUNT);
+        rc_map_build(&st, mapSnap, ch);
+    }
+    apply_channel_locks(st, ch, mapSnap, lockSnap, advance_latch);
+}
+
 static void out_send(const rc_state_t &m)
 {
     static uint32_t out_attempts = 0;
@@ -719,14 +804,7 @@ static void out_send(const rc_state_t &m)
     // C-1: 持锁拷贝 g_ch_map, 避免与主线程热重配 (load_rc_output_cfg) 的数据竞争。
     // g_ch_map_valid 只作为"映射是否有效"标志, 拷贝必须在 g_mtx 内完成,
     // 否则 reader 可能在 writer 写入过程中读到 torn map (g_ch_map_valid 永不复位的场景)。
-    uint8_t mapSnap[CH_COUNT];
-    bool mapValid = false;
-    {
-        std::lock_guard<std::mutex> lock(g_mtx);
-        mapValid = g_ch_map_valid.load(std::memory_order_acquire);
-        if (mapValid) std::memcpy(mapSnap, g_ch_map, CH_COUNT);
-    }
-    rc_map_build(&m, mapValid ? mapSnap : NULL, ch);
+    build_output_channels(m, ch, true);
 
     int n = 0;
     if (outMode == 'c') {
@@ -1067,6 +1145,22 @@ static std::string cfg_json_obj(const std::string &json, const std::string &key)
 /* 从 SPI flash config (/dev/mtdblock0 @0xFD000) 读 rc_output 配置。
  * 返回 false 表示无 rc_output 段 (保持命令行默认)。成功则写 mode/baud/sbus_std 并
  * 可能更新 g_ch_map / g_ch_map_valid。 */
+static void parse_channel_locks(const std::string &s, bool out[CH_COUNT])
+{
+    std::memset(out, 0, sizeof(bool) * CH_COUNT);
+    size_t pos = 0;
+    for (int idx = 0; idx < CH_COUNT; idx++) {
+        if (pos >= s.size()) break;
+        auto comma = s.find(",", pos);
+        std::string tok = s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+        while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t')) tok.erase(0, 1);
+        while (!tok.empty() && (tok.back() == ' ' || tok.back() == '\t')) tok.pop_back();
+        out[idx] = (tok == "1" || tok == "true" || tok == "on" || tok == "yes");
+        if (comma == std::string::npos) break;
+        pos = comma + 1;
+    }
+}
+
 static bool load_rc_output_cfg(char &mode, int &baud, bool &sbus_std)
 {
     bool found = false;
@@ -1125,6 +1219,20 @@ static bool load_rc_output_cfg(char &mode, int &baud, bool &sbus_std)
                 pos = comma + 1;
             }
             if (idx >= CH_COUNT) g_ch_map_valid.store(true, std::memory_order_release);
+        }
+    }
+    bool lockCfg[CH_COUNT];
+    parse_channel_locks(cfg_json_str(obj, "lock"), lockCfg);
+    std::memcpy(g_ch_lock, lockCfg, CH_COUNT);
+    {
+        std::lock_guard<std::mutex> lock(g_lock_mtx);
+        for (int i = 0; i < CH_COUNT; i++) {
+            if (!lockCfg[i]) {
+                g_lock_state[i] = false;
+                g_lock_prev_high[i] = false;
+                g_lock_on_value[i] = 0;
+                g_lock_off_value[i] = 0;
+            }
         }
     }
     /* src_cfg: 每输入源输出值 (缺省保持默认)。持锁调用 rc_map_set_cfg,

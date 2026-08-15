@@ -149,6 +149,29 @@ private fun channelMapToString(values: List<String>): String =
     List(CHANNEL_COUNT) { idx -> values.getOrNull(idx)?.takeIf { it.isNotBlank() } ?: "none" }
         .joinToString(",")
 
+private fun channelOutputValue(values: List<Int>, index: Int): Int =
+    values.getOrElse(index) { if (index < 6) 1500 else 1000 }.coerceIn(800, 2200)
+
+private fun channelLocksToList(lock: String): List<Boolean> {
+    val values = lock.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+    return List(CHANNEL_COUNT) { idx ->
+        when (values.getOrNull(idx)) {
+            "1", "true", "on", "yes" -> true
+            else -> false
+        }
+    }
+}
+
+private fun channelLocksToString(values: List<Boolean>): String =
+    List(CHANNEL_COUNT) { idx -> if (values.getOrNull(idx) == true) "1" else "0" }
+        .joinToString(",")
+
+private fun sourceSupportsLock(source: String): Boolean =
+    source in setOf(
+        "rec", "rth", "stop", "focus", "c1", "c2", "c3", "aircraft", "back", "btn",
+        "up", "down", "left", "right"
+    )
+
 private fun responseSupportsSrcCfg(response: String): Boolean =
     Regex("\"src_cfg_names\"\\s*:").containsMatchIn(response)
 
@@ -205,6 +228,9 @@ private fun sourceDisplayLabel(source: String): String = when (source) {
 
 fun channelMapToListForTest(map: String): List<String> = channelMapToList(map)
 fun channelMapToStringForTest(values: List<String>): String = channelMapToString(values)
+fun channelOutputValueForTest(values: List<Int>, index: Int): Int = channelOutputValue(values, index)
+fun channelLocksToListForTest(lock: String): List<Boolean> = channelLocksToList(lock)
+fun channelLocksToStringForTest(values: List<Boolean>): String = channelLocksToString(values)
 fun defaultChannelMapForTest(): String = DEFAULT_CHANNEL_MAP
 fun responseSupportsSrcCfgForTest(response: String): Boolean = responseSupportsSrcCfg(response)
 fun sanitizeChannelRangeForTest(min: Int, max: Int): IntArray {
@@ -1307,6 +1333,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             var roBaud by remember { mutableStateOf("auto") }
             var roPreset by remember { mutableStateOf("default") }
             var roMap by remember { mutableStateOf("") }
+            var roLocks by remember { mutableStateOf(channelLocksToString(emptyList())) }
             var roSources by remember { mutableStateOf(listOf<String>()) }
             var srcCfg by remember { mutableStateOf(SRC_CFG_GROUPS.flatMap { it.second }.associate { it.key to it.def }) }
             var srcCfgLoaded by remember { mutableStateOf(false) }
@@ -1331,6 +1358,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     roBaud = jsonString(res, "baud") ?: "auto"
                     roPreset = jsonString(res, "map_preset") ?: "default"
                     roMap = channelMapToString(channelMapToList(jsonString(res, "map") ?: ""))
+                    roLocks = channelLocksToString(channelLocksToList(jsonString(res, "lock") ?: ""))
                     roSources = (jsonString(res, "sources") ?: "").split(",").filter { it.isNotEmpty() }
                     val supportsSrcCfg = responseSupportsSrcCfg(res)
                     srcCfgLoaded = supportsSrcCfg
@@ -1345,32 +1373,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     roMsg = "读取失败, 点刷新重试"
                 }
             }
-
-            fun sourceCurrentValue(source: String): Int = when (source) {
-                "ch1" -> rcChs.getOrElse(0) { 1500 }
-                "ch2" -> rcChs.getOrElse(1) { 1500 }
-                "ch3" -> rcChs.getOrElse(2) { 1500 }
-                "ch4" -> rcChs.getOrElse(3) { 1500 }
-                "ch5" -> rcChs.getOrElse(4) { 1500 }
-                "ch6" -> rcChs.getOrElse(5) { 1500 }
-                "dial" -> rcDial.takeIf { it != 0 } ?: 1500
-                "mode" -> when (rcMode) { "S" -> srcCfg["mode_s"] ?: 1000; "N" -> srcCfg["mode_n"] ?: 1500; "F" -> srcCfg["mode_f"] ?: 2000; else -> 1500 }
-                "rec" -> if (rcRec != 0) srcCfg["rec_on"] ?: 2000 else srcCfg["rec_off"] ?: 1000
-                "rth" -> if (rcRth != 0) srcCfg["rth_on"] ?: 2000 else srcCfg["rth_off"] ?: 1000
-                "stop" -> if (rcStop != 0) srcCfg["stop_on"] ?: 2000 else srcCfg["stop_off"] ?: 1000
-                "focus" -> if (rcFocus != 0) srcCfg["focus_on"] ?: 1500 else srcCfg["focus_off"] ?: 1000
-                "c1" -> if (rcC1 != 0) srcCfg["c1_on"] ?: 2000 else srcCfg["c1_off"] ?: 1000
-                "c2" -> if (rcC2 != 0) srcCfg["c2_on"] ?: 2000 else srcCfg["c2_off"] ?: 1000
-                "c3" -> if (rcC3 != 0) srcCfg["c3_on"] ?: 2000 else srcCfg["c3_off"] ?: 1000
-                "aircraft" -> if (rcAircraft != 0) srcCfg["aircraft_on"] ?: 2000 else srcCfg["aircraft_off"] ?: 1000
-                "back" -> if (rcBack != 0) srcCfg["back_on"] ?: 2000 else srcCfg["back_off"] ?: 1000
-                "btn" -> if (rcBtn != 0) srcCfg["btn_on"] ?: 2000 else srcCfg["btn_off"] ?: 1000
-                "up" -> if (rcUp != 0) srcCfg["up_on"] ?: 2000 else srcCfg["up_off"] ?: 1000
-                "down" -> if (rcDown != 0) srcCfg["down_on"] ?: 2000 else srcCfg["down_off"] ?: 1000
-                "left" -> if (rcLeft != 0) srcCfg["left_on"] ?: 2000 else srcCfg["left_off"] ?: 1000
-                "right" -> if (rcRight != 0) srcCfg["right_on"] ?: 2000 else srcCfg["right_off"] ?: 1000
-                else -> sourceKeys(source).midKey.takeIf { it.isNotEmpty() }?.let { srcCfg[it] } ?: 1500
-            }.coerceIn(800, 2200)
 
             @Composable
             fun WorkbenchButton(label: String, active: Boolean = false, modifier: Modifier = Modifier, onClick: () -> Unit) {
@@ -1393,7 +1395,12 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 Box(modifier = modifier.height(32.dp)) {
                     Box(modifier = Modifier.align(Alignment.Center).fillMaxWidth().height(4.dp).background(Color(0xFF334155), RoundedCornerShape(2.dp)))
                     Box(modifier = Modifier.align(Alignment.CenterStart).fillMaxWidth(pct).height(4.dp).background(Color(0xFF0EA5E9), RoundedCornerShape(2.dp)))
-                    Box(modifier = Modifier.align(Alignment.TopCenter).background(Color(0xFF0369A1), RoundedCornerShape(3.dp)).padding(horizontal = 5.dp, vertical = 1.dp)) {
+                    Box(modifier = Modifier.align(Alignment.TopStart).fillMaxWidth(pct.coerceIn(0.02f, 0.98f)).height(22.dp)) {
+                        Box(modifier = Modifier.align(Alignment.TopEnd).background(Color(0xFF0369A1), RoundedCornerShape(3.dp)).padding(horizontal = 5.dp, vertical = 1.dp)) {
+                            Text("$value", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                    if (value !in 800..2200) {
                         Text("$value", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
                     }
                 }
@@ -1466,14 +1473,15 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     containerColor = Color(0xFF0F172A),
                     title = { Text("CH${channelIndex + 1} 控件选择", color = Color(0xFFE2E8F0), fontSize = 16.sp, fontWeight = FontWeight.Bold) },
                     text = {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                             groups.forEach { (name, items) ->
                                 Text(name, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
-                                items.filter { known.contains(it) }.chunked(4).forEach { rowItems ->
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                items.filter { known.contains(it) }.chunked(3).forEach { rowItems ->
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                                         rowItems.forEach { src ->
-                                            WorkbenchButton(sourceDisplayLabel(src), active = src == current, modifier = Modifier.width(92.dp)) { onPick(src) }
+                                            WorkbenchButton(sourceDisplayLabel(src), active = src == current, modifier = Modifier.weight(1f)) { onPick(src) }
                                         }
+                                        repeat(3 - rowItems.size) { Spacer(Modifier.weight(1f)) }
                                     }
                                 }
                             }
@@ -1484,6 +1492,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             }
 
             val channelSources = channelMapToList(roMap)
+            val channelLocks = channelLocksToList(roLocks)
             Surface(color = Color(0xFF0F172A), shape = RoundedCornerShape(10.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -1498,6 +1507,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         WorkbenchButton("默认配置") {
                             roPreset = "default"
                             roMap = DEFAULT_CHANNEL_MAP
+                            roLocks = channelLocksToString(emptyList())
                             srcCfg = SRC_CFG_GROUPS.flatMap { it.second }.associate { it.key to it.def }
                             roMsg = "已恢复默认, 保存后生效"
                         }
@@ -1512,34 +1522,51 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF111827), RoundedCornerShape(8.dp)).border(1.dp, Color(0xFF1E293B), RoundedCornerShape(8.dp)).padding(8.dp)) {
                         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text("通道", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(42.dp))
-                            Text("控件", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(84.dp))
-                            Text("当前值", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.weight(1f))
-                            Text("反向", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(58.dp))
-                            Text("范围", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(138.dp))
+                            Text("控件", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.width(112.dp))
+                            Text("当前输出值", fontSize = 9.sp, color = Color(0xFF64748B), modifier = Modifier.weight(1f))
                         }
                         channelSources.forEachIndexed { idx, source ->
                             val keys = sourceKeys(source)
-                            val value = sourceCurrentValue(source)
-                            Row(
-                                modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp).background(if (idx % 2 == 0) Color(0xFF0F172A) else Color(0xFF111827), RoundedCornerShape(4.dp)).border(0.5.dp, Color(0xFF1E293B), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                            val value = channelOutputValue(rcChs, idx)
+                            val lockEnabled = sourceSupportsLock(source)
+                            Column(
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 76.dp).background(if (idx % 2 == 0) Color(0xFF0F172A) else Color(0xFF111827), RoundedCornerShape(4.dp)).border(0.5.dp, Color(0xFF1E293B), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 6.dp),
+                                verticalArrangement = Arrangement.spacedBy(5.dp)
                             ) {
-                                Text("CH${idx + 1}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0), modifier = Modifier.width(42.dp))
-                                WorkbenchButton(sourceDisplayLabel(source), modifier = Modifier.width(76.dp)) { selectedSourceChannel = idx }
-                                Spacer(Modifier.width(8.dp))
-                                ChannelScale(value, modifier = Modifier.weight(1f))
-                                Spacer(Modifier.width(8.dp))
-                                if (keys.revKey.isNotEmpty()) {
-                                    Checkbox(
-                                        checked = (srcCfg[keys.revKey] ?: 0) != 0,
-                                        enabled = srcCfgLoaded,
-                                        onCheckedChange = { checked -> srcCfg = srcCfg + (keys.revKey to if (checked) 1 else 0) },
-                                        modifier = Modifier.width(50.dp)
-                                    )
-                                } else {
-                                    Text("-", fontSize = 11.sp, color = Color(0xFF475569), modifier = Modifier.width(50.dp))
+                                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("CH${idx + 1}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0), modifier = Modifier.width(42.dp))
+                                    WorkbenchButton(sourceDisplayLabel(source), modifier = Modifier.width(112.dp)) { selectedSourceChannel = idx }
+                                    Spacer(Modifier.width(8.dp))
+                                    ChannelScale(value, modifier = Modifier.weight(1f))
                                 }
-                                RangeEditor(source, srcCfg, srcCfgLoaded) { k, v -> srcCfg = srcCfg + (k to v) }
+                                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(72.dp)) {
+                                        Text("反向", fontSize = 9.sp, color = Color(0xFF64748B))
+                                        Checkbox(
+                                            checked = (srcCfg[keys.revKey] ?: 0) != 0,
+                                            enabled = srcCfgLoaded && keys.revKey.isNotEmpty(),
+                                            onCheckedChange = { checked ->
+                                                if (keys.revKey.isNotEmpty()) srcCfg = srcCfg + (keys.revKey to if (checked) 1 else 0)
+                                            },
+                                            modifier = Modifier.size(34.dp)
+                                        )
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(82.dp)) {
+                                        Text("自锁", fontSize = 9.sp, color = if (lockEnabled) Color(0xFF94A3B8) else Color(0xFF475569))
+                                        Checkbox(
+                                            checked = channelLocks.getOrElse(idx) { false },
+                                            enabled = lockEnabled,
+                                            onCheckedChange = { checked ->
+                                                val next = channelLocks.toMutableList()
+                                                next[idx] = checked
+                                                roLocks = channelLocksToString(next)
+                                            },
+                                            modifier = Modifier.size(34.dp)
+                                        )
+                                    }
+                                    Spacer(Modifier.weight(1f))
+                                    RangeEditor(source, srcCfg, srcCfgLoaded) { k, v -> srcCfg = srcCfg + (k to v) }
+                                }
                             }
                             if (idx != channelSources.lastIndex) Spacer(Modifier.height(4.dp))
                         }
@@ -1574,7 +1601,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                             val scJson = SRC_CFG_GROUPS.flatMap { it.second }
                                 .joinToString(",") { "\"${it.key}\":${srcCfg[it.key] ?: it.def}" }
                             val scPart = if (srcCfgLoaded) ""","src_cfg":{$scJson}""" else ""
-                            val body = """{"mode":"$roMode","baud":"$roBaud","map_preset":"$roPreset","map":"${channelMapToString(channelSources)}","sbus_std":true$scPart}"""
+                            val body = """{"mode":"$roMode","baud":"$roBaud","map_preset":"$roPreset","map":"${channelMapToString(channelSources)}","lock":"${channelLocksToString(channelLocks)}","sbus_std":true$scPart}"""
                             apiPost("/api/rc/output", body) { ok ->
                                 roMsg = if (ok) "已保存, V3s 将自动应用" else "保存失败, 请检查连接"
                             }
@@ -1590,6 +1617,11 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     val next = channelSources.toMutableList()
                     next[idx] = src
                     roMap = channelMapToString(next)
+                    if (!sourceSupportsLock(src)) {
+                        val nextLocks = channelLocks.toMutableList()
+                        nextLocks[idx] = false
+                        roLocks = channelLocksToString(nextLocks)
+                    }
                     roPreset = "custom"
                     selectedSourceChannel = null
                 }, onDismiss = { selectedSourceChannel = null })
