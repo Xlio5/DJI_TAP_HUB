@@ -80,7 +80,7 @@ void rc_map_apply_preset(rc_map_preset_t p, uint8_t map[CH_COUNT]);
  *   MODE/SHOT : 三档值 (S/N/F 或 松/focus/全按)
  *   2档开关   : off/on 触发值
  *   C12 4档 / DIR 6档: 每档位值
- * 表驱动存 71 个 uint16 (rc_cfg_names 给出 JSON key), web_server/dji_rc/App 共享。 */
+ * 表驱动存 85 个 uint16 (rc_cfg_names 给出 JSON key), web_server/dji_rc/App 共享。 */
 
 #define RC_CFG_NUM 85   /* 源配置参数总数 */
 
@@ -139,6 +139,11 @@ void rc_map_set_cfg(const rc_src_cfg_t *cfg);
 
 /* 该源是否配置长按触发 (0=单点, 1=长按≥500ms 才触发)。dji_rc 调用方须持 g_mtx。 */
 bool rc_cfg_lp(rc_src_t s);
+
+/* 长按确认状态: dji_rc 计时确认后置 true (src_value 对独立按键源检查),
+ * 仅影响独立按键源, 复合源 (C12/SHOT/DIR) 读原始字段不受影响。 */
+void rc_map_lp_set(rc_src_t s, bool confirmed);
+bool rc_map_lp_get(rc_src_t s);
 
 #ifdef __cplusplus
 }

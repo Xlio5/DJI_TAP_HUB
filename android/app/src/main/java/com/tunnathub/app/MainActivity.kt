@@ -2014,7 +2014,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 var roBaud by remember { mutableStateOf("auto") }
                                 var roPreset by remember { mutableStateOf("default") }
                                 var roMap by remember { mutableStateOf("") }
-                                var roSources by remember { mutableStateOf(listOf<String>()) }
                                 var roSbusStd by remember { mutableStateOf(true) }
                                 var roMsg by remember { mutableStateOf("") }
                                 var roReload by remember { mutableStateOf(0) }   // 每次进入 +1 强制重载
@@ -2041,7 +2040,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                         roPreset = jsonString(text, "map_preset") ?: "default"
                                         roMap = jsonString(text, "map") ?: ""
                                         roSbusStd = (jsonString(text, "sbus_std") ?: "true") == "true"
-                                        roSources = (jsonString(text, "sources") ?: "").split(",").filter { it.isNotEmpty() }
                                         roMsg = if (roReload > 0) "已读取配置" else ""
                                     } else {
                                         roMsg = result.second

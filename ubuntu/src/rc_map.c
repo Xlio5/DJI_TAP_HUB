@@ -136,6 +136,9 @@ void rc_cfg_defaults(rc_src_cfg_t *cfg)
 static rc_src_cfg_t g_cfg;
 static bool g_cfg_init = false;
 
+/* 长按确认状态 (dji_rc 计时确认后置 true, 松开置 false)。仅影响独立按键源。 */
+static bool g_lp_confirmed[SRC_COUNT] = {};
+
 static void ensure_cfg(void)
 {
     if (!g_cfg_init) { rc_cfg_defaults(&g_cfg); g_cfg_init = true; }
@@ -174,6 +177,16 @@ bool rc_cfg_lp(rc_src_t s)
         case SRC_RIGHT:   return g_cfg.v[CFG_RIGHT_LP] != 0;
         default:          return false;
     }
+}
+
+void rc_map_lp_set(rc_src_t s, bool confirmed)
+{
+    if (s >= 0 && s < SRC_COUNT) g_lp_confirmed[s] = confirmed;
+}
+
+bool rc_map_lp_get(rc_src_t s)
+{
+    return (s >= 0 && s < SRC_COUNT) ? g_lp_confirmed[s] : false;
 }
 
 void rc_cfg_sanitize(rc_src_cfg_t *cfg)
@@ -228,13 +241,36 @@ static uint16_t src_value(const rc_state_t *st, rc_src_t s) {
             return (st->mode == 'S') ? f[0] : (st->mode == 'N') ? f[1] :
                    (st->mode == 'F') ? f[2] : f[1];
         }
-        case SRC_REC:   return st->rec ? c->v[CFG_REC_ON] : c->v[CFG_REC_OFF];
-        case SRC_RTH:   return st->rth ? c->v[CFG_RTH_ON] : c->v[CFG_RTH_OFF];
-        case SRC_STOP:  return st->stop ? c->v[CFG_STOP_ON] : c->v[CFG_STOP_OFF];
-        case SRC_FOCUS: return st->focus ? c->v[CFG_FOCUS_ON] : c->v[CFG_FOCUS_OFF];
-        case SRC_C1:    return st->c1 ? c->v[CFG_C1_ON] : c->v[CFG_C1_OFF];
-        case SRC_C2:    return st->c2 ? c->v[CFG_C2_ON] : c->v[CFG_C2_OFF];
-        case SRC_C3:    return st->c3 ? c->v[CFG_C3_ON] : c->v[CFG_C3_OFF];
+        /* 独立按键源: 配置长按且未确认 (g_lp_confirmed) 时返回 off 值 (短按不触发)。
+         * 复合源 (SRC_C12/SHOT/DIR) 读原始字段不受长按影响 — 见下方宏定义。 */
+        case SRC_REC: {
+            if (rc_cfg_lp(SRC_REC) && !g_lp_confirmed[SRC_REC]) return c->v[CFG_REC_OFF];
+            return st->rec ? c->v[CFG_REC_ON] : c->v[CFG_REC_OFF];
+        }
+        case SRC_RTH: {
+            if (rc_cfg_lp(SRC_RTH) && !g_lp_confirmed[SRC_RTH]) return c->v[CFG_RTH_OFF];
+            return st->rth ? c->v[CFG_RTH_ON] : c->v[CFG_RTH_OFF];
+        }
+        case SRC_STOP: {
+            if (rc_cfg_lp(SRC_STOP) && !g_lp_confirmed[SRC_STOP]) return c->v[CFG_STOP_OFF];
+            return st->stop ? c->v[CFG_STOP_ON] : c->v[CFG_STOP_OFF];
+        }
+        case SRC_FOCUS: {
+            if (rc_cfg_lp(SRC_FOCUS) && !g_lp_confirmed[SRC_FOCUS]) return c->v[CFG_FOCUS_OFF];
+            return st->focus ? c->v[CFG_FOCUS_ON] : c->v[CFG_FOCUS_OFF];
+        }
+        case SRC_C1: {
+            if (rc_cfg_lp(SRC_C1) && !g_lp_confirmed[SRC_C1]) return c->v[CFG_C1_OFF];
+            return st->c1 ? c->v[CFG_C1_ON] : c->v[CFG_C1_OFF];
+        }
+        case SRC_C2: {
+            if (rc_cfg_lp(SRC_C2) && !g_lp_confirmed[SRC_C2]) return c->v[CFG_C2_OFF];
+            return st->c2 ? c->v[CFG_C2_ON] : c->v[CFG_C2_OFF];
+        }
+        case SRC_C3: {
+            if (rc_cfg_lp(SRC_C3) && !g_lp_confirmed[SRC_C3]) return c->v[CFG_C3_OFF];
+            return st->c3 ? c->v[CFG_C3_ON] : c->v[CFG_C3_OFF];
+        }
         case SRC_DIAL: {
             const uint16_t *f = &c->v[CFG_DIAL_MIN];   /* min max rev */
             int d = st->dial;
@@ -244,13 +280,35 @@ static uint16_t src_value(const rc_state_t *st, rc_src_t s) {
             if (f[2]) d = 255 - d;                       /* 反向 */
             return (uint16_t)(mn + (mx - mn) * d / 255);
         }
-        case SRC_AIRCRAFT: return st->aircraft ? c->v[CFG_AIRCRAFT_ON] : c->v[CFG_AIRCRAFT_OFF];
-        case SRC_BACK:  return st->back ? c->v[CFG_BACK_ON] : c->v[CFG_BACK_OFF];
-        case SRC_BTN:   return st->btn ? c->v[CFG_BTN_ON] : c->v[CFG_BTN_OFF];
-        case SRC_UP:    return st->up ? c->v[CFG_UP_ON] : c->v[CFG_UP_OFF];
-        case SRC_DOWN:  return st->down ? c->v[CFG_DOWN_ON] : c->v[CFG_DOWN_OFF];
-        case SRC_LEFT:  return st->left ? c->v[CFG_LEFT_ON] : c->v[CFG_LEFT_OFF];
-        case SRC_RIGHT: return st->right ? c->v[CFG_RIGHT_ON] : c->v[CFG_RIGHT_OFF];
+        case SRC_AIRCRAFT: {
+            if (rc_cfg_lp(SRC_AIRCRAFT) && !g_lp_confirmed[SRC_AIRCRAFT]) return c->v[CFG_AIRCRAFT_OFF];
+            return st->aircraft ? c->v[CFG_AIRCRAFT_ON] : c->v[CFG_AIRCRAFT_OFF];
+        }
+        case SRC_BACK: {
+            if (rc_cfg_lp(SRC_BACK) && !g_lp_confirmed[SRC_BACK]) return c->v[CFG_BACK_OFF];
+            return st->back ? c->v[CFG_BACK_ON] : c->v[CFG_BACK_OFF];
+        }
+        case SRC_BTN: {
+            if (rc_cfg_lp(SRC_BTN) && !g_lp_confirmed[SRC_BTN]) return c->v[CFG_BTN_OFF];
+            return st->btn ? c->v[CFG_BTN_ON] : c->v[CFG_BTN_OFF];
+        }
+        case SRC_UP: {
+            if (rc_cfg_lp(SRC_UP) && !g_lp_confirmed[SRC_UP]) return c->v[CFG_UP_OFF];
+            return st->up ? c->v[CFG_UP_ON] : c->v[CFG_UP_OFF];
+        }
+        case SRC_DOWN: {
+            if (rc_cfg_lp(SRC_DOWN) && !g_lp_confirmed[SRC_DOWN]) return c->v[CFG_DOWN_OFF];
+            return st->down ? c->v[CFG_DOWN_ON] : c->v[CFG_DOWN_OFF];
+        }
+        case SRC_LEFT: {
+            if (rc_cfg_lp(SRC_LEFT) && !g_lp_confirmed[SRC_LEFT]) return c->v[CFG_LEFT_OFF];
+            return st->left ? c->v[CFG_LEFT_ON] : c->v[CFG_LEFT_OFF];
+        }
+        case SRC_RIGHT: {
+            if (rc_cfg_lp(SRC_RIGHT) && !g_lp_confirmed[SRC_RIGHT]) return c->v[CFG_RIGHT_OFF];
+            return st->right ? c->v[CFG_RIGHT_ON] : c->v[CFG_RIGHT_OFF];
+        }
+        /* 复合源: 读原始字段, 不受长按过滤影响 (长按仅作用于独立按键源) */
         case SRC_SHOT: {
             const uint16_t *f = &c->v[CFG_SHOT_LO];
             return st->shot ? f[2] : st->focus ? f[1] : f[0];

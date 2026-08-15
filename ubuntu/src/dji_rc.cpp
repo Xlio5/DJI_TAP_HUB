@@ -737,6 +737,8 @@ static bool src_lockable(rc_src_t s)
 
 static bool src_lock_active(const rc_state_t &st, rc_src_t s)
 {
+    /* 配置长按的源: 未确认(按住不足500ms)不算按下, 短按不 toggle 自锁 latch */
+    if (rc_cfg_lp(s) && !rc_map_lp_get(s)) return false;
     switch (s) {
         case SRC_REC: return st.rec != 0;
         case SRC_RTH: return st.rth != 0;
@@ -784,11 +786,11 @@ static void apply_channel_locks(const rc_state_t &st, uint16_t ch[CH_COUNT],
     }
 }
 
-/* 长按触发过滤: 对配置为长按(rc_cfg_lp)的按键源, 按住不足 500ms 时清零对应字段(视为 off),
- * 达到 500ms 才保持按下 → 输出 on 值。短按无 on 脉冲。须在 g_mtx 内调用 (读 g_cfg)。 */
-static void apply_long_press(const rc_state_t &st, rc_state_t &out)
+/* 长按计时: 对配置为长按(rc_cfg_lp)的按键源, 按住 ≥500ms 置确认 (rc_map_lp_set true),
+ * 松开置 false。仅更新确认状态, 不改 st — 复合源 (C12/SHOT/DIR) 读原始字段不受影响,
+ * 独立按键源由 src_value 内部检查 g_lp_confirmed。须在 g_mtx 内调用 (读 g_cfg)。 */
+static void update_long_press(const rc_state_t &st)
 {
-    out = st;
     int64_t now = now_us();
     struct LpSrc { rc_src_t s; uint8_t rc_state_t::*field; };
     static const LpSrc kLp[] = {
@@ -800,17 +802,14 @@ static void apply_long_press(const rc_state_t &st, rc_state_t &out)
         {SRC_LEFT, &rc_state_t::left}, {SRC_RIGHT, &rc_state_t::right},
     };
     for (const LpSrc &e : kLp) {
-        if (!rc_cfg_lp(e.s)) continue;               // 非长按模式: 保持原值
         bool pressed = (st.*(e.field)) != 0;
         if (pressed) {
             if (g_lp_press_us[e.s] == 0) g_lp_press_us[e.s] = now;   // 上升沿: 记起始
-            if (now - g_lp_press_us[e.s] >= LP_THRESHOLD_US) {
-                /* 已确认长按: 保持按下 */
-            } else {
-                out.*(e.field) = 0;                  // 不足 500ms: 视为 off (无 on 脉冲)
-            }
+            bool confirmed = (now - g_lp_press_us[e.s] >= LP_THRESHOLD_US);
+            rc_map_lp_set(e.s, confirmed);
         } else {
-            g_lp_press_us[e.s] = 0;                  // 松开: 复位
+            g_lp_press_us[e.s] = 0;                  // 松开: 复位 + 清确认
+            rc_map_lp_set(e.s, false);
         }
     }
 }
@@ -821,16 +820,14 @@ static void build_output_channels(const rc_state_t &st, uint16_t ch[CH_COUNT], b
     bool lockSnap[CH_COUNT];
     rc_map_default(mapSnap);
     std::memset(lockSnap, 0, sizeof(lockSnap));
-    rc_state_t stFilt;
     {
         std::lock_guard<std::mutex> lock(g_mtx);
         if (g_ch_map_valid.load(std::memory_order_acquire)) std::memcpy(mapSnap, g_ch_map, CH_COUNT);
         std::memcpy(lockSnap, g_ch_lock, CH_COUNT);
-        apply_long_press(st, stFilt);                // 长按过滤 (g_mtx 内, 读 g_cfg)
-        rc_map_build(&stFilt, mapSnap, ch);
+        update_long_press(st);                       // 更新长按确认状态 (g_mtx 内, 读 g_cfg)
+        rc_map_build(&st, mapSnap, ch);              // 用原始 st: 复合源读原始字段, 独立源 src_value 内部检查确认
     }
-    /* 用过滤后的 stFilt: 短按不 toggle 自锁 latch (未确认长按时 src_lock_active=false) */
-    apply_channel_locks(stFilt, ch, mapSnap, lockSnap, advance_latch);
+    apply_channel_locks(st, ch, mapSnap, lockSnap, advance_latch);
 }
 
 static void out_send(const rc_state_t &m)
