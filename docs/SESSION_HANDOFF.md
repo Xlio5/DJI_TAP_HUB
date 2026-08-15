@@ -195,6 +195,15 @@ PB = bank 1 → bank offset 0x24
 - **验证**：运行中 POST st1_mid=1800 → ch1 即时 1500→1800；恢复 1500 即时生效
 - **固件版本 1.6.16 → 1.6.17**，已 OTA 固化到 A 槽（rootfs_v1617.squashfs，dji_rc md5 `ebb2fcc7`，web_server md5 `d8a0bf5a`）
 
+### 新增：按键长按触发配置（commit 042a3e4）
+- **需求**：普通按键源（REC/RTH/STOP/FOCUS/C1-C3/AIRCRAFT/BACK/BTN/方向键 14 个）加"长按触发"开关：按住 ≥500ms 才视为有效按下，短按不触发（防误触），阈值固定 500ms
+- **实现**：
+  - rc_map.h/c：RC_CFG_NUM 71→85，每按键源加 `_lp` 配置项（0/1），sanitize 对 `_lp` 归一 0/1（防被钳到 [800,2200]），新增 `rc_cfg_lp()` 公开 API
+  - dji_rc.cpp：`apply_long_press()` 在 build_output_channels 内（g_mtx 临界区）过滤 rc_state——长按模式按键按住不足 500ms 清零字段（视为 off），达阈值才保持；过滤后状态同时传给 rc_map_build 和 apply_channel_locks（短按不 toggle 自锁 latch）
+  - App：SRC_CFG_GROUPS 开关组每源加"<源> 长按"开关（rev=true 渲染开/关）
+- **版本**：固件 1.6.18→1.6.19，App 1.6.19→1.6.20
+- **验证**：src_cfg_names 85 项（含 14 `_lp`），rec_lp 保存/读回 0↔1 正常；真机按键验证待老大操作
+
 ### 修复：自锁不生效 + 低端点 900 显示不全（commit de235f2）
 - **自锁没用**：bridge 模式 `out_send` 被跳过（UART0 专用于 CRSF-Lua 桥），自锁 latch 只在 `out_send → build_output_channels(advance_latch=true)` 推进，主循环 write_state_file/send_rcmsg 用 false（只应用不推进）→ latch 永不 toggle
   - 修复：send_rcmsg/write_state_file 改用 `g_crsf_bridge` 作为 advance_latch（bridge 主循环推进；非 bridge 保持 out_send 推进避免重复 toggle）
