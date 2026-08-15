@@ -41,7 +41,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.12"   // 固件版本 — 改这里全局生效
+#define VERSION     "1.6.14"   // 固件版本 — 改这里全局生效
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
@@ -1412,7 +1412,7 @@ static void handleFirmwareUpload(int fd) {
         resp.code = 400; resp.body = R"({"ok":false,"error":"invalid size"})";
         sendClose(resp, fd); return;
     }
-    std::string tmpPath = "/var/log/new_rootfs.sq";
+    std::string tmpPath = "/tmp/new_rootfs.sq";   // 用 /tmp (21MB) 而非 /var/log (dji_rc 日志撑满, 导致 OTA write 失败)
     int fwFd = ::open(tmpPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fwFd < 0) {
         std::cout << "[fw] ERR: cannot create tmp file" << std::endl;
