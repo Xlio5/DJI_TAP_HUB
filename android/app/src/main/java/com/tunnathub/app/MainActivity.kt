@@ -1340,6 +1340,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             var advancedExpanded by remember { mutableStateOf(false) }
             var roMsg by remember { mutableStateOf("") }
             var roReload by remember { mutableStateOf(0) }
+            var roSbusStd by remember { mutableStateOf(true) }
             var loaded by remember { mutableStateOf(false) }
 
             LaunchedEffect(vpnRunning, roReload) {
@@ -1359,6 +1360,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     roMap = channelMapToString(channelMapToList(jsonString(res, "map") ?: ""))
                     roLocks = channelLocksToString(channelLocksToList(jsonString(res, "lock") ?: ""))
                     roSources = (jsonString(res, "sources") ?: "").split(",").filter { it.isNotEmpty() }
+                    roSbusStd = !Regex("\"sbus_std\"\\s*:\\s*false").containsMatchIn(res)
                     val supportsSrcCfg = responseSupportsSrcCfg(res)
                     srcCfgLoaded = supportsSrcCfg
                     if (supportsSrcCfg) {
@@ -1612,7 +1614,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                             val scJson = SRC_CFG_GROUPS.flatMap { it.second }
                                 .joinToString(",") { "\"${it.key}\":${srcCfg[it.key] ?: it.def}" }
                             val scPart = if (srcCfgLoaded) ""","src_cfg":{$scJson}""" else ""
-                            val body = """{"mode":"$rcOutMode","baud":"$roBaud","map_preset":"$roPreset","map":"${channelMapToString(channelSources)}","lock":"${channelLocksToString(channelLocks)}","sbus_std":true$scPart}"""
+                            val body = """{"mode":"$rcOutMode","baud":"$roBaud","map_preset":"$roPreset","map":"${channelMapToString(channelSources)}","lock":"${channelLocksToString(channelLocks)}","sbus_std":$roSbusStd$scPart}"""
                             apiPost("/api/rc/output", body) { ok ->
                                 roMsg = if (ok) "已保存, V3s 将自动应用" else "保存失败, 请检查连接"
                             }
@@ -2079,7 +2081,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                         Text("自动", fontSize = 10.sp, color = if (roBaud == "auto") Color.Black else Color(0xFF64748B), modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp))
                                     }
                                     Surface(color = if (roBaud != "auto") Color(0xFF0EA5E9) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp),
-                                        onClick = { roBaud = if (rcOutMode == "crsf") "420000" else "100000" }) {
+                                        onClick = { roBaud = if (rcOutMode == "crsf") "115200" else if (roSbusStd) "100000" else "115200" }) {
                                         Text("手动", fontSize = 10.sp, color = if (roBaud != "auto") Color.Black else Color(0xFF64748B), modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp))
                                     }
                                     if (roBaud != "auto") {
@@ -2090,7 +2092,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                         }
                                     } else {
                                         // auto: 实际波特率由固件按 sbus_std 决定 (std→100k, 非std→115200; CRSF→420k)
-                                        Text(if (rcOutMode == "crsf") "→ 420000" else if (roSbusStd) "→ 100000" else "→ 115200",
+                                        Text(if (rcOutMode == "crsf") "→ 115200" else if (roSbusStd) "→ 100000" else "→ 115200",
                                             fontSize = 10.sp, color = Color(0xFF22C55E))
                                     }
                                 }
@@ -2103,8 +2105,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     Button(onClick = {
                                         roMsg = ""
                                         val body = """{"mode":"$rcOutMode","baud":"$roBaud","map_preset":"$roPreset","map":"$roMap","sbus_std":$roSbusStd}"""
-                                        apiPost("/api/rc/output", body)
-                                        roMsg = "已保存, V3s 将自动应用"
+                                        apiPost("/api/rc/output", body) { ok ->
+                                            roMsg = if (ok) "已保存, V3s 将自动应用" else "保存失败, 请检查连接"
+                                        }
                                     }, modifier = Modifier.height(32.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) { Text("保存并应用", fontSize = 11.sp) }
                                     Button(onClick = { roReload++ },
                                         modifier = Modifier.height(32.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) { Text("刷新", fontSize = 11.sp) }

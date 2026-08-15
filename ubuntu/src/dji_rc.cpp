@@ -221,7 +221,7 @@ static void crsf_rx_thread();                                       /* forward *
 static void crsf_bridge_rx_thread();                                /* forward */
 
 // CRSF 桥开关 (crsf-bridge 模式): 前移声明, pb6_auto_switch 需访问
-static bool g_crsf_bridge = false;
+static std::atomic<bool> g_crsf_bridge{false};   // atomic: 主线程写, rx/crsf_rx 线程读
 
 // ── PB6 运行中自动切换 (每 2s 检测, 连续 N 次相同才切换, 防抖) ──
 // 主循环调用。接地→debug(启 getty + 关协议), 上拉→协议(杀 getty + 开协议)。
@@ -903,9 +903,9 @@ static void sbus_send_if_p20(DjiPort *p)
     rc_state_t m;
     rc_merge(&s20, age20, &s0, age0, 500000LL, &m);
 
-    /* bridge 模式: UART0 专用于 CRSF-Lua 双向桥 (摇杆 CRSF 输出会干扰 ELRS Lua backchannel),
-       跳过摇杆输出 — ELRS 模块需要空闲才能响应 Lua 命令 */
-    if (m.type != RC_NONE && !g_crsf_bridge) out_send(m);   // write() outside mutex
+    /* CRSF 模式: 同时输出摇杆帧 + Lua 桥 (老大要求 crsf 既能输出摇杆又能配 Lua)。
+     * bridge 下行线程写 UART0 与 out_send 用 g_out_write_mtx 互斥, 防帧交错。 */
+    if (m.type != RC_NONE) out_send(m);   // write() outside mutex
 }
 
 // ── CRSF 回传接收线程: 读 UART0 上行帧 (GPS/BATT/ATT/VARIO/LINK) ──
@@ -1025,8 +1025,11 @@ static void crsf_bridge_rx_thread()
                             n, flen, (long)(n - 4), ofd);
                 std::fflush(stdout);
                 if (flen + 2 == (uint8_t)(n - 4) && ofd >= 0) {
-                    /* 摇杆帧占满 UART0 TX 时 O_NONBLOCK write 会 EAGAIN 丢参数帧,
+                    /* 与 out_send (摇杆 CRSF) 互斥, 防 UART0 帧交错。
+                       摇杆帧占满 TX 时 O_NONBLOCK write 会 EAGAIN 丢参数帧,
                        必须重试直到写入 (参数帧比摇杆帧重要) */
+                    std::lock_guard<std::mutex> lock(g_out_write_mtx);
+                    if (g_out_fd.load() != ofd) continue;   // fd 已被热重配替换, 丢弃本帧
                     ssize_t w = -1;
                     for (int r = 0; r < 100 && w < 0; r++) {
                         w = ::write(ofd, pkt + 4, (size_t)(n - 4));
