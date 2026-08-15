@@ -87,12 +87,39 @@ App 收到网口 CRSF 帧 (Settings_Entry/Device_Info)
 
 ## 四、里程碑
 
-| 阶段 | 内容 | 验证 |
-|---|---|---|
-| **M1** | V3s crsf-bridge 模式 (UART0↔网口转发) | 网口 echo CRSF 帧 |
-| **M2** | App 集成 LuaJ + crossfireTelemetryPush 绑定 | App 能跑简单 Lua |
-| **M3** | 移植 elrsV3.lua + lcd 绑定 | 参数界面显示 |
-| **M4** | 参数读写 (读/写射频参数) | 真机改 ELRS 模块参数 |
+| 阶段 | 内容 | 验证 | 状态 |
+|---|---|---|---|
+| **M1** | V3s crsf-bridge 模式 (UART0↔网口转发) | 网口 echo CRSF 帧 | ✅ complete |
+| **M2** | App 集成 LuaJ + crossfireTelemetryPush 绑定 | App 能跑简单 Lua | ✅ complete |
+| **M3** | 移植 elrsV3.lua + lcd 绑定 | 参数界面显示 | ✅ complete |
+| **M4** | 参数读写 (读/写射频参数) | 真机改 ELRS 模块参数 | ✅ complete |
+| **M5** | RC 通道输出配置入口（src_cfg 源配置 + App 遥控页卡片） | 客户在遥控页配置通道/摇杆范围/开关值 | 🔄 in-progress（固件 v1.6.14 + App v1.6.16 已实现, 真机验证待完成）|
+
+---
+
+## 六、M5: RC 通道输出配置入口（2026-08-15）
+
+### 6.1 背景
+V3s 输出 SBUS/CRSF 控制飞控。已有通道映射（rc_map）+ 输入源配置（src_cfg，feature/crsf-lua-bridge 分支移植，但固件未更新）。目标：客户在 DJI RC 遥控页直观配置输出通道。
+
+### 6.2 固件端（v1.6.14）
+- **src_cfg 系统**（rc_map.h/c）：`rc_src_cfg_t` 71 参数（摇杆 min/max/mid/rev + 开关触发值 + C12/DIR 档位）+ `rc_cfg_names` + `rc_cfg_defaults/sanitize/set_cfg` + `src_value` 应用
+- **web_server**：Config 加 `rcSrcCfg`，读/存/API 响应 `src_cfg` + `src_cfg_names`，新增 `jsonHas/jsonObj`（深度匹配嵌套）
+- **dji_rc**：`load_rc_output_cfg` 深度匹配 rc_output（cfg_json_obj）+ 应用 src_cfg（rc_map_set_cfg）
+- **OTA 空间修复**：固件 tmpPath `/var/log`→`/tmp`（dji_rc.log 26MB 撑满 /var/log 导致 OTA write -1）
+
+### 6.3 App 端（v1.6.16）
+- **遥控页"通道配置"卡片**：输出协议（SBUS/CRSF）+ 预设（默认/AETR/TAER/自定义）+ 通道映射（CH1-16 选源）+ 输入源微调（分组可折叠）
+- `SrcCfgRow`/`SRC_CFG_GROUPS`/`SrcCfgEditRow`/`SrcCfgGroup` 组件
+- `apiPost` 加回调（保存成功/失败反馈）
+
+### 6.4 验证状态
+- ✅ 固件编译通过 + src_cfg API 保存（st1_min 1000→1100 读回成功）
+- ✅ 固件 OTA v1.6.14 + App v1.6.16 部署
+- ⏳ 真机验证配置卡片交互（需 adb 点 USB 授权确认 → 遥控页）
+
+### 6.5 提交
+`d5b3c02`（固件 src_cfg）· `ad62a0a`（App 卡片）· `ce0a316`（固件 v1.6.14 OTA 空间）· `0ef8426`（PRD 进度）
 
 ## 五、风险
 
