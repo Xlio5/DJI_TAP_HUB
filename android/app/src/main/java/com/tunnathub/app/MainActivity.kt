@@ -1395,9 +1395,18 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 Box(modifier = modifier.height(30.dp)) {
                     Box(modifier = Modifier.align(Alignment.Center).fillMaxWidth().height(4.dp).background(Color(0xFF334155), RoundedCornerShape(2.dp)))
                     Box(modifier = Modifier.align(Alignment.CenterStart).fillMaxWidth(pct).height(4.dp).background(Color(0xFF0EA5E9), RoundedCornerShape(2.dp)))
-                    Box(modifier = Modifier.align(Alignment.TopStart).fillMaxWidth(pct.coerceIn(0.02f, 0.98f)).height(20.dp)) {
-                        Box(modifier = Modifier.align(Alignment.TopEnd).background(Color(0xFF0369A1), RoundedCornerShape(3.dp)).padding(horizontal = 5.dp, vertical = 1.dp)) {
-                            Text("$value", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    // 值气泡: 中心跟随 pct 但不裁剪 — 低端点 (如 900→7%) 也完整显示
+                    androidx.compose.foundation.layout.BoxWithConstraints(modifier = Modifier.fillMaxWidth().height(20.dp)) {
+                        val density = androidx.compose.ui.platform.LocalDensity.current
+                        val trackPx = constraints.maxWidth.toFloat()
+                        val bubblePx = with(density) { 34.dp.toPx() }   // 约 3-4 位数字标签宽 + padding
+                        val centerPx = (pct * trackPx).coerceIn(bubblePx / 2f, (trackPx - bubblePx / 2f).coerceAtLeast(bubblePx / 2f))
+                        Box(
+                            modifier = Modifier.offset(x = with(density) { (centerPx - bubblePx / 2f).toDp() })
+                                .background(Color(0xFF0369A1), RoundedCornerShape(3.dp))
+                                .padding(horizontal = 5.dp, vertical = 1.dp)
+                        ) {
+                            Text("$value", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1)
                         }
                     }
                     if (value !in 800..2200) {
