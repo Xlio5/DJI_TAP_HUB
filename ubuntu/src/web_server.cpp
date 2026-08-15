@@ -24,6 +24,7 @@
 #include <poll.h>
 #include <sstream>
 #include <string>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -31,6 +32,8 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+
+#include <mtd/mtd-user.h>
 
 #include "rtsp_nat_helper.h"
 
@@ -41,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.15"   // 固件版本 — 改这里全局生效
+#define VERSION     "1.6.16"   // 固件版本 — 改这里全局生效
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
@@ -1386,6 +1389,149 @@ static std::string findHeader(const std::string& headers, const std::string& key
     return headers.substr(pos, end - pos);
 }
 
+static bool eraseMtdPartition(const std::string& mtdDev, std::string* err) {
+    int fd = ::open(mtdDev.c_str(), O_RDWR | O_SYNC);
+    if (fd < 0) {
+        if (err) *err = "open " + mtdDev + " failed: " + std::strerror(errno);
+        return false;
+    }
+
+    struct mtd_info_user info = {};
+    if (::ioctl(fd, MEMGETINFO, &info) != 0) {
+        if (err) *err = "MEMGETINFO " + mtdDev + " failed: " + std::strerror(errno);
+        ::close(fd);
+        return false;
+    }
+
+    for (uint32_t off = 0; off < info.size; off += info.erasesize) {
+        struct erase_info_user erase = {};
+        erase.start = off;
+        erase.length = info.erasesize;
+        if (::ioctl(fd, MEMERASE, &erase) != 0) {
+            if (err) {
+                std::stringstream ss;
+                ss << "MEMERASE " << mtdDev << " @0x" << std::hex << off
+                   << " failed: " << std::strerror(errno);
+                *err = ss.str();
+            }
+            ::close(fd);
+            return false;
+        }
+    }
+    ::fsync(fd);
+    ::close(fd);
+    return true;
+}
+
+static bool getMtdSize(const std::string& mtdDev, uint32_t* outSize, std::string* err) {
+    int fd = ::open(mtdDev.c_str(), O_RDONLY);
+    if (fd < 0) {
+        if (err) *err = "open " + mtdDev + " failed: " + std::strerror(errno);
+        return false;
+    }
+    struct mtd_info_user info = {};
+    if (::ioctl(fd, MEMGETINFO, &info) != 0) {
+        if (err) *err = "MEMGETINFO " + mtdDev + " failed: " + std::strerror(errno);
+        ::close(fd);
+        return false;
+    }
+    ::close(fd);
+    if (outSize) *outSize = info.size;
+    return true;
+}
+
+static bool writeFileToMtd(const std::string& filePath, const std::string& mtdDev,
+                           size_t expectedSize, std::string* err) {
+    int in = ::open(filePath.c_str(), O_RDONLY);
+    if (in < 0) {
+        if (err) *err = "open " + filePath + " failed: " + std::strerror(errno);
+        return false;
+    }
+    int out = ::open(mtdDev.c_str(), O_WRONLY | O_SYNC);
+    if (out < 0) {
+        if (err) *err = "open " + mtdDev + " failed: " + std::strerror(errno);
+        ::close(in);
+        return false;
+    }
+
+    char buf[32768];
+    size_t done = 0;
+    while (done < expectedSize) {
+        size_t want = expectedSize - done;
+        if (want > sizeof(buf)) want = sizeof(buf);
+        ssize_t n = ::read(in, buf, want);
+        if (n <= 0) {
+            if (err) *err = "read firmware failed";
+            ::close(in); ::close(out);
+            return false;
+        }
+        ssize_t written = 0;
+        while (written < n) {
+            ssize_t w = ::write(out, buf + written, (size_t)(n - written));
+            if (w <= 0) {
+                if (err) *err = "write " + mtdDev + " failed: " + std::strerror(errno);
+                ::close(in); ::close(out);
+                return false;
+            }
+            written += w;
+        }
+        done += (size_t)n;
+    }
+
+    ::fsync(out);
+    ::close(in);
+    ::close(out);
+    return true;
+}
+
+static bool compareFilePrefix(const std::string& filePath, const std::string& blockDev,
+                              size_t expectedSize, std::string* err) {
+    int a = ::open(filePath.c_str(), O_RDONLY);
+    if (a < 0) {
+        if (err) *err = "open " + filePath + " failed: " + std::strerror(errno);
+        return false;
+    }
+    int b = ::open(blockDev.c_str(), O_RDONLY);
+    if (b < 0) {
+        if (err) *err = "open " + blockDev + " failed: " + std::strerror(errno);
+        ::close(a);
+        return false;
+    }
+
+    char abuf[32768], bbuf[32768];
+    size_t off = 0;
+    while (off < expectedSize) {
+        size_t want = expectedSize - off;
+        if (want > sizeof(abuf)) want = sizeof(abuf);
+        ssize_t ar = ::read(a, abuf, want);
+        ssize_t br = ::read(b, bbuf, want);
+        if (ar != (ssize_t)want || br != (ssize_t)want) {
+            if (err) {
+                std::stringstream ss;
+                ss << "verify short read @0x" << std::hex << off
+                   << " file=" << std::dec << ar << " flash=" << br;
+                *err = ss.str();
+            }
+            ::close(a); ::close(b);
+            return false;
+        }
+        if (std::memcmp(abuf, bbuf, want) != 0) {
+            if (err) {
+                std::stringstream ss;
+                ss << "verify mismatch @0x" << std::hex << off;
+                *err = ss.str();
+            }
+            ::close(a); ::close(b);
+            return false;
+        }
+        off += want;
+    }
+
+    ::close(a);
+    ::close(b);
+    return true;
+}
+
 static void handleFirmwareUpload(int fd) {
     Response resp;
     resp.contentType = "application/json";
@@ -1488,27 +1634,46 @@ static void handleFirmwareUpload(int fd) {
     std::cout << "[fw] SLOT: " << (runningOnB ? "B->A" : "A->B") << " target=" << inactiveDev << std::endl;
     // Erase inactive partition first (NOR flash requires explicit erase before write)
     std::string mtdDev = runningOnB ? "/dev/mtd3" : "/dev/mtd4";
-    std::string eraseCmd = "flash_erase -q " + mtdDev + " 0 0 2>/dev/null || mtd_debug erase " + mtdDev + " 0 1048576 2>/dev/null || true";
-    std::cout << "[fw] ERASE: " << eraseCmd << std::endl;
-    // H-2: 检查擦除命令返回值 (命令含 || true 兜底, 但 flash_erase 失败路径需告警,
-    // 未擦除就 dd 写入可能损坏 rootfs)
-    int eraseRc = system(eraseCmd.c_str());
-    if (eraseRc != 0) {
-        std::cout << "[fw] WARN: erase 命令返回 " << eraseRc << " (可能未擦除, dd 写入有风险)" << std::endl;
-    }
-
-    std::cout << "[fw] dd " << tmpPath << " -> " << inactiveDev << std::endl;
-	std::string flashCmd = "dd if=" + tmpPath + " of=" + inactiveDev + " bs=4096 2>&1";
-    std::cout << "[fw] DD: " << flashCmd << std::endl;
-    int rc = system(flashCmd.c_str());
-    std::cout << "[fw] DD: exit=" << rc << std::endl;
-    if (rc != 0) {
+    std::string err;
+    uint32_t mtdSize = 0;
+    if (!getMtdSize(mtdDev, &mtdSize, &err)) {
+        std::cout << "[fw] ERR: size check failed: " << err << std::endl;
         ::unlink(tmpPath.c_str()); JsonObj obj; obj.pair("ok", JsonValue::boolean(false));
-        obj.pair("error", JsonValue::string("flash write failed"));
+        obj.pair("error", JsonValue::string("flash size check failed: " + err));
         resp.body = obj.done(); sendClose(resp, fd); return;
     }
-    std::string vfy = exec({"sh", "-c", ("dd if=" + inactiveDev + " bs=1 count=16 2>/dev/null | hexdump -C 2>/dev/null").c_str()});
-    std::cout << "[fw] VFY: " << (vfy.find("hsqs") != std::string::npos ? "hsqs OK" : "hsqs MISSING!") << std::endl;
+    if (contentLen > mtdSize) {
+        std::cout << "[fw] ERR: image too large for " << mtdDev
+                  << " image=" << contentLen << " partition=" << mtdSize << std::endl;
+        ::unlink(tmpPath.c_str()); JsonObj obj; obj.pair("ok", JsonValue::boolean(false));
+        obj.pair("error", JsonValue::string("firmware image too large for rootfs slot"));
+        resp.body = obj.done(); sendClose(resp, fd); return;
+    }
+    std::cout << "[fw] ERASE: " << mtdDev << " via MEMERASE" << std::endl;
+    if (!eraseMtdPartition(mtdDev, &err)) {
+        std::cout << "[fw] ERR: erase failed: " << err << std::endl;
+        ::unlink(tmpPath.c_str()); JsonObj obj; obj.pair("ok", JsonValue::boolean(false));
+        obj.pair("error", JsonValue::string("flash erase failed: " + err));
+        resp.body = obj.done(); sendClose(resp, fd); return;
+    }
+
+    std::cout << "[fw] WRITE: " << tmpPath << " -> " << mtdDev << std::endl;
+    if (!writeFileToMtd(tmpPath, mtdDev, contentLen, &err)) {
+        std::cout << "[fw] ERR: write failed: " << err << std::endl;
+        ::unlink(tmpPath.c_str()); JsonObj obj; obj.pair("ok", JsonValue::boolean(false));
+        obj.pair("error", JsonValue::string("flash write failed: " + err));
+        resp.body = obj.done(); sendClose(resp, fd); return;
+    }
+
+    std::cout << "[fw] VFY: full compare " << contentLen << " bytes" << std::endl;
+    if (!compareFilePrefix(tmpPath, inactiveDev, contentLen, &err)) {
+        std::cout << "[fw] ERR: verify failed: " << err << std::endl;
+        ::unlink(tmpPath.c_str()); JsonObj obj; obj.pair("ok", JsonValue::boolean(false));
+        obj.pair("error", JsonValue::string("flash verify failed: " + err));
+        resp.body = obj.done(); sendClose(resp, fd); return;
+    }
+    std::cout << "[fw] VFY: full compare OK" << std::endl;
+
     int slotFd = ::open("/dev/mtdblock0", O_WRONLY);
     if (slotFd >= 0) {
         // TUN_NAT_HUB A/B OTA ctl block @ 0xFC000 (6 bytes):
