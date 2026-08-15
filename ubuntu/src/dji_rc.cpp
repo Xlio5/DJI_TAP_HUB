@@ -1341,6 +1341,9 @@ int main(int argc, char **argv)
         out_mode = cfg_mode; out_baud = cfg_baud; g_sbus_std = cfg_std;
         std::printf("[dji_rc] 输出配置(SPI flash): mode=%c baud=%d sbus_std=%d\n",
                     out_mode, out_baud, g_sbus_std ? 1 : 0);
+        /* bridge (ELRS Lua 桥) 仅 CRSF 模式启用; SPI 是 sbus 时禁用 bridge,
+         * 使 UART0 正常输出 SBUS (而非被 bridge 强制 CRSF)。 */
+        if (out_mode == 's') g_crsf_bridge = false;
     }
     g_out_mode.store(out_mode);   // C1: atomic store
     if (out_baud == 0) out_baud = (out_mode == 'c') ? 115200 : (g_sbus_std ? 100000 : 115200);
@@ -1488,16 +1491,18 @@ int main(int argc, char **argv)
                             cm, cb, cs ? 1 : 0, diff ? 1 : 0);
                 std::fflush(stdout);
             }
-            /* bridge 模式: 只重载 src_cfg/map/lock (load_rc_output_cfg 已更新),
-             * 跳过 mode/baud 变化 (bridge 固定 CRSF 400000, 不应被 SPI 配置改波特率)。 */
+            /* 按 SPI 配置热重配: bridge (ELRS Lua 桥) 状态随 mode 切换。
+             * crsf → 启用 bridge (Lua 桥可用); sbus → 停 bridge (UART0 正常 SBUS 输出)。 */
             bool modeDiff = (cm != g_out_mode.load() || cb != g_out_baud.load() || cs != g_sbus_std);
-            bool reconfigureIo = cfgOk && modeDiff && !g_crsf_bridge;
+            bool reconfigureIo = cfgOk && modeDiff;
             if (reconfigureIo) {
                 std::printf("[dji_rc] 输出配置变化 mode=%c baud=%d sbus_std=%d → 热重配\n",
                             cm, cb, cs ? 1 : 0);
                 std::fflush(stdout);
                 bool oldCrsf = (g_out_mode.load() == 'c');
                 g_out_mode.store(cm); g_out_baud.store(cb); g_sbus_std = cs;   // C1: atomic store
+                /* bridge (ELRS Lua 桥) 随 SPI mode 启停: crsf→启用, sbus→停用 */
+                g_crsf_bridge = (cm == 'c');
 
                 /* 先安全停掉旧回传线程 (CRSF->任何 或 任何->CRSF 切换) */
                 if (t3.joinable()) {
@@ -1507,6 +1512,14 @@ int main(int argc, char **argv)
                     if (oldFd >= 0) { ::close(oldFd); }
                     t3.join();
                     g_crsf_stop.store(false);
+                }
+                /* 切到 sbus 时停掉 bridge 下行线程 (UART0 不再做 Lua 转发) */
+                if (cm == 's' && t4.joinable()) {
+                    g_bridge_stop.store(true);
+                    int oldFd = g_out_fd.exchange(-1);   // C1: atomic
+                    if (oldFd >= 0) { ::close(oldFd); }
+                    t4.join();
+                    g_bridge_stop.store(false);
                 }
                 /* 重开输出 fd: SBUS标准=8E2, SBUS非标=8N1, CRSF=8N1 */
                 bool even2 = (g_out_mode.load() == 's') && g_sbus_std;
@@ -1520,7 +1533,7 @@ int main(int argc, char **argv)
                     g_crsf_stop.store(false);
                     t3 = std::thread(crsf_rx_thread);
                 }
-                /* 补启动 bridge 下行线程 (热重配可能停了它) */
+                /* CRSF 模式启动 bridge 下行线程 (ELRS Lua 桥) */
                 if (g_crsf_bridge && g_out_fd.load() >= 0 && !t4.joinable()) {
                     g_bridge_stop.store(false);
                     t4 = std::thread(crsf_bridge_rx_thread);
