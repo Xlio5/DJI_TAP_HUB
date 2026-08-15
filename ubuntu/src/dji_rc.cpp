@@ -91,6 +91,10 @@ static uint16_t g_lock_off_value[CH_COUNT] = {};
 static std::mutex g_lock_mtx;
 static bool g_pb6_debug = false;        // PB6 接地=true → UART0 作为 debug 串口, 不输出协议
 
+// ── 长按触发 (每源按下起始时间; 0 = 未按下) ──
+static constexpr int64_t LP_THRESHOLD_US = 500000;   // 长按确认阈值 500ms
+static int64_t g_lp_press_us[SRC_COUNT] = {};        // 读写受 g_mtx 保护 (build_output_channels 内)
+
 // ── CRSF 参数表 (供 Device_Ping/Parameter_Read 响应, ELRS 协议) ──
 static crsf_param_t g_crsf_params[] = {
     /* id, parent, type, flags, min, max, def, unit, name */
@@ -780,19 +784,53 @@ static void apply_channel_locks(const rc_state_t &st, uint16_t ch[CH_COUNT],
     }
 }
 
+/* 长按触发过滤: 对配置为长按(rc_cfg_lp)的按键源, 按住不足 500ms 时清零对应字段(视为 off),
+ * 达到 500ms 才保持按下 → 输出 on 值。短按无 on 脉冲。须在 g_mtx 内调用 (读 g_cfg)。 */
+static void apply_long_press(const rc_state_t &st, rc_state_t &out)
+{
+    out = st;
+    int64_t now = now_us();
+    struct LpSrc { rc_src_t s; uint8_t rc_state_t::*field; };
+    static const LpSrc kLp[] = {
+        {SRC_REC, &rc_state_t::rec}, {SRC_RTH, &rc_state_t::rth},
+        {SRC_STOP, &rc_state_t::stop}, {SRC_FOCUS, &rc_state_t::focus},
+        {SRC_C1, &rc_state_t::c1}, {SRC_C2, &rc_state_t::c2}, {SRC_C3, &rc_state_t::c3},
+        {SRC_AIRCRAFT, &rc_state_t::aircraft}, {SRC_BACK, &rc_state_t::back},
+        {SRC_BTN, &rc_state_t::btn}, {SRC_UP, &rc_state_t::up}, {SRC_DOWN, &rc_state_t::down},
+        {SRC_LEFT, &rc_state_t::left}, {SRC_RIGHT, &rc_state_t::right},
+    };
+    for (const LpSrc &e : kLp) {
+        if (!rc_cfg_lp(e.s)) continue;               // 非长按模式: 保持原值
+        bool pressed = (st.*(e.field)) != 0;
+        if (pressed) {
+            if (g_lp_press_us[e.s] == 0) g_lp_press_us[e.s] = now;   // 上升沿: 记起始
+            if (now - g_lp_press_us[e.s] >= LP_THRESHOLD_US) {
+                /* 已确认长按: 保持按下 */
+            } else {
+                out.*(e.field) = 0;                  // 不足 500ms: 视为 off (无 on 脉冲)
+            }
+        } else {
+            g_lp_press_us[e.s] = 0;                  // 松开: 复位
+        }
+    }
+}
+
 static void build_output_channels(const rc_state_t &st, uint16_t ch[CH_COUNT], bool advance_latch)
 {
     uint8_t mapSnap[CH_COUNT];
     bool lockSnap[CH_COUNT];
     rc_map_default(mapSnap);
     std::memset(lockSnap, 0, sizeof(lockSnap));
+    rc_state_t stFilt;
     {
         std::lock_guard<std::mutex> lock(g_mtx);
         if (g_ch_map_valid.load(std::memory_order_acquire)) std::memcpy(mapSnap, g_ch_map, CH_COUNT);
         std::memcpy(lockSnap, g_ch_lock, CH_COUNT);
-        rc_map_build(&st, mapSnap, ch);
+        apply_long_press(st, stFilt);                // 长按过滤 (g_mtx 内, 读 g_cfg)
+        rc_map_build(&stFilt, mapSnap, ch);
     }
-    apply_channel_locks(st, ch, mapSnap, lockSnap, advance_latch);
+    /* 用过滤后的 stFilt: 短按不 toggle 自锁 latch (未确认长按时 src_lock_active=false) */
+    apply_channel_locks(stFilt, ch, mapSnap, lockSnap, advance_latch);
 }
 
 static void out_send(const rc_state_t &m)

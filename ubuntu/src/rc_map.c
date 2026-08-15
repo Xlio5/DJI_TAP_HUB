@@ -86,21 +86,21 @@ const char *rc_cfg_names[CFG_COUNT] = {
     "dial_min", "dial_max", "dial_rev",
     /* MODE */
     "mode_s", "mode_n", "mode_f",
-    /* 2档开关 */
-    "rec_off", "rec_on",
-    "rth_off", "rth_on",
-    "stop_off", "stop_on",
-    "focus_off", "focus_on",
-    "c1_off", "c1_on",
-    "c2_off", "c2_on",
-    "c3_off", "c3_on",
-    "aircraft_off", "aircraft_on",
-    "back_off", "back_on",
-    "btn_off", "btn_on",
-    "up_off", "up_on",
-    "down_off", "down_on",
-    "left_off", "left_on",
-    "right_off", "right_on",
+    /* 2档开关 (off on lp) */
+    "rec_off", "rec_on", "rec_lp",
+    "rth_off", "rth_on", "rth_lp",
+    "stop_off", "stop_on", "stop_lp",
+    "focus_off", "focus_on", "focus_lp",
+    "c1_off", "c1_on", "c1_lp",
+    "c2_off", "c2_on", "c2_lp",
+    "c3_off", "c3_on", "c3_lp",
+    "aircraft_off", "aircraft_on", "aircraft_lp",
+    "back_off", "back_on", "back_lp",
+    "btn_off", "btn_on", "btn_lp",
+    "up_off", "up_on", "up_lp",
+    "down_off", "down_on", "down_lp",
+    "left_off", "left_on", "left_lp",
+    "right_off", "right_on", "right_lp",
     /* SHOT */
     "shot_lo", "shot_mid", "shot_hi",
     /* C12 */
@@ -119,10 +119,10 @@ void rc_cfg_defaults(rc_src_cfg_t *cfg)
         1000,2000,0,
         /* mode S/N/F */
         1000,1500,2000,
-        /* 14 个 2档开关 off/on (FOCUS 半按=1500, 其余 1000/2000) */
-        1000,2000, 1000,2000, 1000,2000, 1000,1500, 1000,2000,
-        1000,2000, 1000,2000, 1000,2000, 1000,2000, 1000,2000,
-        1000,2000, 1000,2000, 1000,2000, 1000,2000,
+        /* 14 个 2档开关 off/on/lp (FOCUS 半按=1500, 其余 1000/2000; lp 默认 0=单点) */
+        1000,2000,0, 1000,2000,0, 1000,2000,0, 1000,1500,0, 1000,2000,0,
+        1000,2000,0, 1000,2000,0, 1000,2000,0, 1000,2000,0, 1000,2000,0,
+        1000,2000,0, 1000,2000,0, 1000,2000,0, 1000,2000,0,
         /* shot 松/focus/全按 */
         1000,1500,2000,
         /* c12 无/C1/C2/C1+C2 */
@@ -154,12 +154,36 @@ void rc_map_set_cfg(const rc_src_cfg_t *cfg)
     else rc_cfg_defaults(&g_cfg);
 }
 
+bool rc_cfg_lp(rc_src_t s)
+{
+    ensure_cfg();
+    switch (s) {
+        case SRC_REC:     return g_cfg.v[CFG_REC_LP] != 0;
+        case SRC_RTH:     return g_cfg.v[CFG_RTH_LP] != 0;
+        case SRC_STOP:    return g_cfg.v[CFG_STOP_LP] != 0;
+        case SRC_FOCUS:   return g_cfg.v[CFG_FOCUS_LP] != 0;
+        case SRC_C1:      return g_cfg.v[CFG_C1_LP] != 0;
+        case SRC_C2:      return g_cfg.v[CFG_C2_LP] != 0;
+        case SRC_C3:      return g_cfg.v[CFG_C3_LP] != 0;
+        case SRC_AIRCRAFT: return g_cfg.v[CFG_AIRCRAFT_LP] != 0;
+        case SRC_BACK:    return g_cfg.v[CFG_BACK_LP] != 0;
+        case SRC_BTN:     return g_cfg.v[CFG_BTN_LP] != 0;
+        case SRC_UP:      return g_cfg.v[CFG_UP_LP] != 0;
+        case SRC_DOWN:    return g_cfg.v[CFG_DOWN_LP] != 0;
+        case SRC_LEFT:    return g_cfg.v[CFG_LEFT_LP] != 0;
+        case SRC_RIGHT:   return g_cfg.v[CFG_RIGHT_LP] != 0;
+        default:          return false;
+    }
+}
+
 void rc_cfg_sanitize(rc_src_cfg_t *cfg)
 {
     for (int i = 0; i < CFG_COUNT; i++) {
         size_t len = strlen(rc_cfg_names[i]);
         if (len >= 4 && strcmp(rc_cfg_names[i] + len - 4, "_rev") == 0) {
             cfg->v[i] = cfg->v[i] ? 1 : 0;          /* 反向标志归一 0/1 */
+        } else if (len >= 3 && strcmp(rc_cfg_names[i] + len - 3, "_lp") == 0) {
+            cfg->v[i] = cfg->v[i] ? 1 : 0;          /* 长按触发标志归一 0/1 (防被钳到 [800,2200]) */
         } else {
             /* 允许端点微调到 [800,2200], 与 App 通道范围编辑保持一致 */
             if (cfg->v[i] < 800) cfg->v[i] = 800;

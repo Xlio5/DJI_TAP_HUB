@@ -82,7 +82,7 @@ void rc_map_apply_preset(rc_map_preset_t p, uint8_t map[CH_COUNT]);
  *   C12 4档 / DIR 6档: 每档位值
  * 表驱动存 71 个 uint16 (rc_cfg_names 给出 JSON key), web_server/dji_rc/App 共享。 */
 
-#define RC_CFG_NUM 71   /* 源配置参数总数 */
+#define RC_CFG_NUM 85   /* 源配置参数总数 */
 
 /* 源配置参数索引 (顺序与 rc_cfg_names/默认值表一致, 勿乱序) */
 enum {
@@ -97,28 +97,28 @@ enum {
     CFG_DIAL_MIN, CFG_DIAL_MAX, CFG_DIAL_REV,
     /* MODE 三档 S/N/F */
     CFG_MODE_S, CFG_MODE_N, CFG_MODE_F,
-    /* 2档开关 (每源 2 项: off on) */
-    CFG_REC_OFF, CFG_REC_ON,
-    CFG_RTH_OFF, CFG_RTH_ON,
-    CFG_STOP_OFF, CFG_STOP_ON,
-    CFG_FOCUS_OFF, CFG_FOCUS_ON,
-    CFG_C1_OFF, CFG_C1_ON,
-    CFG_C2_OFF, CFG_C2_ON,
-    CFG_C3_OFF, CFG_C3_ON,
-    CFG_AIRCRAFT_OFF, CFG_AIRCRAFT_ON,
-    CFG_BACK_OFF, CFG_BACK_ON,
-    CFG_BTN_OFF, CFG_BTN_ON,
-    CFG_UP_OFF, CFG_UP_ON,
-    CFG_DOWN_OFF, CFG_DOWN_ON,
-    CFG_LEFT_OFF, CFG_LEFT_ON,
-    CFG_RIGHT_OFF, CFG_RIGHT_ON,
+    /* 2档开关 (每源 3 项: off on lp, lp=长按触发标志 0/1) */
+    CFG_REC_OFF, CFG_REC_ON, CFG_REC_LP,
+    CFG_RTH_OFF, CFG_RTH_ON, CFG_RTH_LP,
+    CFG_STOP_OFF, CFG_STOP_ON, CFG_STOP_LP,
+    CFG_FOCUS_OFF, CFG_FOCUS_ON, CFG_FOCUS_LP,
+    CFG_C1_OFF, CFG_C1_ON, CFG_C1_LP,
+    CFG_C2_OFF, CFG_C2_ON, CFG_C2_LP,
+    CFG_C3_OFF, CFG_C3_ON, CFG_C3_LP,
+    CFG_AIRCRAFT_OFF, CFG_AIRCRAFT_ON, CFG_AIRCRAFT_LP,
+    CFG_BACK_OFF, CFG_BACK_ON, CFG_BACK_LP,
+    CFG_BTN_OFF, CFG_BTN_ON, CFG_BTN_LP,
+    CFG_UP_OFF, CFG_UP_ON, CFG_UP_LP,
+    CFG_DOWN_OFF, CFG_DOWN_ON, CFG_DOWN_LP,
+    CFG_LEFT_OFF, CFG_LEFT_ON, CFG_LEFT_LP,
+    CFG_RIGHT_OFF, CFG_RIGHT_ON, CFG_RIGHT_LP,
     /* SHOT 三档 (松/focus 半按/全按) */
     CFG_SHOT_LO, CFG_SHOT_MID, CFG_SHOT_HI,
     /* C12 四档 (无/C1/C2/C1+C2) */
     CFG_C12_0, CFG_C12_1, CFG_C12_2, CFG_C12_3,
     /* DIR 六档 (无/UP/DN/L/R/BTN) */
     CFG_DIR_0, CFG_DIR_1, CFG_DIR_2, CFG_DIR_3, CFG_DIR_4, CFG_DIR_5,
-    CFG_COUNT   /* = RC_CFG_NUM = 71 */
+    CFG_COUNT   /* = RC_CFG_NUM = 85 */
 };
 
 typedef struct {
@@ -136,6 +136,9 @@ void rc_cfg_sanitize(rc_src_cfg_t *cfg);
 
 /* 设置源配置; cfg==NULL 恢复默认。rc_map_build 读此配置。 */
 void rc_map_set_cfg(const rc_src_cfg_t *cfg);
+
+/* 该源是否配置长按触发 (0=单点, 1=长按≥500ms 才触发)。dji_rc 调用方须持 g_mtx。 */
+bool rc_cfg_lp(rc_src_t s);
 
 #ifdef __cplusplus
 }

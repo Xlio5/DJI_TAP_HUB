@@ -100,6 +100,7 @@ private val SRC_CFG_GROUPS: List<Pair<String, List<SrcCfgRow>>> = buildList {
         for ((k, l) in sw) {
             add(SrcCfgRow("${k}_off", "$l 关", def = 1000))
             add(SrcCfgRow("${k}_on", "$l 开", def = if (k == "focus") 1500 else 2000))
+            add(SrcCfgRow("${k}_lp", "$l 长按", rev = true, def = 0))
         }
     })
     // SHOT 快门
