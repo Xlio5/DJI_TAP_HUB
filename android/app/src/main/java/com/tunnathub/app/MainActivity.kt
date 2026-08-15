@@ -2081,7 +2081,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                         Text("自动", fontSize = 10.sp, color = if (roBaud == "auto") Color.Black else Color(0xFF64748B), modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp))
                                     }
                                     Surface(color = if (roBaud != "auto") Color(0xFF0EA5E9) else Color(0xFF1E293B), shape = RoundedCornerShape(6.dp),
-                                        onClick = { roBaud = if (rcOutMode == "crsf") "115200" else if (roSbusStd) "100000" else "115200" }) {
+                                        onClick = { roBaud = if (rcOutMode == "crsf") "400000" else if (roSbusStd) "100000" else "115200" }) {
                                         Text("手动", fontSize = 10.sp, color = if (roBaud != "auto") Color.Black else Color(0xFF64748B), modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp))
                                     }
                                     if (roBaud != "auto") {
@@ -2092,7 +2092,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                         }
                                     } else {
                                         // auto: 实际波特率由固件按 sbus_std 决定 (std→100k, 非std→115200; CRSF→420k)
-                                        Text(if (rcOutMode == "crsf") "→ 115200" else if (roSbusStd) "→ 100000" else "→ 115200",
+                                        Text(if (rcOutMode == "crsf") "→ 400000" else if (roSbusStd) "→ 100000" else "→ 115200",
                                             fontSize = 10.sp, color = Color(0xFF22C55E))
                                     }
                                 }

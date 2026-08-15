@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.23"   // 固件版本 — 改这里全局生效
+#define VERSION     "1.6.24"   // 固件版本 — 改这里全局生效
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
@@ -1159,7 +1159,7 @@ static std::string apiRcOutput(const Config& cfg) {
     obj.pair("sbus_std", JsonValue::boolean(cfg.rcOutSbusStd));
     obj.pair("baud_sbus", JsonValue::number(100000));
     obj.pair("baud_sbus_nostd", JsonValue::number(115200));
-    obj.pair("baud_crsf", JsonValue::number(420000));
+    obj.pair("baud_crsf", JsonValue::number(400000));
     /* 可用 source 列表 (供 app 下拉) */
     std::string srcs;
     for (int i = 1; i < SRC_COUNT; i++) {

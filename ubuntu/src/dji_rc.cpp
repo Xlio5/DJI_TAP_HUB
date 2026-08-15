@@ -1230,7 +1230,7 @@ static bool load_rc_output_cfg(char &mode, int &baud, bool &sbus_std)
     auto baudS = cfg_json_str(obj, "baud");
     /* 标准 SBUS: 100k 8E2; 非标准: 115200 8N1; CRSF: 115200 8N1 */
     if (baudS == "auto" || baudS.empty()) {
-        if (mode == 'c') baud = 115200;   /* ELRS CRSF: 115200 (V3s UART 分频精确, 400000 非整数) */
+        if (mode == 'c') baud = 400000;   /* ELRS/MLRS 统一 400k (V3s DLF 输出 401070, +0.27%, STM32 硬件 UART 兼容) */
         else if (sbus_std) baud = 100000;
         else baud = 115200;
     } else { int b = std::atoi(baudS.c_str()); if (b >= 9600 && b <= 4000000) baud = b; }
