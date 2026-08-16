@@ -8,6 +8,20 @@
 
 ## 〇、当前进行中任务（2026-08-16 优先看）
 
+### LAN 身份（手机在局域网"直接可见"）— 已实现待真机验证
+- **需求**：老大要"用起来像真实局域网"——局域网设备（电脑/摄像头）能直接访问手机，不用逐端口配转发
+- **根因**：手机 TUN 只有 `10.0.0.2`（外人看不见的隧道网段），LAN→手机要靠逐端口 DNAT 白名单
+- **方案**：手机 TUN **多挂一个 LAN 身份地址 `x.x.x.200`**（从 lanSubnet 推导，默认 192.168.144.200），V3s eth0 开 proxy_arp 代答 + `/32` 路由进隧道
+  - 局域网设备 ping/访问 `192.168.144.200` = 同网段直接 ARP → V3s 代答 → 隧道 → 手机，**零配置**
+  - 控制面（10.0.0.1 web / 10.0.0.2 rcmsg / crsf-bridge）**完全不动**
+- **改动**：
+  - App `TunNatVpnService.kt`：`addAddress(lanAddr, 24)` 加 LAN 身份；`openProtectedPort` 改绑 `0.0.0.0`（同时收 10.0.0.2 和 144.200）
+  - `setup_nat.sh`：LAN_PHONE_IP 推导 + `ip route add x.x.x.200/32 dev tun_hub` + `eth0 proxy_arp=1` + 入向 FORWARD `-d x.x.x.200 -j ACCEPT`
+  - 固件 1.6.27→**1.6.28**，App 1.6.33→**1.6.34**（versionCode 73）
+- **编译产物**：web_server md5 `434d26e5`；APK 30.3MB
+- **待真机验证**：设备离线。验证步骤见 §十五节产物表下方
+- **改动文件**：`TunNatVpnService.kt` / `setup_nat.sh` / `web_server.cpp` / `build.gradle.kts`
+
 ### 摇杆 CRSF 输出 + Lua 桥同时工作（未完成）
 - **目标**：crsf 模式既能输出摇杆 CRSF（飞控），又能配置 ELRS Lua（接收机页）
 - **固件 v1.6.25（ringbuf 版）已在 V3s 运行**，但 Lua 配置未打通
@@ -333,6 +347,23 @@ PB = bank 1 → bank offset 0x24
 - `docs/ota_ab_slot_issue.md`：OTA 问题记录
 
 ## 十五、固件产物 md5
+
+### v1.6.28（LAN 身份: 手机 144.200 局域网直连, App 1.6.34）— 待真机验证
+
+| 文件 | md5 |
+|---|---|
+| dji_rc（与 v1.6.27 同代码, 未改动）| `af2be23e` |
+| web_server（版本号 1.6.28）| `434d26e5` |
+| app-debug.apk（App 1.6.34 / versionCode 73）| 30.3MB（md5 待设备在线时补）|
+
+### v1.6.27（CRSF Lua 时分复用, 仅 /tmp 临时运行, 未固化）— 上一版
+
+| 文件 | md5 |
+|---|---|
+| dji_rc（Lua 时分复用 tx_lua + UART0 自动恢复）| `af2be23e` |
+| web_server（/tmp 版, md5 未记录）| — |
+
+### 早期（留存）
 
 | 文件 | md5 |
 |---|---|
