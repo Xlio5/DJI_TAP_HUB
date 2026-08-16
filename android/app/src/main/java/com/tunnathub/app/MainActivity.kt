@@ -467,7 +467,7 @@ class MainActivity : ComponentActivity() {
 // Tab 定义
 // ═══════════════════════════════════════════════════════
 
-private enum class Tab { VIDEO, REMOTE, RECEIVER, CONFIG, UDP_TOOL }
+private enum class Tab { VIDEO, REMOTE, RECEIVER, CONFIG }
 
 // ═══════════════════════════════════════════════════════
 // 顶层：状态栏 + 导航 + 内容区
@@ -1766,16 +1766,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 modifier = Modifier.size(22.dp))
                         }
                         Text("配置", fontSize = 9.sp, color = if (selectedTab == Tab.CONFIG) Color(0xFF38BDF8) else Color(0xFF475569))
-                        // UDP 工具 (仅特殊调试版, 正常版不带)
-                        if (BuildConfig.ENABLE_UDP_TOOL) {
-                            Spacer(Modifier.height(12.dp))
-                            IconButton(onClick = { selectedTab = Tab.UDP_TOOL }, modifier = Modifier.size(40.dp)) {
-                                Icon(Icons.Filled.Send, "UDP工具",
-                                    tint = if (selectedTab == Tab.UDP_TOOL) Color(0xFF38BDF8) else Color(0xFF475569),
-                                    modifier = Modifier.size(22.dp))
-                            }
-                            Text("UDP工具", fontSize = 9.sp, color = if (selectedTab == Tab.UDP_TOOL) Color(0xFF38BDF8) else Color(0xFF475569))
-                        }
                         Spacer(Modifier.weight(1f))
                         Text("v${BuildConfig.VERSION_NAME}", fontSize = 9.sp, color = Color(0xFF475569))
                         if (v3sVersion.isNotEmpty()) {
@@ -2205,10 +2195,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         }
                     }
 
-                    // ── UDP 工具页 (仅特殊调试版) ──
-                    if (BuildConfig.ENABLE_UDP_TOOL && selectedTab == Tab.UDP_TOOL) {
-                        UdpToolPage()
-                    }
                 }
             }
         }

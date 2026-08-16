@@ -12,8 +12,8 @@ android {
         applicationId = "com.tunnathub.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 75
-        versionName = "1.6.36"
+        versionCode = 76
+        versionName = "1.6.37"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -34,15 +34,11 @@ android {
 
     buildTypes {
         debug {
-            // 特殊调试版: 启用 UDP 工具页 (局域网 UDP 收发测试, 老大要求特殊版才带)
-            buildConfigField("boolean", "ENABLE_UDP_TOOL", "true")
         }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"),
                           "proguard-rules.pro")
-            // 正常版: 不带 UDP 工具页
-            buildConfigField("boolean", "ENABLE_UDP_TOOL", "false")
         }
     }
 

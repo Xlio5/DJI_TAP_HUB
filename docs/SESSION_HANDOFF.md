@@ -23,10 +23,12 @@
   - web_server 监听 `0.0.0.0:8080`（通配），144.66 和 144.11 都能到
 - **完整方案**：[docs/LAN_IDENTITY_ARCH.md](docs/LAN_IDENTITY_ARCH.md)（含实测记录 + 改造清单 + 同网段坑）
 - **改动**：App（TunNatVpnService/MainActivity/CrsfBridge/视频文件/UDP 工具，版本 **1.6.36**/code 75）+ 固件（dji_rc/S99/setup_v3s.sh/main/tun_iface，版本 **1.6.29**）
-- **✅ 双向 10 分钟压力测试通过 (2026-08-16)**：14550 端口、500B/包、1ms 间隔 (1000pps)、双向 10 分钟
-  - **方向1 电脑→DJI**：电脑发 600,000 包 → 手机 InDatagrams +632,287、**NoPorts +0**、RcvbufErrors +1 (0.0002%) → **0 丢包**
-  - **方向2 DJI→电脑**：App UDP 工具压测发送 600,000 包（走 tun0）→ 电脑收线程运行期间 100% 接收（每 60s 稳定 ~59,800 包）
+- **✅ 双向 10 分钟压力测试通过 (2026-08-16 重测, 优化版脚本 v2)**：14550 端口、500B/包、1ms 间隔 (1000pps)、双向 10 分钟
+  - **方向1 电脑→DJI**：电脑发 600,000 包 (1000pps 精确) → 手机 InDatagrams +782,125、**NoPorts +0**、RcvbufErrors +1 (0.0002%) → **0 丢包**
+  - **方向2 DJI→电脑**：电脑收 597,777 包 (~99.6%)。App 日志上限 2000 条被方向1的 600k RX 日志挤爆, "压测发送完成 X 包"不可读 → App 实发数无法严格确认。老大判定隧道无问题（方向1 完美 + 电脑收包节奏前 540s 稳定 ~60,000/60s）
   - **关键**：App 发送必须走 tun0 隧道（`openVpnBoundPort(0)` + bindSocketToVpn）——普通 DatagramSocket bind 144.11 会命中 fwmark0→wlan0 策略路由, 到不了电脑
+  - **压测流程改进 (防 AI 卡死)**：`tmp/_stress_14550_bi_v2.py` — 后台运行 AI 不阻塞 + uiautomator 自动定位按钮（修 v1 硬编码 (1900,1900) 坐标 bug, 实际按钮在 (248,1119)）+ 自动导航/启动监听 + 结果写 JSON。原 v1 12 分钟前台长命令超时卡死 AI
+  - **⚠️ UDP 工具页已移除 (App 1.6.37, 2026-08-16 晚)**：压测验证完删 UdpToolPage.kt + 侧边栏入口 + Tab.UDP_TOOL + ENABLE_UDP_TOOL buildConfigField。`openVpnBoundPort` 保留（LAN 身份关键函数, crsf-bridge 未来可能用, CrsfBridge 当前用 openProtectedPort(65532)）
 - **⚠️ 电脑端有感**：uart2udp --target、QGC 目标 IP、App 端口转发 dest 都要从 `144.200` 改成 `144.11`
 - **⚠️ 待固化**：V3s 当前仍是 F1.6.26（dji_rc/web_server/usb_tund 运行时重启用了新参数，但固件未固化，重启后回旧版）— 需重建 rootfs OTA
 
@@ -391,6 +393,7 @@ PB = bank 1 → bank offset 0x24
 | **rootfs_v1629.squashfs** | **`be803124`**（3.80MB, 已刷入 mtdblock3）|
 | app-debug.apk（App 1.6.35 / versionCode 74）| 30.3MB（md5 待补）|
 | app-debug.apk（App 1.6.36 / versionCode 75, UDP 工具 tun0 发送 + 压测发送）| 30.3MB（md5 待补）|
+| app-debug.apk（App 1.6.37 / versionCode 76, 移除 UDP 工具页）| 31.7MB（2026-08-16 部署, 入口验证已消失）|
 
 **⚠️ 固化验证**：V3s 重启后 F1.6.29，路由 144.11/32 + proxy_arp 自动生效，dji_rc 自动用 144.11，电脑 ping 144.11 通，App rcmsg 正常。
 
