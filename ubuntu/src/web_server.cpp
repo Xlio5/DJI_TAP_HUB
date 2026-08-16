@@ -44,12 +44,12 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.28"   // 固件版本 — 改这里全局生效
+#define VERSION     "1.6.29"   // 固件版本 — 改这里全局生效
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
 constexpr int    MAX_CFG    = 32768;
-constexpr const char* RTSP_RTP_TUN_CLIENT = "10.0.0.2";
+constexpr const char* RTSP_RTP_TUN_CLIENT = "192.168.144.11";
 const char*      CFG_DEV    = "/dev/mtdblock0";
 constexpr int    CFG_OFFSET = 0xFD000;  // uboot 分区尾部空闲区(12KB, 距SPL 1012KB)
 constexpr int    CFG_MAX    = 0x3000;   // 12KB
@@ -187,8 +187,8 @@ struct Camera {
 
 struct Config {
     std::string rtspUrl = "rtsp://192.168.144.31:554/stream1";
-    std::string lanSubnet = "192.168.88.0/24";
-    std::string tunSubnet = "10.0.0.0/24";
+    std::string lanSubnet = "192.168.144.0/24";
+    std::string tunSubnet = "192.168.144.0/24";
     std::vector<ForwardRule> forwards;
     std::vector<Camera> cameras;
 
@@ -763,7 +763,7 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
       <div class="form-row">
         <select id="fw-proto" style="flex:0;width:70px"><option>udp</option><option>tcp</option></select>
         <input id="fw-port" type="number" placeholder="端口" min="1" max="65535" style="flex:0;width:80px">
-        <input id="fw-dest" value="10.0.0.2" style="flex:0;width:110px" placeholder="目标IP">
+        <input id="fw-dest" value="192.168.144.11" style="flex:0;width:110px" placeholder="目标IP">
         <button class="btn btn-green" onclick="addFwd()">+ 添加</button>
       </div>
       <ul class="rules" id="fwd-list"></ul>

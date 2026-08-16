@@ -8,7 +8,24 @@
 
 ## 〇、当前进行中任务（2026-08-16 优先看）
 
-### LAN 身份（手机在局域网"直接可见"）— 已实现待真机验证
+### 🔥 做法 B: 砍 10.0.0.x + 手机 IP 改 144.11 — ✅ 已实现真机验证 (2026-08-16)
+- **决策（老大拍板）**：砍掉 10.0.0.x 隧道内部网段，手机 tun0 用局域网真 IP **192.168.144.11**，V3s = 144.66
+- **✅ 真机验证通过**：
+  - 手机 tun0 = **192.168.144.11**（唯一地址，10.0.0.2 已移除），App 1.6.35
+  - 电脑 **ping 144.11** 通（2-5ms）
+  - App 收 rcmsg（V3s → **144.11:65530**）：遥控页 "dji_rc online RC"，摇杆实时
+  - V3s 路由 `144.11/32 dev tun_hub` + eth0 proxy_arp=1 ✅
+  - tun_hub 无 10.0.0.1 IP（不配内部地址）✅
+  - 电脑 UDP → **144.11:14550** 到手机 UDP 层（NoPorts+3 = 到手机但 QGC 未匹配，QGC v4-mapped 坑，非隧道问题）
+- **为什么可行**（实测已确认）：
+  - V3s INPUT 链 policy ACCEPT，`144.66:8080` 从 V3s 本机访问返回 `{"version":"1.6.26"}` ✅ —— **App 代码注释里"eth0 INPUT 投递坏"的 bug 已不存在**
+  - web_server 监听 `0.0.0.0:8080`（通配），144.66 和 144.11 都能到
+- **完整方案**：[docs/LAN_IDENTITY_ARCH.md](docs/LAN_IDENTITY_ARCH.md)（含实测记录 + 改造清单 + 同网段坑）
+- **改动**：App（TunNatVpnService/MainActivity/CrsfBridge/视频文件，版本 **1.6.35**/code 74）+ 固件（dji_rc/S99/setup_v3s.sh/main/tun_iface，版本 **1.6.29**）
+- **⚠️ 电脑端有感**：uart2udp --target、QGC 目标 IP、App 端口转发 dest 都要从 `144.200` 改成 `144.11`
+- **⚠️ 待固化**：V3s 当前仍是 F1.6.26（dji_rc/web_server/usb_tund 运行时重启用了新参数，但固件未固化，重启后回旧版）— 需重建 rootfs OTA
+
+### LAN 身份 v1（x.x.x.200 双地址方案）— 已实现真机验证通过
 - **需求**：老大要"用起来像真实局域网"——局域网设备（电脑/摄像头）能直接访问手机，不用逐端口配转发
 - **根因**：手机 TUN 只有 `10.0.0.2`（外人看不见的隧道网段），LAN→手机要靠逐端口 DNAT 白名单
 - **方案**：手机 TUN **多挂一个 LAN 身份地址 `x.x.x.200`**（从 lanSubnet 推导，默认 192.168.144.200），V3s eth0 开 proxy_arp 代答 + `/32` 路由进隧道
@@ -27,6 +44,8 @@
   - 电脑发 UDP → `192.168.144.200:9000` 到达手机 UDP 层（手机 NoPorts +5 精确匹配）
   - App 收 rcmsg（10.0.0.2:65530）正常：遥控页显示 "dji_rc online RC"，CH1-16 摇杆实时
   - USB 隧道双向流量 Tx 7.0M / Rx 690K 在涨
+  - QGC MAVLink + 视频走 `192.168.144.200:14550`：电脑 uart2udp 12.62 KB/s 持续发送无报错，数据到 QGC socket（V3s FORWARD 到 144.200 计数 1510K 包 / 1900MB）
+  - **V3s INPUT bug 已不存在**：INPUT policy ACCEPT，`144.66:8080` 本机访问正常
 - **产物 md5**：web_server `434d26e5`；APK 30.3MB；**注意固件 F 版本仍是 1.6.26**（web_server 推 /tmp 未固化，固化需重建 rootfs OTA）
 
 ### 摇杆 CRSF 输出 + Lua 桥同时工作（未完成）
@@ -355,7 +374,16 @@ PB = bank 1 → bank offset 0x24
 
 ## 十五、固件产物 md5
 
-### v1.6.28（LAN 身份: 手机 144.200 局域网直连, App 1.6.34）— 待真机验证
+### v1.6.29（做法 B: 砍 10.0.0.x, 手机 = 144.11, App 1.6.35）— 已真机验证, 待固化
+
+| 文件 | md5 |
+|---|---|
+| dji_rc（rcmsg/crsfbr-host → 192.168.144.11）| `e46cdaa2` |
+| web_server（版本号 1.6.29, RTP 目标 144.11）| `22a4d301` |
+| usb_tund（tun_hub 不配内部 IP, main 绑 0.0.0.0:9999）| `97562926`（/tmp/usb_tund_new）|
+| app-debug.apk（App 1.6.35 / versionCode 74）| 30.3MB（md5 待补）|
+
+### v1.6.28（LAN 身份: 手机 144.200 局域网直连, App 1.6.34）— 已真机验证（被 v1.6.29 取代）
 
 | 文件 | md5 |
 |---|---|

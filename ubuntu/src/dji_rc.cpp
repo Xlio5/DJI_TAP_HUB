@@ -358,14 +358,15 @@ static void pb6_auto_switch(bool grounded, const char *out_dev, char out_mode,
 // ── rcmsg (RC 数据 UDP) ──
 static constexpr uint32_t RCMSG_MAGIC = 0x314D4352u;  // "RCM1", little-endian on wire
 static constexpr int RCMSG_PORT = 65530;
-static constexpr const char *RCMSG_HOST = "10.0.0.2";
+// 手机局域网 IP (192.168.144.11) — 砍掉 10.0.0.x 隧道网段后直达手机
+static constexpr const char *RCMSG_HOST = "192.168.144.11";
 
 // ── CRSF 桥 (crsf-bridge 模式): UART0 CRSF 帧 ↔ 网口 UDP 透明转发 ──
 // App 跑 ELRS Lua 脚本, 经网口 UDP 发 CRSF 参数命令, V3s 转 UART0。
 // g_crsf_bridge 前移声明于文件顶部 (pb6_auto_switch 需访问), 见上
 static constexpr uint32_t CRSFBR_MAGIC = 0x46534352u;   // "RCSF" little-endian = "CRSF"
 static int       crsfbr_port = 65532;                   // 网口 CRSF 桥端口
-static const char *crsfbr_host = "10.0.0.2";
+static const char *crsfbr_host = "192.168.144.11";
 
 // ── tlm (回传数据 UDP) ──
 static constexpr uint32_t TLM_MAGIC = 0x314D4C54u;    // "TLM1", little-endian on wire

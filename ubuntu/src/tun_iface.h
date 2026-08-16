@@ -51,7 +51,7 @@ public:
     void close();
 
 private:
-    /// 配置 TUN 接口 (MTU + UP + IP 10.0.0.1/24), 自包含不依赖 setup_v3s.sh
+    /// 配置 TUN 接口 (MTU + UP, 无内部 IP — 手机用 /32 路由指向, 见 setup_v3s.sh)
     void configure(const std::string& name, int mtu);
 
     int fd_ = -1;

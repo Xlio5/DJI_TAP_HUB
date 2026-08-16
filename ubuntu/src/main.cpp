@@ -44,13 +44,13 @@ static void tcpPingServer() {
     struct sockaddr_in addr = {};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(9999);
-    inet_pton(AF_INET, "10.0.0.1", &addr.sin_addr);
+    inet_pton(AF_INET, "0.0.0.0", &addr.sin_addr);
     if (bind(srv, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        std::cerr << "[PING] bind 10.0.0.1:9999 failed: " << strerror(errno) << std::endl;
+        std::cerr << "[PING] bind 0.0.0.0:9999 failed: " << strerror(errno) << std::endl;
         close(srv); return;
     }
     if (listen(srv, 8) < 0) { perror("listen"); close(srv); return; }
-    std::cout << "[PING] TCP 延迟测试端口 10.0.0.1:9999" << std::endl;
+    std::cout << "[PING] TCP 延迟测试端口 0.0.0.0:9999" << std::endl;
 
     // C5: accept 设置 1s 超时, 周期性返回检查 gRunning, 避免 SIGTERM 后无法 join
     struct timeval accTv;

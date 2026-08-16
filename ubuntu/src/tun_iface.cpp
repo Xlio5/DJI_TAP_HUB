@@ -58,7 +58,9 @@ TunIface::TunIface(const std::string& name, int mtu)
     std::cout << "[TUN] 接口 '" << name_ << "' 已创建 (fd=" << fd_ << ", mtu=" << mtu_ << ")" << std::endl;
 }
 
-/// 配置 TUN 接口: 设置 MTU + UP + IP (10.0.0.1/24), 通过 ioctl/netlink
+/// 配置 TUN 接口: 设置 MTU + UP (不配内部 IP, 手机地址由 setup_v3s.sh 用 /32 主机路由指向)
+/// 2026-08-16: 砍掉 10.0.0.x 隧道网段 — tun_hub 不再配 10.0.0.1/24,
+/// 只建 UP 接口, 避免生成 10.0.0.0/24 路由与 eth0 的 144.0/24 同网段冲突。
 void TunIface::configure(const std::string& name, int mtu) {
     // 1. MTU
     int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
@@ -76,22 +78,8 @@ void TunIface::configure(const std::string& name, int mtu) {
     if (ioctl(sock, SIOCSIFFLAGS, &ifr) < 0)
         std::cerr << "[TUN] SIOCSIFFLAGS(UP) 失败: " << strerror(errno) << std::endl;
 
-    // 3. IP: 10.0.0.1/24 (通过 ifr_addr)
-    struct ifreq ipr = {};
-    strncpy(ipr.ifr_name, name.c_str(), IFNAMSIZ - 1);
-    struct sockaddr_in* sin = (struct sockaddr_in*)&ipr.ifr_addr;
-    sin->sin_family = AF_INET;
-    sin->sin_addr.s_addr = inet_addr("10.0.0.1");
-    if (ioctl(sock, SIOCSIFADDR, &ipr) < 0)
-        std::cerr << "[TUN] SIOCSIFADDR 失败: " << strerror(errno) << std::endl;
-
-    // 4. netmask
-    sin->sin_addr.s_addr = inet_addr("255.255.255.0");
-    if (ioctl(sock, SIOCSIFNETMASK, &ipr) < 0)
-        std::cerr << "[TUN] SIOCSIFNETMASK 失败: " << strerror(errno) << std::endl;
-
     ::close(sock);
-    std::cout << "[TUN] 配置 " << name << ": mtu=" << mtu << " UP 10.0.0.1/24" << std::endl;
+    std::cout << "[TUN] 配置 " << name << ": mtu=" << mtu << " UP (无内部 IP, 手机用 /32 路由)" << std::endl;
 }
 
 TunIface::~TunIface() {
