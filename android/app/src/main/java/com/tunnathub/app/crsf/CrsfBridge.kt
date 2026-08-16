@@ -8,7 +8,7 @@
  * 网口协议: [magic "CRSF" 4B][CRSF 帧], magic = 0x46534352 little-endian
  *
  * 收发 socket 分离:
- *   - 发包 socket: bind 10.0.0.2 走 VPN 隧道发到 V3s (10.0.0.1) —— 不能 protect (否则走 wlan0)
+ *   - 发包 socket: bind 192.168.144.11 走 VPN 隧道发到 V3s (192.168.144.66) —— 不能 protect (否则走 wlan0)
  *   - 收包 socket: TunNatVpnService.openProtectedPort(65532) —— protect 后内核才把
  *     TUN 接口入站的 65532 UDP 包投递到该 socket (参考 rcmsg 收包方式)
  */
@@ -49,15 +49,15 @@ object CrsfBridge {
         stop()
         host = hostAddr
         running.set(true)
-        // 进程绑定 VPN 网络: 发包到 10.0.0.1 必须走 tun0, 否则 Android 默认走 wlan0 到不了 V3s
+        // 进程绑定 VPN 网络: 发包到 192.168.144.66 必须走 tun0, 否则 Android 默认走 wlan0 到不了 V3s
         // (参考 UdpRtspPlayer bindProcessToVpnNetwork; rcmsg 收包用 openProtectedPort 同理需 VPN 上下文)
         TunNatVpnService.bindProcessToVpnNetwork()
-        // 发包 socket: bind tun0 IP (10.0.0.2) + 显式绑定到 VPN network
+        // 发包 socket: bind 手机局域网 IP (192.168.144.11) + 显式绑定到 VPN network
         // (bindSocketToNetwork 比 bindProcessToNetwork 可靠: 进程路由可能被 uid 规则(走 wlan0)覆盖,
         //  socket 级绑定强制走 tun0, V3s OTA 重启后隧道重建也不丢)
         sendSocket = try {
             DatagramSocket(null).apply {
-                bind(InetSocketAddress("10.0.0.2", 0))
+                bind(InetSocketAddress("192.168.144.11", 0))
             }
         } catch (e: Exception) {
             DatagramSocket()

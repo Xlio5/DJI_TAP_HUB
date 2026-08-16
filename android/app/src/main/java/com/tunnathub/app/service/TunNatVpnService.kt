@@ -8,7 +8,7 @@
  *   4. 前台服务保活
  *
  * TUN 参数:
- *   Android IP: 10.0.0.2/24
+ *   Android IP: 192.168.144.11/24 (手机在局域网里的真 IP)
  *   Route:      192.168.144.0/24
  *   MTU:        1400
  */
@@ -80,7 +80,7 @@ class TunNatVpnService : VpnService() {
         }
 
         /** 把 UDP socket 显式绑定到 VPN network (走 tun0, 避免 uid 规则覆盖走 wlan0)
-         *  CrsfBridge.sendSocket 调用, 确保发包到 10.0.0.1 走隧道 */
+         *  CrsfBridge.sendSocket 调用, 确保发包到 144.66 (V3s) 走隧道 */
         @JvmStatic
         fun bindSocketToVpn(socket: java.net.DatagramSocket): Boolean {
             val inst = instance ?: return false
@@ -111,10 +111,8 @@ class TunNatVpnService : VpnService() {
             return instance?.protect(socket) ?: false
         }
 
-        /** 受保护的 UDP 端口映射 (port → DatagramSocket), 控制面绑定 10.0.0.2 */
+        /** 受保护的 UDP 端口映射 (port → DatagramSocket), 绑定手机局域网 IP (144.11) */
         private val protectedPorts = java.util.concurrent.ConcurrentHashMap<Int, java.net.DatagramSocket>()
-        /** 受保护的 UDP 端口映射 (port → DatagramSocket), LAN 身份绑定 192.168.144.200 */
-        private val lanProtectedPorts = java.util.concurrent.ConcurrentHashMap<Int, java.net.DatagramSocket>()
         val protectedPortsState = mutableStateOf(emptyList<Int>())
 
         /** 保护一个 UDP 端口：创建 socket + bind + protect，保持存活让内核路由包 */
@@ -122,34 +120,23 @@ class TunNatVpnService : VpnService() {
             return openProtectedPort(port) != null
         }
 
-        /** 当前生效的 LAN 身份地址 (establishVpn 时从 lanSubnet 推导, 默认 192.168.144.200)。
-         * 供 openLanProtectedPort 绑定用, 与 TUN 控制面地址 (10.0.0.2) 区分。 */
+        /** 当前生效的手机局域网 IP (establishVpn 时从 lanSubnet 推导, 默认 192.168.144.11)。
+         * 局域网设备 ping/访问这个 IP = 直达手机, 供 openProtectedPort 绑定用。 */
         @Volatile
-        var currentLanAddr: String = "192.168.144.200"
+        var currentLanAddr: String = "192.168.144.11"
             private set
 
         /**
          * 打开(或复用)一个受保护的 UDP socket 并返回它, 供调用方 receive()。
-         * 绑定 TUN 控制面地址 (10.0.0.2), 标记 protect 绕过 VPN 隧道,
+         * 绑定手机局域网 IP (144.11), 标记 protect 绕过 VPN 隧道,
          * 让内核把从 TUN 接口入站的该端口 IPv4 UDP 包投递到该 socket。
          *
-         * ⚠️ 关键 (Android VpnService 限制): 只能绑定具体 TUN 子网 IP (10.0.0.2),
+         * ⚠️ 关键 (Android VpnService 限制): 只能绑定具体 TUN 子网 IP (144.11),
          * 不能绑 0.0.0.0 通配 — 通配会创建 IPv6 双栈 socket (udp6), 收不到经 tun0
          * 进入的 IPv4 包 (实测 InDatagrams 涨但 socket rx_queue=0)。
-         * LAN 身份 (144.200) 的入站请用 openLanProtectedPort() 单独开 socket。
          */
         fun openProtectedPort(port: Int): java.net.DatagramSocket? {
-            return openProtectedPortOn(port, TUN_ADDRESS, protectedPorts)
-        }
-
-        /**
-         * 打开(或复用)LAN 身份 (192.168.144.200) 的受保护 UDP socket。
-         * 局域网设备 ping/访问 144.200:port 时, V3s proxy_arp 代答 + /32 路由把包
-         * 送进隧道, 由这个绑定 144.200 的 socket 接收 — 实现"像真实局域网"的入站访问。
-         * 用独立的 map 存, 不与控制面 10.0.0.2 socket 混淆。
-         */
-        fun openLanProtectedPort(port: Int): java.net.DatagramSocket? {
-            return openProtectedPortOn(port, currentLanAddr, lanProtectedPorts)
+            return openProtectedPortOn(port, currentLanAddr, protectedPorts)
         }
 
         private fun openProtectedPortOn(
@@ -172,14 +159,14 @@ class TunNatVpnService : VpnService() {
             return try {
                 // 用 DatagramChannel.open(INET) 强制创建纯 IPv4 socket (AF_INET)。
                 // 若用 new DatagramSocket(null) + bind, 系统启用 IPv6 时会被提升为
-                // v4-mapped 双栈 socket (内核显示 ::ffff:10.0.0.2), 实测收不到经
+                // v4-mapped 双栈 socket (内核显示 ::ffff:144.11), 实测收不到经
                 // tun0 进入的 IPv4 UDP 包 (InDatagrams 涨但 socket rx_queue=0) —
                 // Android VpnService 对 v4-mapped 的隧道入站投递有 bug。
                 val channel = java.nio.channels.DatagramChannel.open(
                     java.net.StandardProtocolFamily.INET)
                 val socket = channel.socket()
                 socket.reuseAddress = true
-                // 绑定具体 IPv4 地址 (bindAddr): "10.0.0.2" 控制面 / "192.168.144.200" LAN 身份
+                // 绑定手机局域网 IP (144.11): 局域网设备发到该地址:port 的包才能投递进来
                 socket.bind(java.net.InetSocketAddress(bindAddr, port))
                 val protectOk = inst.protect(socket)
                 registry[port] = socket
@@ -201,29 +188,17 @@ class TunNatVpnService : VpnService() {
             }
         }
 
-        /** 释放所有受保护的端口 (控制面 10.0.0.2 + LAN 身份 144.200) */
+        /** 释放所有受保护的端口 */
         fun releaseAllPorts() {
             protectedPorts.values.forEach { try { it.close() } catch (_: Exception) {} }
             protectedPorts.clear()
-            lanProtectedPorts.values.forEach { try { it.close() } catch (_: Exception) {} }
-            lanProtectedPorts.clear()
             protectedPortsState.value = emptyList()
         }
 
-        // TUN 配置 (默认值, 高级设置可覆盖)
-        private const val TUN_ADDRESS = "10.0.0.2"
+        // TUN 配置 (手机地址 = 局域网 x.x.x.11, 从 lanSubnet 推导)
         private const val TUN_PREFIX = 24
         private const val TUN_MTU = 1400
-        private const val TUN_ROUTE = "10.0.0.0"
-        private const val TUN_PREFIX_ROUTE = 24
         private const val RECONNECT_DELAY = 1500L  // USB 断开后重连间隔
-
-        /** LAN 身份地址: 手机在局域网(192.168.144.0/24)里"直接可见"的 IP。
-         *  局域网设备 ping/访问这个 IP 时, V3s eth0 开 proxy_arp 代答 + /32 路由
-         *  把它收进 USB 隧道 → 手机, 实现"像真实局域网"的透明双向访问。
-         *  与 TUN_ADDRESS(10.0.0.2 控制面)并存: 控制面走 10.0.0.x 不动, LAN 身份走 144.200。 */
-        private const val LAN_ADDRESS = "192.168.144.200"
-        private const val LAN_PREFIX = 24
 
         // LAN 网段可从 SharedPreferences 覆盖 (高级设置)
         private const val PREFS_NAME = "tun_nat_hub"
@@ -231,6 +206,9 @@ class TunNatVpnService : VpnService() {
         private const val KEY_LAN_PREFIX = "lan_prefix"
         private const val DEFAULT_LAN_SUBNET = "192.168.144.0"
         private const val DEFAULT_LAN_PREFIX = 24
+
+        /** 手机在局域网里的 IP 尾号 (V3s = 144.66, 手机 = 144.11, 固定预留不撞 DHCP) */
+        private const val PHONE_IP_OCTET = 11
     }
 
     private var tunFd: ParcelFileDescriptor? = null
@@ -378,21 +356,19 @@ class TunNatVpnService : VpnService() {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val lanSubnet = prefs.getString(KEY_LAN_SUBNET, DEFAULT_LAN_SUBNET) ?: DEFAULT_LAN_SUBNET
         val lanPrefix = prefs.getInt(KEY_LAN_PREFIX, DEFAULT_LAN_PREFIX)
-        // LAN 身份地址: 取 lanSubnet 网段的 x.x.x.200 (如 192.168.144.0 → 192.168.144.200)。
-        // 从配置推导而非硬编码, 网段变更 (88→144) 时身份地址自动跟随, 不会过时。
-        val lanAddr = if (lanSubnet.contains('.')) {
-            lanSubnet.substringBeforeLast('.') + ".200"
-        } else LAN_ADDRESS
-        currentLanAddr = lanAddr   // 供 openLanProtectedPort 绑定用
-        AppLog.i(TAG, "建立 VPN: TUN=$TUN_ADDRESS/$TUN_PREFIX, LAN身份=$lanAddr/$lanPrefix, Route=$lanSubnet/$lanPrefix")
+        // 手机在局域网里的 IP: 取 lanSubnet 网段的 x.x.x.11 (如 192.168.144.0 → 192.168.144.11)。
+        // 从配置推导而非硬编码, 网段变更 (88→144) 时手机 IP 自动跟随。V3s = x.x.x.66。
+        val phoneIp = if (lanSubnet.contains('.')) {
+            lanSubnet.substringBeforeLast('.') + ".$PHONE_IP_OCTET"
+        } else "${DEFAULT_LAN_SUBNET.substringBeforeLast('.')}.$PHONE_IP_OCTET"
+        currentLanAddr = phoneIp   // 供 openProtectedPort 绑定用
+        AppLog.i(TAG, "建立 VPN: 手机IP=$phoneIp/$lanPrefix, Route=$lanSubnet/$lanPrefix")
 
         val builder = Builder()
             .setSession(getString(R.string.vpn_service_name))
             .setMtu(TUN_MTU)
-            .addAddress(TUN_ADDRESS, TUN_PREFIX)   // 控制面: 10.0.0.2 (V3s 上行 rcmsg/crsf-bridge)
-            .addAddress(lanAddr, lanPrefix)        // LAN 身份: 192.168.144.200 (局域网设备直连手机)
+            .addAddress(phoneIp, lanPrefix)   // 手机局域网真 IP: 192.168.144.11
             .addRoute(lanSubnet, lanPrefix)
-            .addRoute(TUN_ROUTE, TUN_PREFIX_ROUTE)
             .setBlocking(true)
             // 移除 allowBypass: 它导致 CrsfBridge socket 走 wlan0 绕过 VPN,
             // 使 CRSF 命令到不了 V3s bridge。移除后所有流量(含 CRSF)走 tun0→USB→V3s。

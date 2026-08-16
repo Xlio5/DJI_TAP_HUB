@@ -22,7 +22,7 @@ public final class RtspUdpProbe {
     }
 
     public static Result runProtectedTun(String rtspUrl, int receiveSeconds) {
-        return runInternal(rtspUrl, receiveSeconds, "tun_protected", "10.0.0.2", true);
+        return runInternal(rtspUrl, receiveSeconds, "tun_protected", "192.168.144.11", true);
     }
 
     private static Result runInternal(String rtspUrl, int receiveSeconds, String mode, String bindAddress, boolean protectUdp) {

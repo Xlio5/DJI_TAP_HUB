@@ -60,7 +60,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
 
     private static final String TAG = "UdpRtspPlayer";
     private static final boolean DEBUG_NO_SURFACE = false;    // true=纯解码不渲染(实验)
-    private static final String VPN_IP = "10.0.0.2";          // 手机 TUN 地址
+    private static final String VPN_IP = "192.168.144.11";    // 手机局域网 IP
     private static final int MIN_CLIENT_PORT = 10000;         // V3s DNAT 10000:65535
     private static final long KEY_FRAME_PLI_INTERVAL_NS = 1_500_000_000L;
     private static final long WAIT_KEY_FRAME_TIMEOUT_NS = 10_000_000_000L;
@@ -280,11 +280,11 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
             rtpSocket = new DatagramSocket(null);
             rtpSocket.setReuseAddress(true);
             rtpSocket.bind(new InetSocketAddress(VPN_IP, ports[0]));
-            // 注意：不要 protectSocket。RTP 从 V3s DNAT 到 10.0.0.2 后经 tun0 回环给本机，
+            // 注意：不要 protectSocket。RTP 从 V3s DNAT 到 192.168.144.11 后经 tun0 回环给本机，
             // socket 必须留在 VPN 网络内才能收到；protect 会让它绕过 VPN 收不到。
             rtcpSocket = new DatagramSocket(null);
             rtcpSocket.setReuseAddress(true);
-            // RTCP 发送 socket 绑通配地址而非 10.0.0.2：绑具体 VPN 地址 + VpnService 时，
+            // RTCP 发送 socket 绑通配地址而非 192.168.144.11：绑具体 VPN 地址 + VpnService 时，
             // 出方向包（PLI/FIR 到摄像头）会被路由静默丢弃；通配地址让路由决定源地址。
             rtcpSocket.bind(new InetSocketAddress(ports[1]));
             rtpSocket.setSoTimeout(100);

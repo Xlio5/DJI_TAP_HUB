@@ -30,7 +30,7 @@ public final class RtspKeyFrameRequester {
             int port = uri.getPort() > 0 ? uri.getPort() : 554;
             if (host == null || host.isBlank()) return Result.error("bad_url", "missing host");
 
-            UdpPair udp = openUdpPair("10.0.0.2", true);
+            UdpPair udp = openUdpPair("192.168.144.11", true);
             rtp = udp.rtp;
             rtcp = udp.rtcp;
             rtp.setSoTimeout(300);

@@ -493,9 +493,9 @@ private fun LuaParamEmbed() {
             if (activity != null) activity.runOnUiThread { title = it }
             else title = it
         }
-        // mock(模拟器) host 用 NAT 网关; 真机走 V3s tun_hub IP 10.0.0.1 (USB隧道→tun_hub→bridge 65532)
-        // 关键: 必须用 10.0.0.1 (tun_hub INPUT 投递正常), 不能用 192.168.144.66 (eth0 INPUT 投递坏, V3s内核bug)
-        val v3sHost = if (com.tunnathub.app.crsf.LuaEngine.isEmulator()) "10.0.2.2" else "10.0.0.1"
+        // mock(模拟器) host 用 NAT 网关; 真机走 V3s eth0 IP 192.168.144.66 (USB隧道→tun_hub→eth0 INPUT)
+        // 实测 (2026-08-16): eth0 INPUT 投递正常 (V3s INPUT policy ACCEPT, 144.66:8080 可访问)
+        val v3sHost = if (com.tunnathub.app.crsf.LuaEngine.isEmulator()) "10.0.2.2" else "192.168.144.66"
         controller.start(v3sHost)
         onDispose {
             controller.onRowsChanged = null
@@ -616,7 +616,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var fwdProto by remember { mutableStateOf("udp") }
     var fwdExtPort by remember { mutableStateOf("14550") }
     var fwdDestPort by remember { mutableStateOf("0") }
-    var fwdDestIp by remember { mutableStateOf("10.0.0.2") }
+    var fwdDestIp by remember { mutableStateOf("192.168.144.11") }
     var fwdMsg by remember { mutableStateOf("") }
 
     // ── LAN 网段 ──
@@ -652,7 +652,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         apiScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             var ok = false
             try {
-                val url = java.net.URL("http://10.0.0.1:8080$path")
+                val url = java.net.URL("http://192.168.144.66:8080$path")
                 val conn = url.openConnection() as java.net.HttpURLConnection
                 conn.connectTimeout = 3000; conn.readTimeout = 3000
                 conn.doOutput = true; conn.requestMethod = "POST"
@@ -683,11 +683,11 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         while (vpnRunning) {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 try {
-                    val text = java.net.URL("http://10.0.0.1:8080/api/heartbeat").openConnection()
+                    val text = java.net.URL("http://192.168.144.66:8080/api/heartbeat").openConnection()
                         .apply { connectTimeout = 2000; readTimeout = 2000 }
                         .getInputStream().bufferedReader().readText()
                     val statsText = try {
-                        java.net.URL("http://10.0.0.1:8080/api/stats").openConnection()
+                        java.net.URL("http://192.168.144.66:8080/api/stats").openConnection()
                             .apply { connectTimeout = 1500; readTimeout = 1500 }
                             .getInputStream().bufferedReader().readText()
                     } catch (_: Exception) { "" }
@@ -720,7 +720,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         if (!vpnRunning) return@LaunchedEffect
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                val text = java.net.URL("http://10.0.0.1:8080/api/config").openConnection()
+                val text = java.net.URL("http://192.168.144.66:8080/api/config").openConnection()
                     .apply { connectTimeout = 2000; readTimeout = 2000 }
                     .getInputStream().bufferedReader().readText()
                 AppLog.d("TunNatHub", "获取 V3s 配置: OK (${text.length} bytes)")
@@ -752,7 +752,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         if (!vpnRunning) return@LaunchedEffect
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                // 打开受保护的 UDP socket (绑定 10.0.0.2:65530), 内核才投递入站包
+                // 打开受保护的 UDP socket (绑定 192.168.144.11:65530), 内核才投递入站包
                 // H-02: 捕获局部 val, 避免 !! (sock 是 var, 并发可能被重赋值)
                 val sock = TunNatVpnService.openProtectedPort(RcMsg.PORT)
                 if (sock == null) {
@@ -1348,7 +1348,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 roMsg = "读取中..."
                 val res = withContext(Dispatchers.IO) {
                     try {
-                        java.net.URL("http://10.0.0.1:8080/api/rc/output").openConnection()
+                        java.net.URL("http://192.168.144.66:8080/api/rc/output").openConnection()
                             .apply { connectTimeout = 3000; readTimeout = 3000 }
                             .getInputStream().bufferedReader().readText()
                     } catch (e: Exception) { "" }
@@ -1971,7 +1971,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     val ePort = fwdExtPort.filter { it.isDigit() }.toIntOrNull()
                                     val dPort = fwdDestPort.filter { it.isDigit() }.toIntOrNull()
                                     if (ePort == null || ePort < 1 || ePort > 65535) { fwdMsg = "外网端口无效 (1-65535)"; return@Button }
-                                    val dest = fwdDestIp.ifEmpty { "10.0.0.2" } + if (dPort != null) ":$dPort" else ""
+                                    val dest = fwdDestIp.ifEmpty { "192.168.144.11" } + if (dPort != null) ":$dPort" else ""
                                     forwards = forwards + FwdInfo(fwdProto, ePort, dest)
                                     apiPost("/api/forward/add", """{"proto":"$fwdProto","port":$ePort,"dest":"$dest"}""")
                                     fwdExtPort = "0"; fwdDestPort = "0"
@@ -2016,7 +2016,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                     // H-3: 网络请求放 IO 线程, 避免阻塞主线程 (ANR 风险)
                                     val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                         try {
-                                            val text = java.net.URL("http://10.0.0.1:8080/api/rc/output").openConnection()
+                                            val text = java.net.URL("http://192.168.144.66:8080/api/rc/output").openConnection()
                                                 .apply { connectTimeout = 3000; readTimeout = 3000 }
                                                 .getInputStream().bufferedReader().readText()
                                             Pair(text, "")  // (内容, 错误)
@@ -2125,7 +2125,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                             // H-4: 网络请求放 IO 线程, 避免阻塞主线程
                                             val res = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                                 try {
-                                                    java.net.URL("http://10.0.0.1:8080/api/rc/telemetry").openConnection()
+                                                    java.net.URL("http://192.168.144.66:8080/api/rc/telemetry").openConnection()
                                                         .apply { connectTimeout = 1500; readTimeout = 1500 }
                                                         .getInputStream().bufferedReader().readText()
                                                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -2227,7 +2227,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                                         try {
                                                             val t0 = System.nanoTime()
                                                             java.net.Socket().use { s ->
-                                                                s.connect(java.net.InetSocketAddress("10.0.0.1", 9999), 3000)
+                                                                s.connect(java.net.InetSocketAddress("192.168.144.66", 9999), 3000)
                                                                 rtts.add((System.nanoTime() - t0) / 1_000_000.0)
                                                             }
                                                         } catch (_: Exception) { drops++ }
