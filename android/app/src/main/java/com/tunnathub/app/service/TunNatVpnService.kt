@@ -120,8 +120,9 @@ class TunNatVpnService : VpnService() {
             return openProtectedPort(port) != null
         }
 
-        /** 当前生效的手机局域网 IP (establishVpn 时从 lanSubnet 推导, 默认 192.168.144.11)。
-         * 局域网设备 ping/访问这个 IP = 直达手机, 供 openProtectedPort 绑定用。 */
+        /** 当前生效的手机 LAN 身份 IP (establishVpn 时从 lanSubnet 推导, 默认 192.168.144.11)。
+         * 局域网设备 ping/访问这个 IP = 直达手机 (V3s DNAT 到 10.0.0.2 主地址)。
+         * 注意: 这是副地址 (LAN 身份), 收包 socket 绑主地址 10.0.0.2 (openProtectedPort)。 */
         @Volatile
         var currentLanAddr: String = "192.168.144.11"
             private set
@@ -136,7 +137,38 @@ class TunNatVpnService : VpnService() {
          * 进入的 IPv4 包 (实测 InDatagrams 涨但 socket rx_queue=0)。
          */
         fun openProtectedPort(port: Int): java.net.DatagramSocket? {
-            return openProtectedPortOn(port, currentLanAddr, protectedPorts)
+            // 绑手机主地址 10.0.0.2 (控制面 rcmsg/crsfbr 都发主地址, V3s DNAT 到主地址)。
+            // Android VpnService 只对主地址投递隧道包, 副地址(144.11)收不到。
+            return openProtectedPortOn(port, INTERNAL_FWD_ADDR, protectedPorts)
+        }
+
+        /** 打开内部转发地址 (10.0.0.2) 的受保护 UDP socket。
+         * 电脑发 144.11:port 的包被 V3s DNAT 到 10.0.0.2:port, 由此 socket 接收。 */
+        fun openInternalPort(port: Int): java.net.DatagramSocket? {
+            return openProtectedPortOn(port, INTERNAL_FWD_ADDR, protectedPorts)
+        }
+
+        /** 打开绑定 VPN 网络的 UDP socket (非 protect)。
+         * 区别: protect socket 只收隧道内部源的包 (V3s 的 rcmsg), 不收电脑经 V3s 转发的包
+         * (源 144.88, Android 不投递给 protect socket)。bindSocketToVpn 让 socket 在 VPN 网络内,
+         * 电脑转发的包 (V3s DNAT 到 10.0.0.2:port) 才能投递进来。
+         * 返回 null 表示无 VPN 网络。 */
+        fun openVpnBoundPort(port: Int): java.net.DatagramSocket? {
+            val inst = instance ?: return null
+            return try {
+                // DatagramChannel INET 强制纯 IPv4 (v4-mapped 收不到隧道包)
+                val channel = java.nio.channels.DatagramChannel.open(java.net.StandardProtocolFamily.INET)
+                val socket = channel.socket()
+                socket.reuseAddress = true
+                socket.bind(java.net.InetSocketAddress(INTERNAL_FWD_ADDR, port))
+                // bindSocketToVpn 而非 protect: socket 留在 VPN 网络内, 收电脑转发的包
+                val bindOk = bindSocketToVpn(socket)
+                AppLog.i(TAG, "UDP VPN绑定: $INTERNAL_FWD_ADDR:$port bindVpn=$bindOk")
+                socket
+            } catch (e: Exception) {
+                AppLog.e(TAG, "UDP VPN绑定失败: $port — ${e.message}")
+                null
+            }
         }
 
         private fun openProtectedPortOn(
@@ -209,6 +241,9 @@ class TunNatVpnService : VpnService() {
 
         /** 手机在局域网里的 IP 尾号 (V3s = 144.66, 手机 = 144.11, 固定预留不撞 DHCP) */
         private const val PHONE_IP_OCTET = 11
+
+        /** 内部转发地址: V3s 把电脑发来的 144.11 包 DNAT 到此地址 (绕开 V3s 老内核 INPUT 问题) */
+        private const val INTERNAL_FWD_ADDR = "10.0.0.2"
     }
 
     private var tunFd: ParcelFileDescriptor? = null
@@ -367,7 +402,12 @@ class TunNatVpnService : VpnService() {
         val builder = Builder()
             .setSession(getString(R.string.vpn_service_name))
             .setMtu(TUN_MTU)
-            .addAddress(phoneIp, lanPrefix)   // 手机局域网真 IP: 192.168.144.11
+            // 主地址 = 10.0.0.2 (内部转发地址): Android VpnService 只对主地址投递
+            // protect 隧道包。V3s 把电脑发来的 144.11 包 DNAT 到这里 (绕开 V3s
+            // 老内核把 144.11 当本地 INPUT 的问题)。
+            .addAddress(INTERNAL_FWD_ADDR, 24)
+            // 副地址 = 手机局域网真 IP 144.11 (LAN 身份, 电脑可见)
+            .addAddress(phoneIp, lanPrefix)
             .addRoute(lanSubnet, lanPrefix)
             .setBlocking(true)
             // 移除 allowBypass: 它导致 CrsfBridge socket 走 wlan0 绕过 VPN,
