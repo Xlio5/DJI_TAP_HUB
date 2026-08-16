@@ -18,9 +18,16 @@
   - App `TunNatVpnService.kt`：`addAddress(lanAddr, 24)` 加 LAN 身份；`openProtectedPort` 改绑 `0.0.0.0`（同时收 10.0.0.2 和 144.200）
   - `setup_nat.sh`：LAN_PHONE_IP 推导 + `ip route add x.x.x.200/32 dev tun_hub` + `eth0 proxy_arp=1` + 入向 FORWARD `-d x.x.x.200 -j ACCEPT`
   - 固件 1.6.27→**1.6.28**，App 1.6.33→**1.6.34**（versionCode 73）
-- **编译产物**：web_server md5 `434d26e5`；APK 30.3MB
-- **待真机验证**：设备离线。验证步骤见 §十五节产物表下方
-- **改动文件**：`TunNatVpnService.kt` / `setup_nat.sh` / `web_server.cpp` / `build.gradle.kts`
+- **⚠️ 实际部署修正（重要）**：
+  - V3s 实际用的是 **`setup_v3s.sh`**（S99 调用），不是 setup_nat.sh！LAN 身份逻辑加到 setup_v3s.sh，setup_nat.sh 改动无效（旧 RK3588 脚本）
+  - **`openProtectedPort` 不能用 `InetSocketAddress("0.0.0.0")`** —— 系统 IPv6 开启时会变 v4-mapped 双栈 socket（内核 `::ffff:10.0.0.2`），收不到经 tun0 进入的 IPv4 包（实测 InDatagrams 涨但 rx_queue=0）。**必须用 `DatagramChannel.open(StandardProtocolFamily.INET)`** 强制纯 IPv4 socket（实测 OK）
+  - LAN 身份从 lanSubnet 推导（x.x.x.200），网段变更自动跟随
+- **✅ 真机验证通过 (2026-08-16)**：
+  - 电脑 `ping 192.168.144.200` 通（1-2ms，V3s tcpdump 抓到双向 ICMP echo）
+  - 电脑发 UDP → `192.168.144.200:9000` 到达手机 UDP 层（手机 NoPorts +5 精确匹配）
+  - App 收 rcmsg（10.0.0.2:65530）正常：遥控页显示 "dji_rc online RC"，CH1-16 摇杆实时
+  - USB 隧道双向流量 Tx 7.0M / Rx 690K 在涨
+- **产物 md5**：web_server `434d26e5`；APK 30.3MB；**注意固件 F 版本仍是 1.6.26**（web_server 推 /tmp 未固化，固化需重建 rootfs OTA）
 
 ### 摇杆 CRSF 输出 + Lua 桥同时工作（未完成）
 - **目标**：crsf 模式既能输出摇杆 CRSF（飞控），又能配置 ELRS Lua（接收机页）

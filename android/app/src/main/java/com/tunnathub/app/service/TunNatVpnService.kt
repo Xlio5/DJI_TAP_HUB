@@ -111,8 +111,10 @@ class TunNatVpnService : VpnService() {
             return instance?.protect(socket) ?: false
         }
 
-        /** 受保护的 UDP 端口映射 (port → DatagramSocket) */
+        /** 受保护的 UDP 端口映射 (port → DatagramSocket), 控制面绑定 10.0.0.2 */
         private val protectedPorts = java.util.concurrent.ConcurrentHashMap<Int, java.net.DatagramSocket>()
+        /** 受保护的 UDP 端口映射 (port → DatagramSocket), LAN 身份绑定 192.168.144.200 */
+        private val lanProtectedPorts = java.util.concurrent.ConcurrentHashMap<Int, java.net.DatagramSocket>()
         val protectedPortsState = mutableStateOf(emptyList<Int>())
 
         /** 保护一个 UDP 端口：创建 socket + bind + protect，保持存活让内核路由包 */
@@ -120,39 +122,72 @@ class TunNatVpnService : VpnService() {
             return openProtectedPort(port) != null
         }
 
-        /** 打开(或复用)一个受保护的 UDP socket 并返回它, 供调用方 receive()
-         * 绑定 0.0.0.0:port (任意本地地址), 标记 protect 绕过 VPN 隧道,
-         * 让内核把从 TUN 接口入站的该端口 UDP 包投递到该 socket。
-         * 0.0.0.0 同时覆盖控制面 (10.0.0.2, V3s 上行 rcmsg/crsf-bridge)
-         * 和 LAN 身份 (192.168.144.200, 局域网设备直连手机)。
+        /** 当前生效的 LAN 身份地址 (establishVpn 时从 lanSubnet 推导, 默认 192.168.144.200)。
+         * 供 openLanProtectedPort 绑定用, 与 TUN 控制面地址 (10.0.0.2) 区分。 */
+        @Volatile
+        var currentLanAddr: String = "192.168.144.200"
+            private set
+
+        /**
+         * 打开(或复用)一个受保护的 UDP socket 并返回它, 供调用方 receive()。
+         * 绑定 TUN 控制面地址 (10.0.0.2), 标记 protect 绕过 VPN 隧道,
+         * 让内核把从 TUN 接口入站的该端口 IPv4 UDP 包投递到该 socket。
+         *
+         * ⚠️ 关键 (Android VpnService 限制): 只能绑定具体 TUN 子网 IP (10.0.0.2),
+         * 不能绑 0.0.0.0 通配 — 通配会创建 IPv6 双栈 socket (udp6), 收不到经 tun0
+         * 进入的 IPv4 包 (实测 InDatagrams 涨但 socket rx_queue=0)。
+         * LAN 身份 (144.200) 的入站请用 openLanProtectedPort() 单独开 socket。
          */
         fun openProtectedPort(port: Int): java.net.DatagramSocket? {
+            return openProtectedPortOn(port, TUN_ADDRESS, protectedPorts)
+        }
+
+        /**
+         * 打开(或复用)LAN 身份 (192.168.144.200) 的受保护 UDP socket。
+         * 局域网设备 ping/访问 144.200:port 时, V3s proxy_arp 代答 + /32 路由把包
+         * 送进隧道, 由这个绑定 144.200 的 socket 接收 — 实现"像真实局域网"的入站访问。
+         * 用独立的 map 存, 不与控制面 10.0.0.2 socket 混淆。
+         */
+        fun openLanProtectedPort(port: Int): java.net.DatagramSocket? {
+            return openProtectedPortOn(port, currentLanAddr, lanProtectedPorts)
+        }
+
+        private fun openProtectedPortOn(
+            port: Int,
+            bindAddr: String,
+            registry: ConcurrentHashMap<Int, java.net.DatagramSocket>
+        ): java.net.DatagramSocket? {
             val inst = instance ?: return null
             // 复用前检查 socket 有效性: 若已被关闭 (fd 释放但 inode 残留, 孤儿 socket),
             // 必须重建 — 否则 receive() 永远收不到数据 (摇杆/心跳丢失)。
-            protectedPorts[port]?.let { existing ->
+            registry[port]?.let { existing ->
                 if (existing.isClosed || !existing.isBound) {
                     AppLog.w(TAG, "UDP端口保护: $port socket 失效, 重建")
                     try { existing.close() } catch (_: Exception) {}
-                    protectedPorts.remove(port)
+                    registry.remove(port)
                 } else {
                     return existing   // 有效, 复用
                 }
             }
             return try {
-                val socket = java.net.DatagramSocket(null)
+                // 用 DatagramChannel.open(INET) 强制创建纯 IPv4 socket (AF_INET)。
+                // 若用 new DatagramSocket(null) + bind, 系统启用 IPv6 时会被提升为
+                // v4-mapped 双栈 socket (内核显示 ::ffff:10.0.0.2), 实测收不到经
+                // tun0 进入的 IPv4 UDP 包 (InDatagrams 涨但 socket rx_queue=0) —
+                // Android VpnService 对 v4-mapped 的隧道入站投递有 bug。
+                val channel = java.nio.channels.DatagramChannel.open(
+                    java.net.StandardProtocolFamily.INET)
+                val socket = channel.socket()
                 socket.reuseAddress = true
-                // 绑定 0.0.0.0 (任意本地地址): 同时覆盖控制面 (10.0.0.2, V3s 上行
-                // rcmsg/crsf-bridge) 和 LAN 身份 (192.168.144.200, 局域网设备直连手机)。
-                // 若只绑 TUN_ADDRESS, 局域网设备发到 144.200 的包无法投递到该 socket。
-                socket.bind(java.net.InetSocketAddress("0.0.0.0", port))
+                // 绑定具体 IPv4 地址 (bindAddr): "10.0.0.2" 控制面 / "192.168.144.200" LAN 身份
+                socket.bind(java.net.InetSocketAddress(bindAddr, port))
                 val protectOk = inst.protect(socket)
-                protectedPorts[port] = socket
+                registry[port] = socket
                 protectedPortsState.value = protectedPorts.keys().toList().sorted()
-                AppLog.i(TAG, "UDP端口保护: $port protect=$protectOk bound=${socket.isBound}")
+                AppLog.i(TAG, "UDP端口保护: $bindAddr:$port protect=$protectOk bound=${socket.isBound}")
                 socket
             } catch (e: Exception) {
-                AppLog.e(TAG, "UDP端口保护失败: $port — ${e.message}")
+                AppLog.e(TAG, "UDP端口保护失败: $bindAddr:$port — ${e.message}")
                 null
             }
         }
@@ -166,10 +201,12 @@ class TunNatVpnService : VpnService() {
             }
         }
 
-        /** 释放所有受保护的端口 */
+        /** 释放所有受保护的端口 (控制面 10.0.0.2 + LAN 身份 144.200) */
         fun releaseAllPorts() {
             protectedPorts.values.forEach { try { it.close() } catch (_: Exception) {} }
             protectedPorts.clear()
+            lanProtectedPorts.values.forEach { try { it.close() } catch (_: Exception) {} }
+            lanProtectedPorts.clear()
             protectedPortsState.value = emptyList()
         }
 
@@ -346,6 +383,7 @@ class TunNatVpnService : VpnService() {
         val lanAddr = if (lanSubnet.contains('.')) {
             lanSubnet.substringBeforeLast('.') + ".200"
         } else LAN_ADDRESS
+        currentLanAddr = lanAddr   // 供 openLanProtectedPort 绑定用
         AppLog.i(TAG, "建立 VPN: TUN=$TUN_ADDRESS/$TUN_PREFIX, LAN身份=$lanAddr/$lanPrefix, Route=$lanSubnet/$lanPrefix")
 
         val builder = Builder()
