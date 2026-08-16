@@ -48,7 +48,7 @@ echo 1 > /proc/sys/net/ipv4/ip_forward
 LAN_IF=eth0
 _ts "LAN: $LAN_IF ($(ip addr show $LAN_IF 2>/dev/null | grep 'inet ' | awk '{print $2}'))"
 
-LAN_IP=$(ip addr show $LAN_IF 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+LAN_IP=$(ip addr show $LAN_IF 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1 | head -1)
 LAN_PHONE_IP=$(echo "$LAN_IP" | cut -d. -f1-3).$PHONE_IP_OCTET
 if [ -n "$LAN_PHONE_IP" ] && [ "$LAN_PHONE_IP" != ".$PHONE_IP_OCTET" ]; then
     # /32 主机路由: 去手机的包走 USB 隧道 (比 /24 更具体, 优先于 eth0)

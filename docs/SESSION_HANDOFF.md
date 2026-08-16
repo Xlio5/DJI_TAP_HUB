@@ -374,14 +374,19 @@ PB = bank 1 → bank offset 0x24
 
 ## 十五、固件产物 md5
 
-### v1.6.29（做法 B: 砍 10.0.0.x, 手机 = 144.11, App 1.6.35）— 已真机验证, 待固化
+### v1.6.29（做法 B: 砍 10.0.0.x, 手机 = 144.11, App 1.6.35）— ✅ 已 OTA 固化 (2026-08-16)
 
 | 文件 | md5 |
 |---|---|
 | dji_rc（rcmsg/crsfbr-host → 192.168.144.11）| `e46cdaa2` |
 | web_server（版本号 1.6.29, RTP 目标 144.11）| `22a4d301` |
-| usb_tund（tun_hub 不配内部 IP, main 绑 0.0.0.0:9999）| `97562926`（/tmp/usb_tund_new）|
+| usb_tund（tun_hub 不配内部 IP, main 绑 0.0.0.0:9999）| `97562926` |
+| setup_v3s.sh（多 IP head-1 修复, 手机 /32 路由）| `a1286cf3` |
+| S99tun_nat_hub（dji_rc 启动参数 rcmsg-host 144.11）| 已含在 rootfs |
+| **rootfs_v1629.squashfs** | **`be803124`**（3.80MB, 已刷入 mtdblock3）|
 | app-debug.apk（App 1.6.35 / versionCode 74）| 30.3MB（md5 待补）|
+
+**⚠️ 固化验证**：V3s 重启后 F1.6.29，路由 144.11/32 + proxy_arp 自动生效，dji_rc 自动用 144.11，电脑 ping 144.11 通，App rcmsg 正常。
 
 ### v1.6.28（LAN 身份: 手机 144.200 局域网直连, App 1.6.34）— 已真机验证（被 v1.6.29 取代）
 
