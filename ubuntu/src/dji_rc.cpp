@@ -70,32 +70,37 @@ static std::atomic<bool> g_stop{false};
 static std::atomic<bool> g_crsf_stop{false};   /* 独立控制 CRSF 回传线程 (t3), 不干扰 t1/t2 */
 static std::atomic<bool> g_bridge_stop{false}; /* 独立控制 bridge 下行线程 (t4), 避免与 t3 的 g_crsf_stop 互相干扰 */
 
-/* ── UART0 发送缓冲 (ringbuf): 摇杆帧 + Lua 帧统一入队, 主循环定时批量写 ──
- * 生产者: out_send(摇杆) / crsf_bridge_rx_thread(Lua) 入队, 不直接写串口。
- * 消费者: 主循环每 15ms 取全部待发字节写 UART0 → 单一写者, 无竞态。 */
-static constexpr size_t TX_RING_SIZE = 4096;
-static uint8_t   g_tx_ring[TX_RING_SIZE];
-static size_t    g_tx_head = 0;   // 消费者读位置
-static size_t    g_tx_tail = 0;   // 生产者写位置
-static std::mutex g_tx_mtx;       // 保护 head/tail
+static int64_t now_us();   /* forward */
 
-static void tx_enqueue(const uint8_t *data, size_t len) {
+/* ── Lua 发送缓冲 (单帧, 模仿 EdgeTX outputTelemetryBuffer) ──
+ * CRSF Lua 帧与通道帧是时分复用: Lua 帧替代通道帧发送, 不叠加。
+ * bridge 收到 Lua 命令 → 存此单帧缓冲 (2s 超时丢弃, 像 EdgeTX);
+ * 每拍发送时: 有 Lua 帧则发 Lua, 否则发通道帧。 */
+static uint8_t   g_lua_tx_buf[64];
+static size_t    g_lua_tx_len = 0;    // 0 = 无待发 Lua 帧
+static int64_t   g_lua_tx_us = 0;     // 入队时间 (2s 超时)
+static std::mutex g_tx_mtx;
+
+static void tx_lua_enqueue(const uint8_t *data, size_t len) {
+    if (len == 0 || len > sizeof(g_lua_tx_buf)) return;
     std::lock_guard<std::mutex> lock(g_tx_mtx);
-    for (size_t i = 0; i < len; i++) {
-        size_t next = (g_tx_tail + 1) % TX_RING_SIZE;
-        if (next == g_tx_head) break;   // 满, 丢帧
-        g_tx_ring[g_tx_tail] = data[i];
-        g_tx_tail = next;
-    }
+    if (len > sizeof(g_lua_tx_buf)) return;
+    memcpy(g_lua_tx_buf, data, len);
+    g_lua_tx_len = len;
+    g_lua_tx_us = now_us();
 }
 
-static size_t tx_dequeue(uint8_t *out, size_t max) {
+/* 取待发 Lua 帧 (有则返回长度并清空, 超时丢弃)。 */
+static size_t tx_lua_take(uint8_t *out, size_t max) {
     std::lock_guard<std::mutex> lock(g_tx_mtx);
-    size_t n = 0;
-    while (g_tx_head != g_tx_tail && n < max) {
-        out[n++] = g_tx_ring[g_tx_head];
-        g_tx_head = (g_tx_head + 1) % TX_RING_SIZE;
+    if (g_lua_tx_len == 0) return 0;
+    if (now_us() - g_lua_tx_us > 2000000LL) {   /* 2s 超时丢弃 (EdgeTX 同款) */
+        g_lua_tx_len = 0;
+        return 0;
     }
+    size_t n = g_lua_tx_len < max ? g_lua_tx_len : max;
+    memcpy(out, g_lua_tx_buf, n);
+    g_lua_tx_len = 0;
     return n;
 }
 
@@ -126,32 +131,25 @@ static void tx_recover(void) {
     std::fflush(stdout);
 }
 
-/* 主循环调用: 取发送缓冲全部待发字节, 批量写 UART0。单一消费者, 无竞态。
- * 写连续失败 TX_FLUSH_ERR_LIMIT 次判定 UART0 硬件卡死 → 自动重开。 */
-static void tx_flush(void) {
+/* 写 UART0 + 卡死检测: 连续失败 TX_ERR_LIMIT 次 → 自动重开。
+ * 调用方须持 g_out_write_mtx。返回写是否成功。 */
+static bool tx_write_uart(int fd, const uint8_t *data, size_t len) {
     static int err_cnt = 0;
-    const int TX_FLUSH_ERR_LIMIT = 20;   /* 连续 20 次写失败(约 300ms)判卡死 */
-    int fd = g_out_fd.load();            // C1: atomic load
-    if (fd < 0) return;
-    uint8_t buf[512];
-    size_t n = tx_dequeue(buf, sizeof(buf));
-    if (n > 0) {
-        std::lock_guard<std::mutex> lock(g_out_write_mtx);
-        if (g_out_fd.load() != fd) { err_cnt = 0; return; }   // fd 已被替换
-        ssize_t w = ::write(fd, buf, n);
-        if (w != (ssize_t)n) {
-            err_cnt++;
-            std::printf("[dji_rc] tx flush 写 %zu 得 %zd errno=%d(%s) err_cnt=%d\n",
-                        n, w, errno, std::strerror(errno), err_cnt);
-            std::fflush(stdout);
-            if (err_cnt >= TX_FLUSH_ERR_LIMIT) {
-                err_cnt = 0;
-                tx_recover();   /* 自动重开 UART0 */
-            }
-        } else {
-            err_cnt = 0;   /* 写成功, 复位计数 */
+    const int TX_ERR_LIMIT = 50;   /* 连续 50 次写失败(约数百 ms)判 UART0 卡死 */
+    ssize_t w = ::write(fd, data, len);
+    if (w != (ssize_t)len) {
+        err_cnt++;
+        std::printf("[dji_rc] UART0 写 %zu 得 %zd errno=%d(%s) err_cnt=%d\n",
+                    len, w, errno, std::strerror(errno), err_cnt);
+        std::fflush(stdout);
+        if (err_cnt >= TX_ERR_LIMIT) {
+            err_cnt = 0;
+            tx_recover();   /* 自动重开 UART0 */
         }
+        return false;
     }
+    err_cnt = 0;
+    return true;
 }
 
 static bool g_crsf_telem = true;        // CRSF 是否接收回传
@@ -919,28 +917,42 @@ static void out_send(const rc_state_t &m)
     // 否则 reader 可能在 writer 写入过程中读到 torn map (g_ch_map_valid 永不复位的场景)。
     build_output_channels(m, ch, true);
 
-    /* 编码帧后入发送缓冲 (ringbuf), 不直接写串口 — 主循环 15ms 定时批量写 UART0。
-       摇杆帧/Lua 帧统一入队, 单一消费者写串口, 无竞态。 */
+    /* CRSF 时分复用: 有 Lua 帧待发 → 发 Lua (替代通道帧, EdgeTX 规范);
+       否则发通道帧。直接写 UART0 (单一写者 out_send + 主循环 Lua 发送互斥)。 */
     if (outMode == 'c') {
-        uint8_t frame[CRSF_FRAME_MAX];
-        int n = crsf_pack_channels(ch, frame);
-        if (n > 0) {
-            tx_enqueue(frame, (size_t)n);
-            out_attempts++;
+        uint8_t lua[64];
+        size_t luaLen = tx_lua_take(lua, sizeof(lua));
+        if (luaLen > 0) {
+            /* Lua 帧优先: 替代本次通道帧 */
+            std::lock_guard<std::mutex> lock(g_out_write_mtx);
+            if (g_out_fd.load() != outFd) return;
+            if (!tx_write_uart(outFd, lua, luaLen)) out_errors++;
+            else out_attempts++;
+        } else {
+            uint8_t frame[CRSF_FRAME_MAX];
+            int n = crsf_pack_channels(ch, frame);
+            if (n > 0) {
+                std::lock_guard<std::mutex> lock(g_out_write_mtx);
+                if (g_out_fd.load() != outFd) return;
+                if (!tx_write_uart(outFd, frame, (size_t)n)) out_errors++;
+                else out_attempts++;
+            }
         }
     } else {
         uint8_t frame[SBUS_FRAME_LEN];
         sbus_encode(ch, frame);
-        tx_enqueue(frame, SBUS_FRAME_LEN);
-        out_attempts++;
+        std::lock_guard<std::mutex> lock(g_out_write_mtx);
+        if (g_out_fd.load() != outFd) return;
+        if (!tx_write_uart(outFd, frame, SBUS_FRAME_LEN)) out_errors++;
+        else out_attempts++;
     }
 
     if (out_errors && out_attempts <= 10) {
-        std::printf("[dji_rc] out enq fail attempts=%u errors=%u\n", out_attempts, out_errors);
+        std::printf("[dji_rc] out fail attempts=%u errors=%u errno=%d\n", out_attempts, out_errors, errno);
     } else if ((out_attempts <= 10 || (out_attempts % 100) == 0) && out_errors == 0) {
-        std::printf("[dji_rc] out enq mode=%c attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u\n",
+        std::printf("[dji_rc] out ok mode=%c attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u\n",
                     outMode, out_attempts, ch[0], ch[1], ch[2], ch[3]);
-        debug_log("[dji_rc][dbg] out enq mode=%c attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u",
+        debug_log("[dji_rc][dbg] out ok mode=%c attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u",
                   outMode, out_attempts, ch[0], ch[1], ch[2], ch[3]);
     }
 }
@@ -1092,9 +1104,9 @@ static void crsf_bridge_rx_thread()
                             n, flen, (long)(n - 4), ofd);
                 std::fflush(stdout);
                 if (flen + 2 == (uint8_t)(n - 4) && ofd >= 0) {
-                    /* Lua 帧入发送缓冲 (ringbuf), 由主循环定时批量写 UART0。
-                       与摇杆帧统一排队, 单一消费者写串口, 无竞态。 */
-                    tx_enqueue(pkt + 4, (size_t)(n - 4));
+                    /* Lua 帧入单帧缓冲, 由 out_send 下一拍替代通道帧发送
+                       (CRSF 时分复用, EdgeTX 规范) */
+                    tx_lua_enqueue(pkt + 4, (size_t)(n - 4));
                 }
             }
         } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
@@ -1488,13 +1500,21 @@ int main(int argc, char **argv)
         struct timespec ts = {0, interval_ms * 1000000L};
         nanosleep(&ts, nullptr);
 
-        /* 定时批量发送 UART0 发送缓冲 (摇杆帧 + Lua 帧, ~15ms 周期)。
-           单一消费者, 生产者 (out_send/bridge) 只入队, 无竞态。 */
-        static int64_t last_tx = 0;
-        int64_t now_ns = now_us();
-        if (now_ns - last_tx >= 15000LL) {
-            last_tx = now_ns;
-            tx_flush();
+        /* 兜底发送 Lua 帧: out_send 是事件驱动 (P20 解帧才触发), 若 P20 无数据
+           Lua 帧不会发出。主循环每 15ms 检查一次 Lua 缓冲, 有则发出 (替代通道帧)。 */
+        static int64_t last_lua = 0;
+        int64_t now_lua = now_us();
+        if (now_lua - last_lua >= 15000LL) {
+            last_lua = now_lua;
+            uint8_t lua[64];
+            size_t luaLen = tx_lua_take(lua, sizeof(lua));
+            if (luaLen > 0) {
+                int ofd = g_out_fd.load();
+                if (ofd >= 0) {
+                    std::lock_guard<std::mutex> lock(g_out_write_mtx);
+                    if (g_out_fd.load() == ofd) tx_write_uart(ofd, lua, luaLen);
+                }
+            }
         }
 
         rc_state_t s20, s0;
