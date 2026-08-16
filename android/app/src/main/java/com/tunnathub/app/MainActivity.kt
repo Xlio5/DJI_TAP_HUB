@@ -610,15 +610,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     data class CamInfo(val name: String, val url: String)
     var cameras by remember { mutableStateOf(listOf<CamInfo>()) }
 
-    // ── 端口转发 ──
-    data class FwdInfo(val proto: String, val port: Int, val dest: String)
-    var forwards by remember { mutableStateOf(listOf<FwdInfo>()) }
-    var fwdProto by remember { mutableStateOf("udp") }
-    var fwdExtPort by remember { mutableStateOf("14550") }
-    var fwdDestPort by remember { mutableStateOf("0") }
-    var fwdDestIp by remember { mutableStateOf("192.168.144.11") }
-    var fwdMsg by remember { mutableStateOf("") }
-
     // ── LAN 网段 ──
     val savedLanSubnet = prefs.getString("lan_subnet", "192.168.144.0") ?: "192.168.144.0"
     val savedLanPrefix = prefs.getInt("lan_prefix", 24)
@@ -728,9 +719,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     CamInfo(it.groupValues[1], it.groupValues[2])
                 }.toList()
                 if (camList.isNotEmpty()) { cameras = camList; if (rtspUrl.isEmpty()) rtspUrl = camList[0].url }
-                forwards = Regex("\"proto\":\\s*\"(\\w+)\"[^}]*\"port\":\\s*(\\d+)[^}]*\"dest\":\\s*\"([^\"]+)\"").findAll(text).map {
-                    FwdInfo(it.groupValues[1], it.groupValues[2].toInt(), it.groupValues[3])
-                }.toList()
                 val lanMatch = Regex("\"lan_subnet\": \"(\\d+\\.\\d+\\.\\d+)\\.0/(\\d+)\"").find(text)
                 if (lanMatch != null) {
                     val rs = "${lanMatch.groupValues[1]}.0"
@@ -1907,94 +1895,10 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 ) { Text("打开 ELRS 参数配置", fontSize = 13.sp) }
                                 Spacer(Modifier.height(12.dp))
 
-                                SectionHdr("网段配置")
-                                Text("修改后需断开并重连 VPN 生效", fontSize = 9.sp, color = Color(0xFF475569))
-                                Spacer(Modifier.height(6.dp))
-                                var lanSubnet by remember { mutableStateOf(savedLanSubnet) }
-                                var lanPrefixStr by remember { mutableStateOf(savedLanPrefix.toString()) }
-                                var advSaved by remember { mutableStateOf(false) }
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Box(modifier = Modifier.weight(1f).height(36.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).padding(horizontal = 10.dp), contentAlignment = Alignment.CenterStart) {
-                                        BasicTextField(value = lanSubnet, onValueChange = { lanSubnet = it; advSaved = false }, singleLine = true,
-                                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = Color(0xFFE2E8F0)), cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF38BDF8)), modifier = Modifier.fillMaxWidth())
-                                    }
-                                    Text("/", fontSize = 14.sp, color = Color(0xFF64748B))
-                                    Box(modifier = Modifier.width(40.dp).height(36.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).padding(horizontal = 10.dp), contentAlignment = Alignment.Center) {
-                                        BasicTextField(value = lanPrefixStr, onValueChange = { lanPrefixStr = it; advSaved = false }, singleLine = true,
-                                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = Color(0xFFE2E8F0)), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
-                                    }
-                                }
-                                Spacer(Modifier.height(6.dp))
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Button(onClick = {
-                                        val prefix = lanPrefixStr.toIntOrNull()
-                                        if (prefix == null || prefix < 8 || prefix > 30) { lanPrefixStr = savedLanPrefix.toString(); return@Button }
-                                        prefs.edit().putString("lan_subnet", lanSubnet).putInt("lan_prefix", prefix).apply(); advSaved = true
-                                    }, modifier = Modifier.height(30.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))) { Text("保存", fontSize = 11.sp) }
-                                    Button(onClick = { lanSubnet = "192.168.144.0"; lanPrefixStr = "24"; prefs.edit().putString("lan_subnet", "192.168.144.0").putInt("lan_prefix", 24).apply(); advSaved = true },
-                                        modifier = Modifier.height(30.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))) { Text("默认", fontSize = 10.sp) }
-                                }
-                                if (advSaved) Text("已保存, 重连 VPN 生效", fontSize = 9.sp, color = Color(0xFF22C55E), modifier = Modifier.padding(top = 4.dp))
-
-                                // ── 端口转发 ──
+                                // ── LAN 身份说明 (网段配置/端口转发已移除: 手机=局域网真 IP, 零配置直达) ──
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
-                                SectionHdr("端口转发")
-                                Text("PC → V3s:外网端口 ─DNAT─→ DJI:目标端口", fontSize = 9.sp, color = Color(0xFF475569))
-                                Spacer(Modifier.height(8.dp))
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Surface(modifier = Modifier.height(36.dp).widthIn(min = 48.dp), color = Color(0xFF1E293B), shape = RoundedCornerShape(6.dp),
-                                        onClick = { fwdProto = if (fwdProto == "udp") "tcp" else "udp" }
-                                    ) { Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) { Text(fwdProto.uppercase(), fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Color(0xFF38BDF8)) } }
-                                    Box(modifier = Modifier.weight(1f).height(36.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).padding(horizontal = 10.dp), contentAlignment = Alignment.CenterStart) {
-                                        BasicTextField(value = fwdExtPort, onValueChange = { fwdExtPort = it }, singleLine = true,
-                                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = Color(0xFFE2E8F0)),
-                                            modifier = Modifier.fillMaxWidth())
-                                    }
-                                }
-                                Spacer(Modifier.height(6.dp))
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Box(modifier = Modifier.weight(1f).height(36.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).padding(horizontal = 10.dp), contentAlignment = Alignment.CenterStart) {
-                                        BasicTextField(value = fwdDestIp, onValueChange = { fwdDestIp = it }, singleLine = true,
-                                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = Color(0xFFE2E8F0)),
-                                            modifier = Modifier.fillMaxWidth())
-                                    }
-                                    Box(modifier = Modifier.width(72.dp).height(36.dp).background(Color(0xFF0F172A), RoundedCornerShape(6.dp)).border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp)).padding(horizontal = 10.dp), contentAlignment = Alignment.CenterStart) {
-                                        BasicTextField(value = fwdDestPort, onValueChange = { fwdDestPort = it }, singleLine = true,
-                                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = Color(0xFFE2E8F0)),
-                                            modifier = Modifier.fillMaxWidth())
-                                    }
-                                }
-                                if (fwdMsg.isNotEmpty()) { Spacer(Modifier.height(4.dp)); Text(fwdMsg, fontSize = 10.sp, color = Color(0xFFF87171)) }
-                                Spacer(Modifier.height(6.dp))
-                                Button(onClick = {
-                                    fwdMsg = ""
-                                    val ePort = fwdExtPort.filter { it.isDigit() }.toIntOrNull()
-                                    val dPort = fwdDestPort.filter { it.isDigit() }.toIntOrNull()
-                                    if (ePort == null || ePort < 1 || ePort > 65535) { fwdMsg = "外网端口无效 (1-65535)"; return@Button }
-                                    val dest = fwdDestIp.ifEmpty { "192.168.144.11" } + if (dPort != null) ":$dPort" else ""
-                                    forwards = forwards + FwdInfo(fwdProto, ePort, dest)
-                                    apiPost("/api/forward/add", """{"proto":"$fwdProto","port":$ePort,"dest":"$dest"}""")
-                                    fwdExtPort = "0"; fwdDestPort = "0"
-                                }, modifier = Modifier.fillMaxWidth().height(36.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
-                                ) { Text("＋ 添加转发", fontSize = 12.sp) }
-                                if (forwards.isNotEmpty()) {
-                                    Spacer(Modifier.height(4.dp))
-                                    forwards.forEach { f ->
-                                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Text("${f.proto.uppercase()} :${f.port} → ${f.dest}", fontSize = 10.sp, color = Color(0xFF22C55E), modifier = Modifier.weight(1f))
-                                            TextButton(onClick = {
-                                                apiPost("/api/forward/del", """{"port":${f.port}}""")
-                                                forwards = forwards.filter { it.port != f.port }
-                                            }, modifier = Modifier.height(22.dp), contentPadding = PaddingValues(3.dp, 0.dp)) { Text("✕", fontSize = 10.sp, color = Color(0xFFEF4444)) }
-                                        }
-                                    }
-                                }
-
-                                // ── UDP 端口提示 ──
-                                Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
-                                SectionHdr("UDP 端口转发说明")
-                                Text("端口转发配置后，QGC 等 App 无需额外设\n置。数据自动经 V3s 的 DNAT 规则转发到\nDJI RC 的对应端口。", fontSize = 10.sp, color = Color(0xFF64748B), lineHeight = 15.sp)
-                                Text("外部 App (QGC等) 的 UDP socket 会自动走\nVPN 隧道到达目标网段。", fontSize = 10.sp, color = Color(0xFF64748B), lineHeight = 15.sp, modifier = Modifier.padding(top = 4.dp))
+                                SectionHdr("局域网直连 (LAN 身份)")
+                                Text("手机 = $savedLanSubnet 网段的 .11 (如 192.168.144.11),\nV3s = .66。局域网设备直接访问手机任意端口,\n无需端口转发 / 网段配置。", fontSize = 10.sp, color = Color(0xFF64748B), lineHeight = 15.sp)
 
                                 // ── RC 输出 (SBUS/CRSF @UART0) ──
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
