@@ -46,6 +46,8 @@ fun UdpToolPage() {
     var targetIp by remember { mutableStateOf("192.168.144.88") }
     var targetPort by remember { mutableStateOf("14550") }
     var sendData by remember { mutableStateOf("") }
+    var stressCount by remember { mutableStateOf("600000") }
+    var stressing by remember { mutableStateOf(false) }
     var logLines by remember { mutableStateOf(listOf<String>()) }
     val scope = rememberCoroutineScope()
 
@@ -53,6 +55,18 @@ fun UdpToolPage() {
     var recvSock by remember { mutableStateOf<DatagramSocket?>(null) }
     // 监听循环控制: 用 AtomicBoolean 而非 Compose state (避免 IO 协程读快照问题)
     val runFlag = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    // 监听端口记录 (供 DisposableEffect 清理用)
+    var activePort by remember { mutableStateOf<Int?>(null) }
+
+    // 页面离开时清理: 停协程 + 释放端口 + 关 socket
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            runFlag.set(false)
+            activePort?.let { TunNatVpnService.releasePort(it) }
+            recvSock?.close()
+            recvSock = null
+        }
+    }
 
     fun addLog(line: String) {
         logLines = (logLines + "[${timeNow()}] $line").takeLast(200)
@@ -60,7 +74,7 @@ fun UdpToolPage() {
 
     Column(modifier = Modifier.fillMaxSize().background(Color(0xFF0F172A)).verticalScroll(rememberScrollState()).padding(16.dp)) {
         Text("UDP 工具 (特殊调试版)", fontSize = 15.sp, color = Color(0xFF38BDF8), fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-        Text("局域网 UDP 收发 · 手机 IP = ${TunNatVpnService.currentLanAddr}", fontSize = 9.sp, color = Color(0xFF64748B))
+        Text("局域网 UDP 收发 · 手机 IP = ${TunNatVpnService.currentLanAddr} · 电脑发此 IP:端口", fontSize = 9.sp, color = Color(0xFF64748B))
 
         Spacer(Modifier.height(12.dp))
 
@@ -73,43 +87,75 @@ fun UdpToolPage() {
                 val port = listenPort.filter { it.isDigit() }.toIntOrNull()
                 if (port == null || port < 1 || port > 65535) { addLog("端口无效"); return@Button }
                 if (!listening) {
-                    // 启动监听: openProtectedPort 绑定 144.11:port (能收隧道包)
-                    val sock = TunNatVpnService.openProtectedPort(port)
-                    if (sock == null) { addLog("监听失败: 无法打开端口 $port"); return@Button }
+                    // 先释放旧端口 (避免 openProtectedPort 复用失效 socket, 协程与 socket 脱节)
+                    TunNatVpnService.releasePort(port)
+                    // 绑内部转发地址 10.0.0.2 + VPN 网络: V3s 把电脑发的 144.11:port DNAT 到此
+                    // (openVpnBoundPort 用 bindSocketToVpn 而非 protect, 才能收电脑转发的包)
+                    val sock = TunNatVpnService.openVpnBoundPort(port)
+                    if (sock == null) { addLog("监听失败: 无法打开端口 $port (VPN 未连接?)"); return@Button }
                     sock.soTimeout = 500
                     recvSock = sock
+                    activePort = port
                     runFlag.set(true)
                     listening = true
-                    addLog("开始监听 ${TunNatVpnService.currentLanAddr}:$port (电脑发此地址:端口)")
+                    addLog("开始监听 10.0.0.2:$port (电脑发 192.168.144.11:$port, V3s DNAT 到此)")
                     scope.launch(Dispatchers.IO) {
                         val buf = ByteArray(2048)
+                        val mySock = sock
+                        AppLog.i("UdpTool", "监听线程启动 runFlag=$runFlag sock=$mySock")
+                        var loopCount = 0
+                        // 批量更新 UI: IO 协程只累积日志到本地队列, 每 100ms 切主线程刷一次
+                        // (避免每包 withContext(Main) 成为吞吐瓶颈, 压测丢包根因)
+                        val pendingLog = java.util.concurrent.ConcurrentLinkedQueue<String>()
+                        var lastFlush = System.currentTimeMillis()
+                        suspend fun flushToUi() {
+                            val batch = java.util.ArrayList<String>()
+                            while (true) { val s = pendingLog.poll() ?: break; batch.add(s) }
+                            if (batch.isEmpty()) return
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                logLines = (logLines + batch).takeLast(2000)
+                            }
+                        }
                         while (runFlag.get()) {
                             try {
                                 val pkt = DatagramPacket(buf, buf.size)
-                                sock.receive(pkt)
+                                mySock.receive(pkt)
                                 val data = pkt.data.copyOf(pkt.length)
                                 val hex = data.take(32).joinToString(" ") { "%02x".format(it) }
                                 val ascii = String(data, Charsets.UTF_8).replace(Regex("[^\\x20-\\x7E]"), ".")
                                 val line1 = "RX ${pkt.length}B from ${pkt.address?.hostAddress}:${pkt.port} [$hex]"
                                 val line2 = if (ascii.isNotBlank()) "   ASCII: $ascii" else null
-                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                    logLines = (logLines + "[${timeNow()}] $line1").takeLast(200)
-                                    if (line2 != null) logLines = (logLines + "[${timeNow()}] $line2").takeLast(200)
+                                pendingLog.add("${timeNow()} $line1")
+                                if (line2 != null) pendingLog.add("${timeNow()} $line2")
+                                if (System.currentTimeMillis() - lastFlush >= 100) {
+                                    flushToUi()
+                                    lastFlush = System.currentTimeMillis()
                                 }
                             } catch (_: java.net.SocketTimeoutException) {
+                                loopCount++
+                                if (System.currentTimeMillis() - lastFlush >= 100) {
+                                    flushToUi()
+                                    lastFlush = System.currentTimeMillis()
+                                }
+                                if (loopCount % 40 == 0) AppLog.i("UdpTool", "循环等待 ${loopCount} 次")
                             } catch (e: Exception) {
+                                AppLog.i("UdpTool", "RX 异常: ${e.message}")
+                                flushToUi()
                                 if (runFlag.get()) {
                                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                        logLines = (logLines + "[${timeNow()}] RX err: ${e.message}").takeLast(200)
+                                        logLines = (logLines + "[${timeNow()}] RX err: ${e.message}").takeLast(2000)
                                     }
                                 }
                                 break
                             }
                         }
+                        flushToUi()
                     }
                 } else {
                     runFlag.set(false)
                     listening = false
+                    activePort = null
+                    TunNatVpnService.releasePort(port)
                     recvSock?.close()
                     recvSock = null
                     addLog("停止监听")
@@ -146,8 +192,10 @@ fun UdpToolPage() {
             if (port == null || targetIp.isBlank() || sendData.isBlank()) { addLog("目标/端口/数据不能为空"); return@Button }
             scope.launch(Dispatchers.IO) {
                 try {
-                    val sock = DatagramSocket(null)
-                    sock.bind(InetSocketAddress(TunNatVpnService.currentLanAddr, 0))
+                    // 走 tun0 隧道: openVpnBoundPort(0) = bind 10.0.0.2:随机 + bindSocketToVpn
+                    // (普通 DatagramSocket bind 144.11 会命中 fwmark0→wlan0 策略路由, 到不了电脑)
+                    val sock = TunNatVpnService.openVpnBoundPort(0)
+                    if (sock == null) { addLog("发送失败: VPN 未连接"); return@launch }
                     val pkt = DatagramPacket(sendData.toByteArray(), sendData.toByteArray().size,
                         java.net.InetAddress.getByName(targetIp), port)
                     sock.send(pkt)
@@ -159,6 +207,60 @@ fun UdpToolPage() {
             }
         }, modifier = Modifier.height(32.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669)),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) { Text("发送", fontSize = 11.sp) }
+
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text("压测包数", fontSize = 11.sp, color = Color(0xFF94A3B8), modifier = Modifier.width(70.dp))
+            Field(stressCount) { stressCount = it }
+        }
+        Spacer(Modifier.height(6.dp))
+        // 压测发送: 500B/1ms × N 包, 走 tun0 隧道 (openVpnBoundPort(0) = bind 10.0.0.2 + bindSocketToVpn)
+        Button(onClick = {
+            val port = targetPort.filter { it.isDigit() }.toIntOrNull()
+            val count = stressCount.filter { it.isDigit() }.toLongOrNull()
+            if (port == null || targetIp.isBlank() || count == null || count < 1) { addLog("目标/端口/包数无效"); return@Button }
+            if (stressing) { addLog("压测发送进行中, 请等待"); return@Button }
+            stressing = true
+            scope.launch(Dispatchers.IO) {
+                var sent = 0L
+                suspend fun uiLog(line: String) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        logLines = (logLines + "[${timeNow()}] $line").takeLast(2000)
+                    }
+                }
+                try {
+                    val sock = TunNatVpnService.openVpnBoundPort(0)
+                    if (sock == null) {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { stressing = false }
+                        uiLog("压测失败: VPN 未连接"); return@launch
+                    }
+                    val payload = ByteArray(500) { 'Z'.code.toByte() }
+                    val addr = java.net.InetAddress.getByName(targetIp)
+                    val pkt = DatagramPacket(payload, payload.size, addr, port)
+                    val t0 = System.nanoTime()
+                    var nextT = t0
+                    val interval = 1_000_000L // 1ms
+                    while (sent < count) {
+                        sock.send(pkt)
+                        sent++
+                        nextT += interval
+                        while (System.nanoTime() < nextT) { /* busy-wait 校准 1ms */ }
+                        if (sent % 1000L == 0L) {
+                            uiLog("压测已发 $sent 包 (${(System.nanoTime() - t0) / 1_000_000_000.0}s)")
+                        }
+                    }
+                    sock.close()
+                    val elapsedMs = (System.nanoTime() - t0) / 1_000_000L
+                    val pps = if (elapsedMs > 0) sent * 1000L / elapsedMs else 0
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { stressing = false }
+                    uiLog("压测发送完成: $sent 包 500B → $targetIp:$port, 耗时 ${elapsedMs / 1000.0}s ($pps pps)")
+                } catch (e: Exception) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { stressing = false }
+                    uiLog("压测发送异常: ${e.message}")
+                }
+            }
+        }, modifier = Modifier.height(32.dp), colors = ButtonDefaults.buttonColors(containerColor = if (stressing) Color(0xFFF59E0B) else Color(0xFF7C3AED)),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) { Text(if (stressing) "压测中..." else "压测发送", fontSize = 11.sp) }
 
         Spacer(Modifier.height(16.dp))
 
@@ -200,3 +302,4 @@ private fun TextButton(onClick: () -> Unit, content: @Composable () -> Unit) {
 
 private fun timeNow(): String =
     java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+
