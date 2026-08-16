@@ -11,7 +11,8 @@
 ### 🔥 做法 B: 砍 10.0.0.x + 手机 IP 改 144.11 — ✅ 已实现真机验证 (2026-08-16)
 - **决策（老大拍板）**：砍掉 10.0.0.x 隧道内部网段，手机 tun0 用局域网真 IP **192.168.144.11**，V3s = 144.66
 - **✅ 真机验证通过**：
-  - 手机 tun0 = **192.168.144.11**（唯一地址，10.0.0.2 已移除），App 1.6.35
+  - 手机 tun0 = **主地址 10.0.0.2**（内部转发, VpnService 只对主地址投递 protect 隧道包）+ **副地址 192.168.144.11**（LAN 身份），App 1.6.36
+  - **DNAT**：V3s 把电脑发的 `144.11:port` 包 DNAT → `10.0.0.2:port`（V3s 老内核把 144.11 当本地 INPUT 吞包, 主地址才能收）
   - 电脑 **ping 144.11** 通（2-5ms）
   - App 收 rcmsg（V3s → **144.11:65530**）：遥控页 "dji_rc online RC"，摇杆实时
   - V3s 路由 `144.11/32 dev tun_hub` + eth0 proxy_arp=1 ✅
@@ -21,7 +22,11 @@
   - V3s INPUT 链 policy ACCEPT，`144.66:8080` 从 V3s 本机访问返回 `{"version":"1.6.26"}` ✅ —— **App 代码注释里"eth0 INPUT 投递坏"的 bug 已不存在**
   - web_server 监听 `0.0.0.0:8080`（通配），144.66 和 144.11 都能到
 - **完整方案**：[docs/LAN_IDENTITY_ARCH.md](docs/LAN_IDENTITY_ARCH.md)（含实测记录 + 改造清单 + 同网段坑）
-- **改动**：App（TunNatVpnService/MainActivity/CrsfBridge/视频文件，版本 **1.6.35**/code 74）+ 固件（dji_rc/S99/setup_v3s.sh/main/tun_iface，版本 **1.6.29**）
+- **改动**：App（TunNatVpnService/MainActivity/CrsfBridge/视频文件/UDP 工具，版本 **1.6.36**/code 75）+ 固件（dji_rc/S99/setup_v3s.sh/main/tun_iface，版本 **1.6.29**）
+- **✅ 双向 10 分钟压力测试通过 (2026-08-16)**：14550 端口、500B/包、1ms 间隔 (1000pps)、双向 10 分钟
+  - **方向1 电脑→DJI**：电脑发 600,000 包 → 手机 InDatagrams +632,287、**NoPorts +0**、RcvbufErrors +1 (0.0002%) → **0 丢包**
+  - **方向2 DJI→电脑**：App UDP 工具压测发送 600,000 包（走 tun0）→ 电脑收线程运行期间 100% 接收（每 60s 稳定 ~59,800 包）
+  - **关键**：App 发送必须走 tun0 隧道（`openVpnBoundPort(0)` + bindSocketToVpn）——普通 DatagramSocket bind 144.11 会命中 fwmark0→wlan0 策略路由, 到不了电脑
 - **⚠️ 电脑端有感**：uart2udp --target、QGC 目标 IP、App 端口转发 dest 都要从 `144.200` 改成 `144.11`
 - **⚠️ 待固化**：V3s 当前仍是 F1.6.26（dji_rc/web_server/usb_tund 运行时重启用了新参数，但固件未固化，重启后回旧版）— 需重建 rootfs OTA
 
@@ -385,6 +390,7 @@ PB = bank 1 → bank offset 0x24
 | S99tun_nat_hub（dji_rc 启动参数 rcmsg-host 144.11）| 已含在 rootfs |
 | **rootfs_v1629.squashfs** | **`be803124`**（3.80MB, 已刷入 mtdblock3）|
 | app-debug.apk（App 1.6.35 / versionCode 74）| 30.3MB（md5 待补）|
+| app-debug.apk（App 1.6.36 / versionCode 75, UDP 工具 tun0 发送 + 压测发送）| 30.3MB（md5 待补）|
 
 **⚠️ 固化验证**：V3s 重启后 F1.6.29，路由 144.11/32 + proxy_arp 自动生效，dji_rc 自动用 144.11，电脑 ping 144.11 通，App rcmsg 正常。
 
