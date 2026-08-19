@@ -116,7 +116,7 @@ static bool g_sbus_std = true;          // SBUS 标准模式: true=100k 8E2, fal
 static std::mutex g_out_write_mtx;        // CO-4: 保护对 g_out_fd 的写 (out_send + crsf_rx_thread 并发)
 
 static int uart_open_out(const char *dev, int baud, bool even2);   /* forward */
-static const char *g_out_dev = "/dev/ttyS0";   /* 协议输出口, tx_recover 重开用 */
+static const char *g_out_dev = "/dev/ttySC0";  /* 协议输出口, tx_recover 重开用 */
 
 /* UART0 硬件卡死自动恢复: 写连续失败 N 次 → 重开输出口。
  * 卡死特征: write 返回 -1 (EIO/EAGAIN) 持续, UART0 TX 不再发送。 */
@@ -296,6 +296,78 @@ static void crsf_bridge_rx_thread();                                /* forward *
 // CRSF 桥开关 (crsf-bridge 模式): 前移声明, pb6_auto_switch 需访问
 static std::atomic<bool> g_crsf_bridge{false};   // atomic: 主线程写, rx/crsf_rx 线程读
 
+// ── TMUX1511 模式控制 (PB2-PB5) ─────────────────────────────
+// PB2=NORMAL_RX_EN, PB3=TX_BUS_EN, PB4=CRSF_RX_EN, PB5=SBUS_TX_EN
+// sun8i-v3s pinctrl @0x01C20800 (mmap 页对齐 0x01C20000 + 页内偏移 0x800, 同 pb6_grounded):
+//   CFG0 (PB0-3) @0x24: PB2=bit8-9,  PB3=bit12-13  (值 01=输出)
+//   CFG1 (PB4-7) @0x28: PB4=bit0-1,  PB5=bit4-5
+//   DATA (PB0-31) @0x34: PB2=bit2, PB3=bit3, PB4=bit4, PB5=bit5
+// TMUX1511 = 4×SPST 独立模拟开关, 各通道可同时导通 (TI 数据手册 SCDS390)。
+// 互斥约束 (原理图规则, 防总线/接收冲突):
+//   - TX_BUS_EN 与 SBUS_TX_EN 互斥 (两个 TX 不能同时接共享 TXD/BUS)
+//   - NORMAL_RX_EN 与 CRSF_RX_EN 互斥 (两个 RX 不能同时接 SC16 RX)
+static void aux_tmux_set(int normal_rx_en, int tx_bus_en, int crsf_rx_en, int sbus_tx_en)
+{
+    const uintptr_t PIO_PHYS = 0x01C20800u;
+    const uintptr_t BASE     = PIO_PHYS & ~0xFFFu;   /* 页对齐 0x01C20000 */
+    const uintptr_t PAGE_OFF = PIO_PHYS - BASE;      /* 0x800 页内偏移 */
+    const size_t    PG       = (size_t)sysconf(_SC_PAGESIZE);
+
+    int memfd = ::open("/dev/mem", O_RDWR | O_SYNC);
+    if (memfd < 0) {
+        std::fprintf(stderr, "[dji_rc] TMUX: /dev/mem 打开失败 (%s)\n", std::strerror(errno));
+        return;
+    }
+    void *map = mmap(NULL, PG, PROT_READ | PROT_WRITE, MAP_SHARED, memfd, (off_t)BASE);
+    ::close(memfd);
+    if (map == MAP_FAILED) {
+        std::fprintf(stderr, "[dji_rc] TMUX: mmap 失败 (%s)\n", std::strerror(errno));
+        return;
+    }
+    uint8_t *pio = (uint8_t *)map + PAGE_OFF;
+    volatile uint32_t *cfg0 = (volatile uint32_t *)(pio + 0x24);  /* PB CFG0 (PB0-3) */
+    volatile uint32_t *cfg1 = (volatile uint32_t *)(pio + 0x28);  /* PB CFG1 (PB4-7) */
+    volatile uint32_t *data = (volatile uint32_t *)(pio + 0x34);  /* PB DATA */
+
+    /* 1. 配 PB2-PB5 为输出 (CFG 值 01) */
+    uint32_t c0 = *cfg0;
+    c0 = (c0 & ~(0x3u << 8)) | (0x1u << 8);    /* PB2 */
+    c0 = (c0 & ~(0x3u << 12)) | (0x1u << 12);  /* PB3 */
+    *cfg0 = c0;
+    uint32_t c1 = *cfg1;
+    c1 = (c1 & ~(0x3u << 0)) | (0x1u << 0);    /* PB4 */
+    c1 = (c1 & ~(0x3u << 4)) | (0x1u << 4);    /* PB5 */
+    *cfg1 = c1;
+
+    /* 2. 写 DATA bit2-5 (PB2-5 电平) */
+    uint32_t d = *data;
+    d &= ~((1u << 2) | (1u << 3) | (1u << 4) | (1u << 5));
+    d |= (normal_rx_en ? 1u : 0u) << 2;
+    d |= (tx_bus_en ? 1u : 0u) << 3;
+    d |= (crsf_rx_en ? 1u : 0u) << 4;
+    d |= (sbus_tx_en ? 1u : 0u) << 5;
+    *data = d;
+    ::usleep(200);   /* 等寄存器生效 */
+
+    ::munmap(map, PG);
+    std::printf("[dji_rc] TMUX: N=%d T=%d C=%d S=%d\n",
+                normal_rx_en, tx_bus_en, crsf_rx_en, sbus_tx_en);
+    std::fflush(stdout);
+}
+
+/* 按 dji_rc 运行模式设置 TMUX1511:
+ *   SBUS (out_mode=='s') : SBUS_TX_EN=1             → (0,0,0,1) 反相 SBUS 单线输出
+ *   CRSF (out_mode=='c') : TX_BUS_EN=1+CRSF_RX_EN=1 → (0,1,1,0)
+ *     半双工总线回环: SC16 TX 上共享总线 + 总线回 SC16 RX, 发摇杆/收遥测/bridge 收发都行 */
+static void aux_tmux_apply()
+{
+    if (g_out_mode.load() == 's') {
+        aux_tmux_set(0, 0, 0, 1);   /* SBUS: 仅 SBUS_TX_EN */
+    } else {
+        aux_tmux_set(0, 1, 1, 0);   /* CRSF 半双工: TX_BUS_EN + CRSF_RX_EN 同时 */
+    }
+}
+
 // ── PB6 运行中自动切换 (每 2s 检测, 连续 N 次相同才切换, 防抖) ──
 // 主循环调用。接地→debug(启 getty + 关协议), 上拉→协议(杀 getty + 开协议)。
 // 需要访问 main 局部变量 (out_dev/out_mode/out_baud/t3/t4), 由 main 传入。
@@ -358,15 +430,16 @@ static void pb6_auto_switch(bool grounded, const char *out_dev, char out_mode,
 // ── rcmsg (RC 数据 UDP) ──
 static constexpr uint32_t RCMSG_MAGIC = 0x314D4352u;  // "RCM1", little-endian on wire
 static constexpr int RCMSG_PORT = 65530;
-// 手机局域网 IP (192.168.144.11) — 砍掉 10.0.0.x 隧道网段后直达手机
-static constexpr const char *RCMSG_HOST = "192.168.144.11";
+// 手机主地址 10.0.0.2 (Android VpnService 只对主地址投递 protect 隧道包)。
+// V3s 把电脑发的 144.11 包 DNAT 到 10.0.0.2, 手机在此收 rcmsg/局域网入向。
+static constexpr const char *RCMSG_HOST = "10.0.0.2";
 
 // ── CRSF 桥 (crsf-bridge 模式): UART0 CRSF 帧 ↔ 网口 UDP 透明转发 ──
 // App 跑 ELRS Lua 脚本, 经网口 UDP 发 CRSF 参数命令, V3s 转 UART0。
 // g_crsf_bridge 前移声明于文件顶部 (pb6_auto_switch 需访问), 见上
 static constexpr uint32_t CRSFBR_MAGIC = 0x46534352u;   // "RCSF" little-endian = "CRSF"
 static int       crsfbr_port = 65532;                   // 网口 CRSF 桥端口
-static const char *crsfbr_host = "192.168.144.11";
+static const char *crsfbr_host = "10.0.0.2";
 
 // ── tlm (回传数据 UDP) ──
 static constexpr uint32_t TLM_MAGIC = 0x314D4C54u;    // "TLM1", little-endian on wire
@@ -1375,7 +1448,7 @@ int main(int argc, char **argv)
     bool debug_uart0 = false;
     const char *debug_dev = "/dev/ttyS0";
     int debug_baud = 115200;
-    const char *out_dev = "/dev/ttyS0";      /* 协议输出口: 默认 UART0 */
+    const char *out_dev = "/dev/ttySC0";     /* 协议输出口: 默认 SC16IS752 通道 A */
     char out_mode = 's';                     /* 's'=SBUS, 'c'=CRSF */
     int  out_baud = 100000;                  /* 默认 SBUS 100k */
     bool crsf_telem = true;                  /* CRSF 接收回传 */
@@ -1447,13 +1520,13 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "[dji_rc] 所有串口打开失败,退出\n");
         return 1;
     }
-    // PB6 检测: 接地 → UART0 留给 debug 串口, 不输出协议
-    g_pb6_debug = pb6_grounded();
-    if (g_pb6_debug) {
-        std::printf("[dji_rc] PB6 接地 → debug 模式, 跳过协议输出 (UART0 供 console/getty)\n");
-        std::fflush(stdout);
-        getty_start();
-    }
+    // UART0 固定作为 debug console；协议输出固定走 SC16IS752。
+    g_pb6_debug = false;
+    std::printf("[dji_rc] UART0 fixed debug console; protocol output on %s\n", out_dev);
+    std::fflush(stdout);
+
+    // TMUX1511 模式: 协议输出前先配 PB2-PB5 (SC16IS752 共享总线开关)
+    aux_tmux_apply();
 
     // 协议输出 (UART0): SBUS 标准=100k 8E2, SBUS 非标=115200 8N1, CRSF=115200 8N1
     bool out_even2 = (out_mode == 's') && g_sbus_std;
@@ -1591,6 +1664,8 @@ int main(int argc, char **argv)
                 g_out_mode.store(cm); g_out_baud.store(cb); g_sbus_std = cs;   // C1: atomic store
                 /* bridge (ELRS Lua 桥) 随 SPI mode 启停: crsf→启用, sbus→停用 */
                 g_crsf_bridge = (cm == 'c');
+                /* TMUX1511 模式随输出模式切换 (SBUS / CRSF 半双工) */
+                aux_tmux_apply();
 
                 /* 先安全停掉旧回传线程 (CRSF->任何 或 任何->CRSF 切换) */
                 if (t3.joinable()) {
@@ -1631,14 +1706,6 @@ int main(int argc, char **argv)
                 }
                 (void)oldCrsf;
             }
-        }
-
-        // PB6 运行中自动切换 (每 2s 检测, 连续 3 次防抖)
-        static int64_t last_pb6 = 0;
-        if (n - last_pb6 > 2000000LL) {
-            last_pb6 = n;
-            bool gnd = pb6_grounded();
-            pb6_auto_switch(gnd, out_dev, out_mode, out_baud, g_pb6_debug, t3, t4);
         }
 
         // 控制台打印

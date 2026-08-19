@@ -12,8 +12,12 @@ This pin map follows the Lichee Pi Zero IO allocation where applicable.
 | UART1_RX | PE22 | Input | External serial port 1 RX. |
 | UART2_TX | PB0 | Output | External serial port 2 TX. |
 | UART2_RX | PB1 | Input | External serial port 2 RX. |
-| UART2_RTS | PB2 | Output | Optional flow control. |
-| UART2_CTS | PB3 | Input | Optional flow control. |
+| AUX_NORMAL_RX_EN | PB2 | Output | TMUX1511 Ch1 enable: external RXD_IN to SC16 RX. |
+| AUX_TX_BUS_EN | PB3 | Output | TMUX1511 Ch2 enable: SC16 TX to shared TXD/BUS. |
+| AUX_CRSF_RX_EN | PB4 | Output | TMUX1511 Ch3 enable: shared TXD/BUS back to SC16 RX for CRSF half-duplex. |
+| AUX_SBUS_TX_EN | PB5 | Output | TMUX1511 Ch4 enable: inverted SBUS TX to shared TXD/BUS. |
+| TWI0_SCK | PB6 | Output | I2C0 SCL to SC16IS752IPW. PB6 debug-switch function is removed. |
+| TWI0_SDA | PB7 | Bidirectional | I2C0 SDA to SC16IS752IPW. |
 | USB_DM | USB0-DM | Bidirectional | Follow Lichee Pi Zero USB OTG. |
 | USB_DP | USB0-DP | Bidirectional | Follow Lichee Pi Zero USB OTG. |
 | SPI0_CS | SPI0 | Output | SPI NOR chip select. |
@@ -61,9 +65,13 @@ J_UART2
   1: 3V3
   2: UART2_TX / PB0
   3: UART2_RX / PB1
-  4: UART2_RTS / PB2
-  5: UART2_CTS / PB3
-  6: GND
+  4: AUX_NORMAL_RX_EN / PB2
+  5: AUX_TX_BUS_EN / PB3
+  6: AUX_CRSF_RX_EN / PB4
+  7: AUX_SBUS_TX_EN / PB5
+  8: TWI0_SCK / PB6
+  9: TWI0_SDA / PB7
+  10: GND
 ```
 
 ## Open Decisions
@@ -74,3 +82,4 @@ J_UART2
 | HW-D2 | SPI NOR size | Prefer 32MB, allow 16MB minimum. |
 | HW-D3 | USB connector | USB-C physical connector, USB2.0 device wiring. |
 | HW-D4 | RGB LED voltage | Prefer 3.3V-compatible SK6812 variant. |
+| HW-D5 | SC16IS752IPW IRQ# | Not connected in current revision; Linux driver uses polling. |

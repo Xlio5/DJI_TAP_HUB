@@ -103,13 +103,25 @@ Rule:
 
 - Do not replace this with USB Ethernet or SPI Ethernet in EVT.
 
-## 7. UART Headers
+## 7. UART and SC16IS752IPW Auxiliary Port
 
 Use Lichee Pi Zero IO markings:
 
 - UART0 debug: PB8/PB9.
 - UART1 external: PE21/PE22.
-- UART2 external: PB0/PB1, with optional PB2/PB3 RTS/CTS.
+- UART2 external: PB0/PB1 remains available.
+- PB6/PB7 are TWI0/I2C0 for SC16IS752IPW. UART0 is fixed as debug; the old
+  PB6 debug-switch function is removed.
+- PB2/PB3/PB4/PB5 drive the TMUX1511 mode enables:
+  `NORMAL_RX_EN`, `TX_BUS_EN`, `CRSF_RX_EN`, and `SBUS_TX_EN`.
+
+SC16IS752IPW rules:
+
+- I2C address is `0x48` for the current schematic strap.
+- IRQ# is not connected in the current revision; Linux sc16is7xx uses polling.
+- 14.7456MHz crystal is the UART baud-rate reference.
+- Firmware must keep `TX_BUS_EN` and `SBUS_TX_EN` mutually exclusive, and keep
+  `NORMAL_RX_EN` and `CRSF_RX_EN` mutually exclusive.
 
 ## 8. RGB Status LED
 

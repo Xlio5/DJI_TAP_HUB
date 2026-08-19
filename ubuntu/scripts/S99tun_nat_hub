@@ -48,14 +48,12 @@ case "$1" in
     /usr/local/bin/web_server > /var/log/web_server.log 2>&1 &
     _ts "web_server: started"
 
-    # DJI RC serial decoder (UART1/2 input → SBUS/CRSF output on UART0)
-    # 输出模式/波特率/通道映射由 SPI flash 配置 (web_server /api/rc/output) 决定
-    # dji_rc 自己检测 PB6 (运行时配置 input+pull-up): 接地=debug 串口(管理 getty),
-    # 上拉=协议输出。S99 不再单独读 PB6, 避免浮空误判。
+    # DJI RC serial decoder (UART1/2 input -> SBUS/CRSF output on SC16IS752)
+    # UART0 is fixed as debug console. Protocol output uses /dev/ttySC0.
     if [ -c /dev/ttyS1 ] || [ -c /dev/ttyS2 ]; then
-        # crsf-bridge 模式: UART0 CRSF 参数帧 ↔ 网口 UDP 65532 (App Lua 引擎)
+        # crsf-bridge mode: SC16IS752 CRSF frames <-> UDP 65532 (App Lua engine)
         # 波特率: SPI flash 配置优先 (ELRS/MLRS 兼容, 默认 400000, DLF 精确输出)
-        /usr/local/bin/dji_rc --interval 20 --out-dev /dev/ttyS0 --out-baud 400000 --crsf-telem 1 --rcmsg-host 192.168.144.11 --rcmsg-port 65530 --crsf-bridge --crsfbr-host 192.168.144.11 --crsfbr-port 65532 > /var/log/dji_rc.log 2>&1 &
+        /usr/local/bin/dji_rc --interval 20 --out-dev /dev/ttySC0 --out-baud 400000 --crsf-telem 1 --rcmsg-host 10.0.0.2 --rcmsg-port 65530 --crsf-bridge --crsfbr-host 10.0.0.2 --crsfbr-port 65532 > /var/log/dji_rc.log 2>&1 &
         _ts "dji_rc: started (crsf-bridge)"
     fi
 

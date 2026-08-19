@@ -194,3 +194,59 @@ crsf 模式既要输出摇杆 CRSF（飞控控制），又要能配置 ELRS Lua�
 - `android/...` — App Lua 引擎 + 绑定
 - `docs/pb6_uart0_switch.md` — UART0 角色切换 (参考)
 - `ax12 app/_rework/elrs_app/assets_elrsV3.lua.txt` — 移植的 Lua 脚本
+## 2026-08-19 SC16IS752IPW V3s DTB 适配
+
+### 硬件分配
+
+- PB2: `NORMAL_RX_EN`
+- PB3: `TX_BUS_EN`
+- PB4: `CRSF_RX_EN`
+- PB5: `SBUS_TX_EN`
+- PB6/PB7: `TWI0_SCK/TWI0_SDA`，连接 SC16IS752IPW。
+- UART0 固定作为 debug 串口；旧的 PB6 接地切换 debug/protocol 功能废弃。
+- SC16IS752IPW `IRQ#` 当前版本不接，Linux `sc16is7xx` 驱动使用 polling。
+- I2C 地址按当前原理图 strap 为 `0x48`，晶振 `14.7456MHz`。
+
+### DTB/内核适配
+
+- `sun8i-v3s-licheepi-zero.dts`: 移除 `pb6_debug_pin`，`uart0` 只保留 `uart0_pb_pins`。
+- `sun8i-v3s-licheepi-zero-dock.dts`: 启用 `&i2c0`，增加 `serial@48`:
+
+```dts
+&i2c0 {
+    status = "okay";
+
+    sc16is752_uart: serial@48 {
+        compatible = "nxp,sc16is752";
+        reg = <0x48>;
+        clock-frequency = <14745600>;
+    };
+};
+```
+
+- `.config` 需要启用:
+  - `CONFIG_I2C_MV64XXX=y`
+  - `CONFIG_SERIAL_SC16IS7XX=y`
+  - `CONFIG_SERIAL_SC16IS7XX_I2C=y`
+
+### 已完成验证
+
+- 已编译 `allwinner/sun8i-v3s-licheepi-zero-dock.dtb`。
+- 已编译 `arch/arm/boot/zImage`，`sc16is7xx`、`sc16is7xx_i2c`、`i2c-mv64xxx` 均通过编译。
+- 反编译读回确认 `serial@48` 存在，`compatible = "nxp,sc16is752"`，`clock-frequency = <14745600>`。
+- 反编译读回确认 PB6/PB7 为 `i2c0-pins`。
+- 已复制到 `backup/sun8i-v3s-licheepi-zero-dock-sc16.dtb`，源 DTB 与备份 SHA256 相同。
+- 已复制到 `backup/zImage_sc16`，源 zImage 与备份 SHA256 相同。
+
+### 下一步
+
+- ✅ 打包带 `sc16is7xx`/I2C 驱动的新 kernel/rootfs（`backup/rootfs_sc16.squashfs` + `backup/spi_image_sc16.bin` + `backup/zImage_sc16`）。
+- ✅ 修改 `dji_rc.cpp`，移除 PB6 debug 检测与运行中切换逻辑（`g_pb6_debug=false`，UART0 固定 debug）。
+- ✅ 增加 PB2-PB5 模式控制（`aux_tmux_set` + `aux_tmux_apply`，启动 + 热重配时调用）：
+  - SBUS: `SBUS_TX_EN=1, TX_BUS_EN=0, CRSF_RX_EN=0, NORMAL_RX_EN=0` → (0,0,0,1)
+  - CRSF 半双工（out_mode=='c'，含 bridge/遥测）：`TX_BUS_EN=1 + CRSF_RX_EN=1` → (0,1,1,0)
+    - TMUX1511 是 4×SPST 独立开关，支持多通道同时导通（TI SCDS390）。
+    - SC16 全双工 UART 回环：发摇杆/收遥测/bridge 收发共用，不需软件时分切换。
+    - 互斥约束保留：TX_BUS_EN 与 SBUS_TX_EN 互斥；NORMAL_RX_EN 与 CRSF_RX_EN 互斥。
+  - UART full-duplex（备用）：`TX_BUS_EN=1, NORMAL_RX_EN=1` → (1,1,0,0)
+- 固件版本递增 + 固化：待 EVT 板真机验证 SC16 后统一处理（当前固件 F 版本仍 1.6.29）。
