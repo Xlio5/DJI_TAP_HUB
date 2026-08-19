@@ -116,6 +116,7 @@ static bool g_sbus_std = true;          // SBUS 标准模式: true=100k 8E2, fal
 static std::mutex g_out_write_mtx;        // CO-4: 保护对 g_out_fd 的写 (out_send + crsf_rx_thread 并发)
 
 static int uart_open_out(const char *dev, int baud, bool even2);   /* forward */
+static void aux_tmux_set(int normal_rx_en, int tx_bus_en, int crsf_rx_en, int sbus_tx_en);  /* forward: TMUX1511 (定义在文件中部) */
 static const char *g_out_dev = "/dev/ttySC0";  /* 协议输出口, tx_recover 重开用 */
 
 /* UART0 硬件卡死自动恢复: 写连续失败 N 次 → 重开输出口。
@@ -131,11 +132,25 @@ static void tx_recover(void) {
     std::fflush(stdout);
 }
 
+/* 等 TX FIFO 空: 半双工切回 RX 前必须确保帧已物理发出, 否则 TMUX 切走会截断。
+ * TIOCOUTQ 返回未发送字节数, 轮询到 0 或超时 (最多 ~20ms)。 */
+static void uart_drain_tx(int fd) {
+    for (int i = 0; i < 40; i++) {
+        int outq = 0;
+        if (ioctl(fd, TIOCOUTQ, &outq) < 0 || outq <= 0) return;
+        ::usleep(500);
+    }
+}
+
 /* 写 UART0 + 卡死检测: 连续失败 TX_ERR_LIMIT 次 → 自动重开。
+ * CRSF 半双工 (TMUX1511): 发送前切 TX_BUS_EN=1, 帧发完 (drain) 切回 CRSF_RX_EN=1。
+ * SBUS/全双工: 不切换 (模式已在 aux_tmux_apply 配好)。
  * 调用方须持 g_out_write_mtx。返回写是否成功。 */
 static bool tx_write_uart(int fd, const uint8_t *data, size_t len) {
     static int err_cnt = 0;
     const int TX_ERR_LIMIT = 50;   /* 连续 50 次写失败(约数百 ms)判 UART0 卡死 */
+    bool crsf = (g_out_mode.load() == 'c');
+    if (crsf) aux_tmux_set(0, 1, 0, 0);   /* CRSF TX: TX_BUS_EN=1, 其他 0 */
     ssize_t w = ::write(fd, data, len);
     if (w != (ssize_t)len) {
         err_cnt++;
@@ -146,9 +161,14 @@ static bool tx_write_uart(int fd, const uint8_t *data, size_t len) {
             err_cnt = 0;
             tx_recover();   /* 自动重开 UART0 */
         }
+        if (crsf) aux_tmux_set(0, 0, 1, 0);   /* 失败也切回接收态 */
         return false;
     }
     err_cnt = 0;
+    if (crsf) {
+        uart_drain_tx(fd);                    /* 等帧物理发完再切回 RX, 防截断 */
+        aux_tmux_set(0, 0, 1, 0);             /* CRSF RX: CRSF_RX_EN=1, 其他 0 */
+    }
     return true;
 }
 
@@ -347,7 +367,7 @@ static void aux_tmux_set(int normal_rx_en, int tx_bus_en, int crsf_rx_en, int sb
     d |= (crsf_rx_en ? 1u : 0u) << 4;
     d |= (sbus_tx_en ? 1u : 0u) << 5;
     *data = d;
-    ::usleep(200);   /* 等寄存器生效 */
+    ::usleep(10);    /* 等寄存器生效 (半双工切换须快, 帧间切换占帧间时间) */
 
     ::munmap(map, PG);
     std::printf("[dji_rc] TMUX: N=%d T=%d C=%d S=%d\n",
@@ -355,16 +375,17 @@ static void aux_tmux_set(int normal_rx_en, int tx_bus_en, int crsf_rx_en, int sb
     std::fflush(stdout);
 }
 
-/* 按 dji_rc 运行模式设置 TMUX1511:
- *   SBUS (out_mode=='s') : SBUS_TX_EN=1             → (0,0,0,1) 反相 SBUS 单线输出
- *   CRSF (out_mode=='c') : TX_BUS_EN=1+CRSF_RX_EN=1 → (0,1,1,0)
- *     半双工总线回环: SC16 TX 上共享总线 + 总线回 SC16 RX, 发摇杆/收遥测/bridge 收发都行 */
+/* 按 dji_rc 运行模式设置 TMUX1511 基线 (发送时的 TX/RX 切换由 tx_write_uart 处理):
+ *   SBUS (out_mode=='s') : (0,0,0,1) SBUS_TX_EN=1, 反相单线输出 (只发不收)
+ *   CRSF (out_mode=='c') : (0,0,1,0) CRSF_RX_EN=1 接收态基线; 每次发帧 tx_write_uart
+ *     切 TX_BUS_EN=1, 帧发完 (drain) 切回 CRSF_RX_EN=1 — 4 模式互斥 (老大定):
+ *       SBUS=(0,0,0,1) / CRSF TX=(0,1,0,0) / CRSF RX=(0,0,1,0) / 全双工=(1,1,0,0) */
 static void aux_tmux_apply()
 {
     if (g_out_mode.load() == 's') {
-        aux_tmux_set(0, 0, 0, 1);   /* SBUS: 仅 SBUS_TX_EN */
+        aux_tmux_set(0, 0, 0, 1);   /* SBUS: SBUS_TX_EN=1 */
     } else {
-        aux_tmux_set(0, 1, 1, 0);   /* CRSF 半双工: TX_BUS_EN + CRSF_RX_EN 同时 */
+        aux_tmux_set(0, 0, 1, 0);   /* CRSF: 接收态基线 */
     }
 }
 
@@ -1116,8 +1137,7 @@ static void crsf_rx_thread()
                             if (rlen > 0) {
                                 std::lock_guard<std::mutex> lock(g_out_write_mtx);  // CO-4: 串口写互斥, 防与下行帧交错
                                 if (g_out_fd.load() != outFd) continue;             // CO-5: fd 已替换
-                                ssize_t w = ::write(outFd, resp, (size_t)rlen);
-                                (void)w;
+                                tx_write_uart(outFd, resp, (size_t)rlen);           // 统一走半双工切换入口 (CRSF TX→drain→RX)
                             }
                         }
                     }

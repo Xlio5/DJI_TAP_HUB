@@ -242,11 +242,11 @@ crsf 模式既要输出摇杆 CRSF（飞控控制），又要能配置 ELRS Lua�
 
 - ✅ 打包带 `sc16is7xx`/I2C 驱动的新 kernel/rootfs（`backup/rootfs_sc16.squashfs` + `backup/spi_image_sc16.bin` + `backup/zImage_sc16`）。
 - ✅ 修改 `dji_rc.cpp`，移除 PB6 debug 检测与运行中切换逻辑（`g_pb6_debug=false`，UART0 固定 debug）。
-- ✅ 增加 PB2-PB5 模式控制（`aux_tmux_set` + `aux_tmux_apply`，启动 + 热重配时调用）：
-  - SBUS: `SBUS_TX_EN=1, TX_BUS_EN=0, CRSF_RX_EN=0, NORMAL_RX_EN=0` → (0,0,0,1)
-  - CRSF 半双工（out_mode=='c'，含 bridge/遥测）：`TX_BUS_EN=1 + CRSF_RX_EN=1` → (0,1,1,0)
-    - TMUX1511 是 4×SPST 独立开关，支持多通道同时导通（TI SCDS390）。
-    - SC16 全双工 UART 回环：发摇杆/收遥测/bridge 收发共用，不需软件时分切换。
-    - 互斥约束保留：TX_BUS_EN 与 SBUS_TX_EN 互斥；NORMAL_RX_EN 与 CRSF_RX_EN 互斥。
-  - UART full-duplex（备用）：`TX_BUS_EN=1, NORMAL_RX_EN=1` → (1,1,0,0)
+- ✅ 增加 PB2-PB5 模式控制（`aux_tmux_set` + `aux_tmux_apply`，启动 + 热重配时调用），**4 模式互斥（老大确认）**：
+  - SBUS: `SBUS_TX_EN=1`，其他 0 → (0,0,0,1)
+  - CRSF 发送: `TX_BUS_EN=1`，其他 0 → (0,1,0,0)
+  - CRSF 接收: `CRSF_RX_EN=1`，其他 0 → (0,0,1,0)
+  - 全双工: `TX_BUS_EN=1, NORMAL_RX_EN=1`，其他 0 → (1,1,0,0)
+  - **CRSF 半双工时分切换**：基线接收态 (0,0,1,0)；每次发帧 `tx_write_uart` 切 TX (0,1,0,0)，
+    帧发完（`uart_drain_tx` 轮询 TIOCOUTQ=0）切回 RX (0,0,1,0)。回传响应（crsf_rx_thread）统一走 tx_write_uart。
 - 固件版本递增 + 固化：待 EVT 板真机验证 SC16 后统一处理（当前固件 F 版本仍 1.6.29）。
