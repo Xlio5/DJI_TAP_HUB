@@ -20,6 +20,14 @@
 - 禁止说"审查没问题"除非实际执行了读回验证
 - 禁止假设操作成功——必须拿到校验数据才算
 
+### 5. 编译产物必须带日期和版本号
+**所有编译、打包、发布产物必须加入日期时间戳和版本号，禁止只保留无版本通用文件名：**
+- 固件/SPI/rootfs/kernel/DTB/U-Boot/APK 等产物命名格式：`{artifact}_{version}_{YYYYMMDD_HHMMSS}.{ext}`。
+- 每次发布必须建立 `backup/release_{YYYYMMDD_HHMMSS}_{version}/` 目录，集中保存本轮相关产物。
+- release 目录必须包含 manifest，记录版本号、时间戳、来源 commit、分支、文件大小、SHA256、关键布局/用途说明。
+- 可保留 `backup/spi_image_sc16.bin`、`backup/rootfs.squashfs` 等固定别名用于脚本兼容，但提交/交付必须同时包含带日期和版本号的归档副本。
+- 写入或复制产物后必须做读回校验：至少 SHA256 对比；DTB/SPI 镜像还要反编译或切片验证关键内容。
+
 ---
 
 ## 项目结构
