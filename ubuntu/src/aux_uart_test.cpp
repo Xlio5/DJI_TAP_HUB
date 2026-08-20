@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -25,7 +26,7 @@ void on_signal(int) {
 
 class AuxTmuxRoute {
 public:
-    bool open_full_duplex() {
+    bool open_route(bool sbus) {
         const uintptr_t pio_phys = 0x01C20800u;
         const uintptr_t base = pio_phys & ~0xFFFu;
         const uintptr_t page_offset = pio_phys - base;
@@ -64,12 +65,17 @@ public:
         *cfg1_ = cfg1;
 
         uint32_t data = old_data_ & ~0x3Cu;
-        data |= (1u << 2) | (1u << 3);  // NORMAL_RX_EN + TX_BUS_EN
+        if (sbus) {
+            data |= 1u << 5;  // SBUS_TX_EN
+        } else {
+            data |= (1u << 2) | (1u << 3);  // NORMAL_RX_EN + TX_BUS_EN
+        }
         *data_ = data;
         ::usleep(10);
 
-        std::printf("TMUX full-duplex: N=1 T=1 C=0 S=0 cfg0=0x%08x cfg1=0x%08x data=0x%08x\n",
-                    *cfg0_, *cfg1_, *data_);
+        std::printf("TMUX %s: N=%d T=%d C=0 S=%d cfg0=0x%08x cfg1=0x%08x data=0x%08x\n",
+                    sbus ? "SBUS" : "full-duplex", sbus ? 0 : 1, sbus ? 0 : 1,
+                    sbus ? 1 : 0, *cfg0_, *cfg1_, *data_);
         return true;
     }
 
@@ -93,7 +99,7 @@ private:
     uint32_t old_data_ = 0;
 };
 
-int open_uart(const char *device, int baud) {
+int open_uart(const char *device, int baud, bool even2) {
     int fd = ::open(device, O_RDWR | O_NOCTTY);
     if (fd < 0) {
         std::fprintf(stderr, "aux_uart_test: open %s: %s\n", device, std::strerror(errno));
@@ -112,6 +118,7 @@ int open_uart(const char *device, int baud) {
     config.c_cflag = CLOCAL | CREAD | CS8;
     config.c_cflag &= ~(CBAUD | PARENB | PARODD | CSTOPB | CRTSCTS);
     config.c_cflag |= BOTHER | CS8;
+    if (even2) config.c_cflag |= PARENB | CSTOPB;
     config.c_ispeed = static_cast<unsigned int>(baud);
     config.c_ospeed = static_cast<unsigned int>(baud);
     config.c_cc[VMIN] = 0;
@@ -137,12 +144,46 @@ bool send_message(int fd, const char *device, const char *name, unsigned int seq
     return false;
 }
 
+void make_sbus_frame(uint8_t frame[25]) {
+    static constexpr uint16_t channels[16] = {
+        172, 300, 428, 556, 684, 812, 940, 992,
+        1052, 1180, 1308, 1436, 1564, 1692, 1811, 992,
+    };
+    std::memset(frame, 0, 25);
+    frame[0] = 0x0F;
+    unsigned int bit = 0;
+    for (uint16_t channel : channels) {
+        for (unsigned int i = 0; i < 11; ++i, ++bit) {
+            if ((channel >> i) & 1u) frame[1 + bit / 8] |= 1u << (bit % 8);
+        }
+    }
+    frame[23] = 0x00;
+    frame[24] = 0x00;
+}
+
+bool send_sbus(int fd, const char *device, const uint8_t frame[25], bool drain) {
+    ssize_t written = ::write(fd, frame, 25);
+    if (written == 25 && (!drain || ::tcdrain(fd) == 0)) return true;
+    std::fprintf(stderr, "%s SBUS write failed: actual=%zd errno=%d(%s)\n",
+                 device, written, errno, std::strerror(errno));
+    return false;
+}
+
+void add_milliseconds(timespec &time, unsigned int milliseconds) {
+    time.tv_nsec += static_cast<long>(milliseconds % 1000u) * 1000000L;
+    time.tv_sec += milliseconds / 1000u + time.tv_nsec / 1000000000L;
+    time.tv_nsec %= 1000000000L;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
     int baud = 115200;
     unsigned int count = 60;
     unsigned int interval_ms = 1000;
+    bool sbus = false;
+    bool frame25 = false;
+    bool uart2_only = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--baud") == 0 && i + 1 < argc) {
             baud = std::atoi(argv[++i]);
@@ -150,37 +191,62 @@ int main(int argc, char **argv) {
             count = static_cast<unsigned int>(std::strtoul(argv[++i], nullptr, 10));
         } else if (std::strcmp(argv[i], "--interval-ms") == 0 && i + 1 < argc) {
             interval_ms = static_cast<unsigned int>(std::strtoul(argv[++i], nullptr, 10));
+        } else if (std::strcmp(argv[i], "--sbus") == 0) {
+            sbus = true;
+        } else if (std::strcmp(argv[i], "--frame25") == 0) {
+            frame25 = true;
+        } else if (std::strcmp(argv[i], "--uart2-only") == 0) {
+            uart2_only = true;
         } else {
-            std::fprintf(stderr, "usage: %s [--baud N] [--count N] [--interval-ms N]\n", argv[0]);
+            std::fprintf(stderr,
+                         "usage: %s [--baud N] [--count N] [--interval-ms N] "
+                         "[--sbus|--frame25] [--uart2-only]\n",
+                         argv[0]);
             return 2;
         }
     }
-    if (baud <= 0 || count == 0 || interval_ms == 0) return 2;
+    if (baud <= 0 || count == 0 || interval_ms == 0 || (sbus && frame25)) return 2;
 
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
 
     AuxTmuxRoute route;
-    if (!route.open_full_duplex()) return 1;
+    if (!route.open_route(sbus)) return 1;
 
-    int uart1 = open_uart("/dev/ttySC0", baud);
-    int uart2 = open_uart("/dev/ttySC1", baud);
-    if (uart1 < 0 || uart2 < 0) {
+    int uart1 = uart2_only ? -1 : open_uart("/dev/ttySC0", baud, sbus);
+    int uart2 = open_uart("/dev/ttySC1", baud, sbus);
+    if ((!uart2_only && uart1 < 0) || uart2 < 0) {
         if (uart1 >= 0) ::close(uart1);
         if (uart2 >= 0) ::close(uart2);
         return 1;
     }
 
-    std::printf("AUX UART test started: baud=%d count=%u interval=%ums\n",
-                baud, count, interval_ms);
+    const char *mode = sbus ? "SBUS" : (frame25 ? "25-byte" : "text");
+    std::printf("AUX UART %s test started: baud=%d %s count=%u period=%ums\n",
+                mode, baud, sbus ? "8E2" : "8N1", count, interval_ms);
     bool ok = true;
+    uint8_t sbus_frame[25];
+    make_sbus_frame(sbus_frame);
+    timespec next{};
+    ::clock_gettime(CLOCK_MONOTONIC, &next);
     for (unsigned int sequence = 1; sequence <= count && !g_stop; ++sequence) {
-        ok = send_message(uart1, "/dev/ttySC0", "AUX-UART1", sequence) && ok;
-        ok = send_message(uart2, "/dev/ttySC1", "AUX-UART2", sequence) && ok;
-        ::usleep(interval_ms * 1000u);
+        if (sbus || frame25) {
+            if (!uart2_only) ok = send_sbus(uart1, "/dev/ttySC0", sbus_frame, sbus) && ok;
+            ok = send_sbus(uart2, "/dev/ttySC1", sbus_frame, sbus) && ok;
+            if (sequence <= 3 || sequence % 100 == 0) {
+                std::printf("25-byte frame seq=%u sent on both UARTs\n", sequence);
+            }
+        } else {
+            if (!uart2_only) {
+                ok = send_message(uart1, "/dev/ttySC0", "AUX-UART1", sequence) && ok;
+            }
+            ok = send_message(uart2, "/dev/ttySC1", "AUX-UART2", sequence) && ok;
+        }
+        add_milliseconds(next, interval_ms);
+        while (::clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, nullptr) == EINTR && !g_stop) {}
     }
 
-    ::close(uart1);
+    if (uart1 >= 0) ::close(uart1);
     ::close(uart2);
     return ok ? 0 : 1;
 }
