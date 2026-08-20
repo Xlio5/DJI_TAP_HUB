@@ -7,6 +7,7 @@
 #include <ctime>
 
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <termios.h>
@@ -175,6 +176,32 @@ void add_milliseconds(timespec &time, unsigned int milliseconds) {
     time.tv_nsec %= 1000000000L;
 }
 
+bool echo_ready_uart(int fd, const char *device, uint64_t &byte_count) {
+    uint8_t buffer[256];
+    ssize_t received = ::read(fd, buffer, sizeof(buffer));
+    if (received < 0) {
+        if (errno == EINTR || errno == EAGAIN) return true;
+        std::fprintf(stderr, "%s read failed: %s\n", device, std::strerror(errno));
+        return false;
+    }
+    if (received == 0) return true;
+
+    ssize_t offset = 0;
+    while (offset < received) {
+        ssize_t written = ::write(fd, buffer + offset, static_cast<size_t>(received - offset));
+        if (written > 0) {
+            offset += written;
+        } else if (written < 0 && errno == EINTR) {
+            continue;
+        } else {
+            std::fprintf(stderr, "%s echo write failed: %s\n", device, std::strerror(errno));
+            return false;
+        }
+    }
+    byte_count += static_cast<uint64_t>(received);
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -183,6 +210,7 @@ int main(int argc, char **argv) {
     unsigned int interval_ms = 1000;
     bool sbus = false;
     bool frame25 = false;
+    bool echo = false;
     bool uart1_only = false;
     bool uart2_only = false;
     for (int i = 1; i < argc; ++i) {
@@ -196,6 +224,8 @@ int main(int argc, char **argv) {
             sbus = true;
         } else if (std::strcmp(argv[i], "--frame25") == 0) {
             frame25 = true;
+        } else if (std::strcmp(argv[i], "--echo") == 0) {
+            echo = true;
         } else if (std::strcmp(argv[i], "--uart2-only") == 0) {
             uart2_only = true;
         } else if (std::strcmp(argv[i], "--uart1-only") == 0) {
@@ -203,12 +233,13 @@ int main(int argc, char **argv) {
         } else {
             std::fprintf(stderr,
                          "usage: %s [--baud N] [--count N] [--interval-ms N] "
-                         "[--sbus|--frame25] [--uart1-only|--uart2-only]\n",
+                         "[--sbus|--frame25|--echo] [--uart1-only|--uart2-only]\n",
                          argv[0]);
             return 2;
         }
     }
-    if (baud <= 0 || count == 0 || interval_ms == 0 || (sbus && frame25) ||
+    if (baud <= 0 || count == 0 || interval_ms == 0 ||
+        static_cast<int>(sbus) + static_cast<int>(frame25) + static_cast<int>(echo) > 1 ||
         (uart1_only && uart2_only)) return 2;
 
     std::signal(SIGINT, on_signal);
@@ -226,9 +257,42 @@ int main(int argc, char **argv) {
     }
 
     const char *mode = sbus ? "SBUS" : (frame25 ? "25-byte" : "text");
+    if (echo) mode = "echo";
     std::printf("AUX UART %s test started: baud=%d %s count=%u period=%ums\n",
                 mode, baud, sbus ? "8E2" : "8N1", count, interval_ms);
     bool ok = true;
+
+    if (echo) {
+        pollfd ports[2] = {{uart1, POLLIN, 0}, {uart2, POLLIN, 0}};
+        uint64_t byte_counts[2] = {0, 0};
+        while (!g_stop && ok) {
+            int ready = ::poll(ports, 2, 500);
+            if (ready < 0) {
+                if (errno == EINTR) continue;
+                std::fprintf(stderr, "poll failed: %s\n", std::strerror(errno));
+                ok = false;
+                break;
+            }
+            if (ports[0].fd >= 0 && (ports[0].revents & POLLIN)) {
+                ok = echo_ready_uart(ports[0].fd, "/dev/ttySC0", byte_counts[0]) && ok;
+            }
+            if (ports[1].fd >= 0 && (ports[1].revents & POLLIN)) {
+                ok = echo_ready_uart(ports[1].fd, "/dev/ttySC1", byte_counts[1]) && ok;
+            }
+            if ((ports[0].revents | ports[1].revents) & (POLLERR | POLLHUP | POLLNVAL)) {
+                std::fprintf(stderr, "UART poll error: revents=0x%x/0x%x\n",
+                             ports[0].revents, ports[1].revents);
+                ok = false;
+            }
+        }
+        std::printf("Echo totals: UART1=%llu UART2=%llu bytes\n",
+                    static_cast<unsigned long long>(byte_counts[0]),
+                    static_cast<unsigned long long>(byte_counts[1]));
+        if (uart1 >= 0) ::close(uart1);
+        if (uart2 >= 0) ::close(uart2);
+        return ok ? 0 : 1;
+    }
+
     uint8_t sbus_frame[25];
     make_sbus_frame(sbus_frame);
     timespec next{};
