@@ -73,9 +73,13 @@ add_executable(dji_rc
     src/rc_map.c
 )
 
+add_executable(aux_uart_test
+    src/aux_uart_test.cpp
+)
+
 target_link_libraries(dji_rc PRIVATE
     Threads::Threads
 )
 
-install(TARGETS dji_rc DESTINATION /usr/local/bin)
+install(TARGETS dji_rc aux_uart_test DESTINATION /usr/local/bin)
 install(FILES ${CMAKE_SOURCE_DIR}/../protocol/frame.h DESTINATION /usr/local/include/tun_nat_hub)

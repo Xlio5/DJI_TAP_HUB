@@ -107,7 +107,7 @@ static size_t tx_lua_take(uint8_t *out, size_t max) {
 static int g_debug_fd = -1;
 static int64_t g_last_debug_us = 0;
 
-// ── 输出 (SBUS/CRSF @UART0) ──
+// ── 输出 (SBUS/CRSF @SC16IS752 UART-A) ──
 // C1: g_out_fd 被多线程 (rx_thread/t3/主线程) 无锁访问, 用 atomic 避免 fd 值撕裂
 static std::atomic<int> g_out_fd{-1};
 static std::atomic<char> g_out_mode{'s'}; // 's' = SBUS, 'c' = CRSF
@@ -119,15 +119,14 @@ static int uart_open_out(const char *dev, int baud, bool even2);   /* forward */
 static void aux_tmux_set(int normal_rx_en, int tx_bus_en, int crsf_rx_en, int sbus_tx_en);  /* forward: TMUX1511 (定义在文件中部) */
 static const char *g_out_dev = "/dev/ttySC0";  /* 协议输出口, tx_recover 重开用 */
 
-/* UART0 硬件卡死自动恢复: 写连续失败 N 次 → 重开输出口。
- * 卡死特征: write 返回 -1 (EIO/EAGAIN) 持续, UART0 TX 不再发送。 */
+/* 扩展 UART 硬件卡死自动恢复: 写连续失败 N 次 → 重开输出口。 */
 static void tx_recover(void) {
     bool even2 = (g_out_mode.load() == 's') && g_sbus_std;
     int oldFd = g_out_fd.exchange(-1);   // C1: atomic 取走旧 fd
     if (oldFd >= 0) { ::close(oldFd); }
     int newFd = uart_open_out(g_out_dev, g_out_baud.load(), even2);
     g_out_fd.store(newFd);   // C1: atomic
-    std::printf("[dji_rc] UART0 卡死自动恢复: 旧fd=%d 新fd=%d @%d\n",
+    std::printf("[dji_rc] 扩展 UART 卡死自动恢复: 旧fd=%d 新fd=%d @%d\n",
                 oldFd, newFd, g_out_baud.load());
     std::fflush(stdout);
 }
@@ -142,7 +141,7 @@ static void uart_drain_tx(int fd) {
     }
 }
 
-/* 写 UART0 + 卡死检测: 连续失败 TX_ERR_LIMIT 次 → 自动重开。
+/* 写扩展 UART + 卡死检测: 连续失败 TX_ERR_LIMIT 次 → 自动重开。
  * CRSF 半双工 (TMUX1511): 发送前切 TX_BUS_EN=1, 帧发完 (drain) 切回 CRSF_RX_EN=1。
  * SBUS/全双工: 不切换 (模式已在 aux_tmux_apply 配好)。
  * 调用方须持 g_out_write_mtx。返回写是否成功。 */
@@ -154,7 +153,7 @@ static bool tx_write_uart(int fd, const uint8_t *data, size_t len) {
     ssize_t w = ::write(fd, data, len);
     if (w != (ssize_t)len) {
         err_cnt++;
-        std::printf("[dji_rc] UART0 写 %zu 得 %zd errno=%d(%s) err_cnt=%d\n",
+        std::printf("[dji_rc] 扩展 UART 写 %zu 得 %zd errno=%d(%s) err_cnt=%d\n",
                     len, w, errno, std::strerror(errno), err_cnt);
         std::fflush(stdout);
         if (err_cnt >= TX_ERR_LIMIT) {
@@ -319,8 +318,8 @@ static std::atomic<bool> g_crsf_bridge{false};   // atomic: 主线程写, rx/crs
 // ── TMUX1511 模式控制 (PB2-PB5) ─────────────────────────────
 // PB2=NORMAL_RX_EN, PB3=TX_BUS_EN, PB4=CRSF_RX_EN, PB5=SBUS_TX_EN
 // sun8i-v3s pinctrl @0x01C20800 (mmap 页对齐 0x01C20000 + 页内偏移 0x800, 同 pb6_grounded):
-//   CFG0 (PB0-3) @0x24: PB2=bit8-9,  PB3=bit12-13  (值 01=输出)
-//   CFG1 (PB4-7) @0x28: PB4=bit0-1,  PB5=bit4-5
+//   CFG0 (PB0-3) @0x24: PB2=bit8-11, PB3=bit12-15 (值 1=输出)
+//   CFG1 (PB4-7) @0x28: PB4=bit0-3,  PB5=bit4-7
 //   DATA (PB0-31) @0x34: PB2=bit2, PB3=bit3, PB4=bit4, PB5=bit5
 // TMUX1511 = 4×SPST 独立模拟开关, 各通道可同时导通 (TI 数据手册 SCDS390)。
 // 互斥约束 (原理图规则, 防总线/接收冲突):
@@ -351,12 +350,12 @@ static void aux_tmux_set(int normal_rx_en, int tx_bus_en, int crsf_rx_en, int sb
 
     /* 1. 配 PB2-PB5 为输出 (CFG 值 01) */
     uint32_t c0 = *cfg0;
-    c0 = (c0 & ~(0x3u << 8)) | (0x1u << 8);    /* PB2 */
-    c0 = (c0 & ~(0x3u << 12)) | (0x1u << 12);  /* PB3 */
+    c0 = (c0 & ~(0xFu << 8)) | (0x1u << 8);    /* PB2 */
+    c0 = (c0 & ~(0xFu << 12)) | (0x1u << 12);  /* PB3 */
     *cfg0 = c0;
     uint32_t c1 = *cfg1;
-    c1 = (c1 & ~(0x3u << 0)) | (0x1u << 0);    /* PB4 */
-    c1 = (c1 & ~(0x3u << 4)) | (0x1u << 4);    /* PB5 */
+    c1 = (c1 & ~(0xFu << 0)) | (0x1u << 0);    /* PB4 */
+    c1 = (c1 & ~(0xFu << 4)) | (0x1u << 4);    /* PB5 */
     *cfg1 = c1;
 
     /* 2. 写 DATA bit2-5 (PB2-5 电平) */
@@ -1521,7 +1520,7 @@ int main(int argc, char **argv)
         g_crsf_telem = true;
         if (out_baud == 0) out_baud = 115200;
         g_out_baud = out_baud;
-        std::printf("[dji_rc] crsf-bridge 模式: UART0 CRSF %d baud, 参数帧转发网口\n", out_baud);
+        std::printf("[dji_rc] crsf-bridge 模式: SC16 UART-A CRSF %d baud, 参数帧转发网口\n", out_baud);
     }
 
     if (debug_uart0) debug_uart0_open(debug_dev, debug_baud);
