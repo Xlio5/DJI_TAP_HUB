@@ -205,20 +205,21 @@ crsf 模式既要输出摇杆 CRSF（飞控控制），又要能配置 ELRS Lua�
 - PB6/PB7: `TWI0_SCK/TWI0_SDA`，连接 SC16IS752IPW。
 - UART0 固定作为 debug 串口；旧的 PB6 接地切换 debug/protocol 功能废弃。
 - SC16IS752IPW `IRQ#` 当前版本不接，Linux `sc16is7xx` 驱动使用 polling。
-- I2C 地址按当前原理图 strap 为 `0x48`，晶振 `14.7456MHz`。
+- SC16IS752IPW `RESET#` 当前版本硬件默认上拉释放复位，设备树暂不声明 `reset-gpios`。
+- I2C 地址按 EVT 板实测为 `0x4d`，晶振 `14.7456MHz`。
 
 ### DTB/内核适配
 
 - `sun8i-v3s-licheepi-zero.dts`: 移除 `pb6_debug_pin`，`uart0` 只保留 `uart0_pb_pins`。
-- `sun8i-v3s-licheepi-zero-dock.dts`: 启用 `&i2c0`，增加 `serial@48`:
+- `sun8i-v3s-licheepi-zero-dock.dts`: 启用 `&i2c0`，增加 `serial@4d`:
 
 ```dts
 &i2c0 {
     status = "okay";
 
-    sc16is752_uart: serial@48 {
+    sc16is752_uart: serial@4d {
         compatible = "nxp,sc16is752";
-        reg = <0x48>;
+        reg = <0x4d>;
         clock-frequency = <14745600>;
     };
 };
@@ -233,10 +234,17 @@ crsf 模式既要输出摇杆 CRSF（飞控控制），又要能配置 ELRS Lua�
 
 - 已编译 `allwinner/sun8i-v3s-licheepi-zero-dock.dtb`。
 - 已编译 `arch/arm/boot/zImage`，`sc16is7xx`、`sc16is7xx_i2c`、`i2c-mv64xxx` 均通过编译。
-- 反编译读回确认 `serial@48` 存在，`compatible = "nxp,sc16is752"`，`clock-frequency = <14745600>`。
+- 反编译读回确认 `serial@4d` 存在，`compatible = "nxp,sc16is752"`，`clock-frequency = <14745600>`。
 - 反编译读回确认 PB6/PB7 为 `i2c0-pins`。
 - 已复制到 `backup/sun8i-v3s-licheepi-zero-dock-sc16.dtb`，源 DTB 与备份 SHA256 相同。
 - 已复制到 `backup/zImage_sc16`，源 zImage 与备份 SHA256 相同。
+
+### 2026-08-20 SC16 地址修正
+
+- EVT 板实测 SC16IS752 ACK 地址为 `0x4d`，旧 DTB 写成 `0x48`，导致内核只创建 `i2c 0-0048` 并停在 `deferred probe pending`。
+- 已将 Linux DTS 源节点从 `serial@48/reg=<0x48>` 修正为 `serial@4d/reg=<0x4d>`。
+- 已重编 `backup/sun8i-v3s-licheepi-zero-dock-sc16.dtb`，并更新 `backup/spi_image_sc16.bin` 内 `0x100000` 的 DTB 分区。
+- 已新增 `scripts/verify_sc16_dtb.py`，用于反编译 DTB 并校验 `serial@4d`、`reg=<0x4d>`、`clock-frequency=<14745600>`，同时确认旧 `0x48` 不存在。
 
 ### 下一步
 
