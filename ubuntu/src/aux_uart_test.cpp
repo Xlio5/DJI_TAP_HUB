@@ -183,6 +183,7 @@ int main(int argc, char **argv) {
     unsigned int interval_ms = 1000;
     bool sbus = false;
     bool frame25 = false;
+    bool uart1_only = false;
     bool uart2_only = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--baud") == 0 && i + 1 < argc) {
@@ -197,15 +198,18 @@ int main(int argc, char **argv) {
             frame25 = true;
         } else if (std::strcmp(argv[i], "--uart2-only") == 0) {
             uart2_only = true;
+        } else if (std::strcmp(argv[i], "--uart1-only") == 0) {
+            uart1_only = true;
         } else {
             std::fprintf(stderr,
                          "usage: %s [--baud N] [--count N] [--interval-ms N] "
-                         "[--sbus|--frame25] [--uart2-only]\n",
+                         "[--sbus|--frame25] [--uart1-only|--uart2-only]\n",
                          argv[0]);
             return 2;
         }
     }
-    if (baud <= 0 || count == 0 || interval_ms == 0 || (sbus && frame25)) return 2;
+    if (baud <= 0 || count == 0 || interval_ms == 0 || (sbus && frame25) ||
+        (uart1_only && uart2_only)) return 2;
 
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
@@ -214,8 +218,8 @@ int main(int argc, char **argv) {
     if (!route.open_route(sbus)) return 1;
 
     int uart1 = uart2_only ? -1 : open_uart("/dev/ttySC0", baud, sbus);
-    int uart2 = open_uart("/dev/ttySC1", baud, sbus);
-    if ((!uart2_only && uart1 < 0) || uart2 < 0) {
+    int uart2 = uart1_only ? -1 : open_uart("/dev/ttySC1", baud, sbus);
+    if ((!uart2_only && uart1 < 0) || (!uart1_only && uart2 < 0)) {
         if (uart1 >= 0) ::close(uart1);
         if (uart2 >= 0) ::close(uart2);
         return 1;
@@ -232,7 +236,7 @@ int main(int argc, char **argv) {
     for (unsigned int sequence = 1; sequence <= count && !g_stop; ++sequence) {
         if (sbus || frame25) {
             if (!uart2_only) ok = send_sbus(uart1, "/dev/ttySC0", sbus_frame, sbus) && ok;
-            ok = send_sbus(uart2, "/dev/ttySC1", sbus_frame, sbus) && ok;
+            if (!uart1_only) ok = send_sbus(uart2, "/dev/ttySC1", sbus_frame, sbus) && ok;
             if (sequence <= 3 || sequence % 100 == 0) {
                 std::printf("25-byte frame seq=%u sent on both UARTs\n", sequence);
             }
@@ -240,13 +244,15 @@ int main(int argc, char **argv) {
             if (!uart2_only) {
                 ok = send_message(uart1, "/dev/ttySC0", "AUX-UART1", sequence) && ok;
             }
-            ok = send_message(uart2, "/dev/ttySC1", "AUX-UART2", sequence) && ok;
+            if (!uart1_only) {
+                ok = send_message(uart2, "/dev/ttySC1", "AUX-UART2", sequence) && ok;
+            }
         }
         add_milliseconds(next, interval_ms);
         while (::clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, nullptr) == EINTR && !g_stop) {}
     }
 
     if (uart1 >= 0) ::close(uart1);
-    ::close(uart2);
+    if (uart2 >= 0) ::close(uart2);
     return ok ? 0 : 1;
 }
