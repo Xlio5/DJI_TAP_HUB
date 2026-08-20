@@ -57,7 +57,7 @@ def main() -> int:
         "node serial@4d": node_addr == "4d",
         "compatible nxp,sc16is752": 'compatible = "nxp,sc16is752";' in body,
         "reg 0x4d": re.search(r"reg = <0x4d>;", body) is not None,
-        "clock 14745600": re.search(r"clock-frequency = <0xe10000>;", body) is not None,
+        "clock 1843200": re.search(r"clock-frequency = <0x1c2000>;", body) is not None,
         "old serial@48 absent": "serial@48" not in dts,
         "old reg 0x48 absent": re.search(r"reg = <0x48>;", body) is None,
     }
