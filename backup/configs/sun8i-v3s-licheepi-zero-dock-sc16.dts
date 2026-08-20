@@ -80,7 +80,7 @@
 	sc16is752_uart: serial@4d {
 		compatible = "nxp,sc16is752";
 		reg = <0x4d>;
-		clock-frequency = <14745600>;
+		clock-frequency = <1843200>;
 	};
 };
 

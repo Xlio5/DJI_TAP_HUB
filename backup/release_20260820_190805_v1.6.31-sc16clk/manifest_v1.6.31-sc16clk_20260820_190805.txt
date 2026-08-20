@@ -1,0 +1,14 @@
+version=v1.6.31-sc16clk
+timestamp=20260820_190805
+source_commit=a7120516338781586ee1b278597daa784eb16f60
+branch=feature/crsf-lua-m4
+note=SC16IS752 EVT board I2C address 0x4d, clock-frequency fixed to 1843200 Hz; IRQ unconnected uses polling; RESET# hardware pull-up.
+layout=SPI: SPL@0x000000 U-Boot@0x008000 ENV@0x07E000 DTB@0x100000 zImage@0x110000 rootfs@0x710000
+
+sha256=74942930b1819083fe8080d4e6b71a0a5d95323d7c22ab173addd170b5317a6c size=4415488 file=rootfs_v1.6.31-sc16clk_20260820_190805.squashfs
+sha256=6913049033fdf0ae88d84cf1486a749e786cb130b63a9f248a8ccbdeab67f137 size=16777216 file=spi_image_v1.6.31-sc16clk_20260820_190805.bin
+sha256=75787c4f6a23a4bf07ce0d1740ed57bcf4254e3e911140cb4234c5deffb17cb2 size=13000 file=sun8i-v3s-licheepi-zero-dock_v1.6.31-sc16clk_20260820_190805.dtb
+sha256=9aed00020d893e139bc7b1d202362c539e73533e537fe9e4e0cfbf10b97ac966 size=4155 file=sun8i-v3s-licheepi-zero-dock_v1.6.31-sc16clk_20260820_190805.dts
+sha256=13fc71ed6e47922171f710fb490e529a6e013bf3e60555441fff28ad53695ff6 size=24576 file=sunxi-spl_v1.6.31-sc16clk_20260820_190805.bin
+sha256=36b6a0b6b65de71967695b5114ec9e05706e546d1e27675c17c9022f25de9538 size=404096 file=u-boot_v1.6.31-sc16clk_20260820_190805.bin
+sha256=01091e3f376b675a7f5cea6fcccb9c697d491066354983956c0c5dd86acd1f83 size=5938936 file=zImage_v1.6.31-sc16clk_20260820_190805
