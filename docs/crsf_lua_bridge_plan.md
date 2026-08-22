@@ -183,7 +183,18 @@ crsf 模式既要输出摇杆 CRSF（飞控控制），又要能配置 ELRS Lua�
 - **修复 CRSF 发送 CRC 起点 bug**（[crsf.c](ubuntu/src/crsf.c)）：crsf_pack_frame/crsf_pack_ext_frame CRC 从 addr 起 → **type 起**（EdgeTX/ELRS 标准）。修复前 ELRS/飞控按标准校验会拒收帧
 - **主循环驱动输出**：[dji_rc.cpp](ubuntu/src/dji_rc.cpp) 主循环统一 out_send（P0/P20 任一输入都输出），原 P20 事件驱动导致 P0 输入不输出
 - **App Lua 全链路验证**：App(elrsV3.lua) → CrsfBridge(65532) → V3s bridge → SC16 → PC桥(COM30↔COM9) → ELRS → **Device_Info(0x29 "T-14 900 TX")** → Settings_Entry(0x2B) → App 渲染参数界面（TX Power 等）→ Parameter_Read/Write(0x2C/0x2D) 正常
-- 固件版本 **1.6.31**（代码已提交 `84d9305`，未固化）
+
+#### 6.7.1 真机调试修复链（2026-08-22 晚，固件 1.6.32→1.6.34 + App 1.6.38→1.6.41）
+| 版本 | 修复 | 验证 |
+|---|---|---|
+| 固件 1.6.32 | **Lua 帧限流保底摇杆**：App elrsV3.lua 持续发参数请求时，out_send 每 3 周期取 1 帧 Lua，其余发摇杆（0x16 保底 2/3）| COM30 摇杆+参数帧并存 |
+| 固件 1.6.33 | **TMUX CRSF 基线保持 RX**：实测 SC16 UART A RX 走 **TX_BUS_EN(bit3)** 通路，CRSF 基线 `(0,0,1,0)` 时 RX 断 → ELRS 全双工响应收不到（App 参数 0 行）。改 `(0,1,1,0)` RX 一直通 | crsf_rx_thread 读到 ELRS 响应 |
+| 固件 1.6.34 | **Lua 多帧队列(4帧) + 移除兜底 + out_send 限流统一发送**：App fieldPopup(Bind 后)持续发 lcsQuery(0x2D) 占单帧缓冲覆盖 0x2C；兜底线程 tx_write_uart 写 Lua 帧 SC16 不输出(被 out_send 摇杆覆盖) → 移除兜底，out_send 限流统一发 | COM30 摇杆+0x2D 并存 |
+| App 1.6.38-1.6.40 | **Lua 界面进度条 + 美化 + 刷新进度条**（深色渐变/连接状态点/圆角参数卡片/LinearProgressIndicator + 最小显示 800ms + 刷新时 setLoading）| 真机加载正常 |
+| App 1.6.41 | **popupConfirmation 回传文本**：原只返回 "OK" 不显示 Bind "waiting" 提示 → onPopup 回传 UI 横幅(popupText) | uiautomator 确认 "▶ Binding... [|]" 显示 |
+
+- **adb 验证 Bind**（2026-08-22）：adb 模拟 tap 选中 [Bind] → 确认 → "▶ Binding... [|]" 提示显示；点返回退出绑定 → 参数重载 2→6 行
+- 固件版本 **1.6.34**（提交 `84d9305`/`a606426`/`eaceffb`/`24627f8`，未固化）+ App **1.6.41**（`463ae18`/`54a47c5`/`eaceffb`）
 
 ### 6.6 后续已知问题
 - **DJI RC 上 adb 注入滚动不可靠**（swipe 回弹锁死）——调试环境限制，非产品 bug；可考虑把通道设置卡片入口前置

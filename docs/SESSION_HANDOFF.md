@@ -410,6 +410,20 @@ PB = bank 1 → bank offset 0x24
 
 **✅ 自锁验收通过（2026-08-22）**：P20 路注入（ioctl UART1 LOOP + DUML RC/0xAE）——按 REC 第一次 ch8=2000 保持（松手不回落）→ 第二次 ch8=1000 解除；STOP toggle 正常；P0 真实 STOP=1 触发 ch13 保持 2000 一致。
 
+### v1.6.31-v1.6.34（CRSF-Lua 桥全链路修复, 未固化 /tmp 调试版）— 2026-08-22 晚
+
+| 版本 | 修复 | dji_rc md5 |
+|---|---|---|
+| v1.6.31 | CRSF 发送 CRC 起点修复(addr→type) + 主循环驱动输出 | `c04de388` |
+| v1.6.32 | Lua 帧限流保底摇杆 RC 输出 | `9d7f6ae7` |
+| v1.6.33 | TMUX CRSF 基线保持 RX (SC16 UART A RX 走 TX_BUS_EN 通路) | `145edc91` |
+| v1.6.34 | Lua 多帧队列(4帧) + 移除兜底 + out_send 限流统一发送 | `f283b4d6`（当前 /tmp）|
+
+**App 1.6.38-1.6.41**：Lua 界面进度条 + 美化（1.6.38）· 刷新进度条（1.6.39）· 最小显示 800ms（1.6.40）· popupConfirmation 回传文本显示 Bind 提示（1.6.41）
+
+**✅ CRSF-Lua 桥全链路验证（2026-08-22 晚）**：App(elrsV3.lua)→CrsfBridge→V3s bridge→SC16(115200)→PC桥(COM30↔COM9)→ELRS→Device_Info/Settings_Entry→App 渲染参数界面；摇杆帧(0x16)+Lua帧(0x2D)并存；adb 验证 Bind 提示 "▶ Binding... [|]" 显示 + 退出绑定刷新正常。
+提交：`84d9305`/`a606426`/`eaceffb`/`24627f8`（固件）· `3647475`/`463ae18`/`54a47c5`/`eaceffb`（App）
+
 ### v1.6.28（LAN 身份: 手机 144.200 局域网直连, App 1.6.34）— 已真机验证（被 v1.6.29 取代）
 
 | 文件 | md5 |
