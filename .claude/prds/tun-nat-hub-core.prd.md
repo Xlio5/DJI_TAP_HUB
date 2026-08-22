@@ -17,6 +17,7 @@ DJI RC PLUS 2 无人机遥控器在野外作业时需要通过 USB 线缆访问�
 - **CRSF 双向链路已物理打通**（2026-08-14）：V3s ping → ELRS → Device_Info 响应回传 → V3s UDP 全链路验证成功
 - **CRSF-Lua 界面模拟器验证通过**：elrsV3.lua 参数列表渲染 + 上下选择 + 改值（mock 数据）
 - **待验证**：App 真机（DJI RC）加载 ELRS 真实参数界面（M4，非 mock）—— `Assumption — needs validation via 真机部署验证`
+- **LAN 身份 + QGC 场景打通（2026-08-16）**：电脑 uart2udp（飞控串口 MAVLink）→ `144.11:14550` → V3s DNAT → 10.0.0.2 → 隧道 → QGC 手机版显示飞控数据 ✅；App UDP 工具压测 500 包 100% 接收
 
 ## Users
 
@@ -139,6 +140,41 @@ We'll know we're right when **4Mbps RTSP 视频流持续稳定播放 >30 分钟�
 - **App 配置界面清理**（v1.6.23，commit 7b2ef64）：删 RC 遥控器占位 + 通道映射编辑（遥控页已有），播放引擎/解码器合并组合下拉
 - ⚠️ **已知问题**: App USB 授权弹窗反复弹（DJI RC 不保存 USB 授权, hasPermission 反复 false）→ 待修
 3. 固件未固化（V3s 跑 /tmp 调试版 dji_rc）→ 待固化（M7）
+
+### 🆕 LAN 身份架构 + QGC 场景打通（2026-08-16，做法 B）
+**背景**：局域网设备（电脑/摄像头）访问 DJI RC 需要"像真实局域网"——零配置直达任意端口。
+早期方案（v1.6.28）给手机 TUN 加 `x.x.x.200` LAN 身份地址 + V3s proxy_arp 代答，QGC/视频能通。
+**但发现 proxy_arp 副作用**：V3s 老内核（3.4）把代答的 144.200/144.11 当本地地址走 INPUT 吞包（非 FORWARD），且 Android VpnService 只对主地址投递 protect 隧道包。
+
+**最终方案（做法 B，压测通过）**：
+- **手机主地址 = 10.0.0.2**（Android 只对主地址投递隧道包）
+- **手机副地址 = 192.168.144.11**（LAN 身份，电脑可见入口）
+- **V3s DNAT `144.11 → 10.0.0.2`**（端口不变，绕开 V3s 把 144.11 当 INPUT 的问题）
+- **App 收包用 `openVpnBoundPort`（bindSocketToVpn）** 而非 protect —— protect socket 只收隧道内部源的包（V3s rcmsg），不收电脑经 V3s 转发的包（源 144.88）；bindSocketToVpn 让 socket 留在 VPN 网络内
+- **QGC 手机版监听 `0.0.0.0:14550`（只设端口不设目标 IP）** → 通配 socket 匹配 10.0.0.2 主地址的包 → 显示飞控数据 ✅
+
+**数据流（验证通过）**：
+```
+电脑 uart2udp --target 192.168.144.11:14550
+  → V3s eth0 → DNAT 144.11→10.0.0.2（端口不变）
+  → tun_hub → USB 隧道 → 手机 tun0
+  → QGC 0.0.0.0:14550 通配 socket 收 MAVLink → 显示飞控 ✅
+```
+
+**验证结果**：
+- **QGC 场景打通**：DJI 上 QGC 显示电脑飞控串口的 MAVLink 数据（界面有飞控）
+- **UDP 工具压测 500 包 100% 接收**（App 特殊调试版 openVpnBoundPort 监听，无丢包）
+- **rcmsg 摇杆**：dji_rc 发 10.0.0.2:65530，App 收（dji_rc online）
+- **关键修复**：V3s 残留 DNAT `14550→65532`（crsf-bridge）与 LAN 身份冲突 → 删除 config forwards + iptables 规则
+
+**改动文件**：
+- `TunNatVpnService.kt`：addAddress(10.0.0.2 主) + addAddress(144.11 副) + `openVpnBoundPort`
+- `UdpToolPage.kt`：特殊调试版 UDP 工具（BuildConfig.ENABLE_UDP_TOOL，release 不带）
+- `dji_rc.cpp` / `S99tun_nat_hub`：rcmsg/crsfbr-host → 10.0.0.2
+- `setup_v3s.sh`：V3s 10.0.0.0/24 路由 + DNAT 144.11→10.0.0.2（待固化）
+- 版本：固件 1.6.29（待固化）、App 1.6.35
+
+**详细**：[docs/LAN_IDENTITY_ARCH.md](docs/LAN_IDENTITY_ARCH.md)
 
 ### 🔧 调试方法
 完整调试方式（桥监测/帧对比/V3s 状态/常用命令）见 [docs/SESSION_HANDOFF_CRSF_LUA.md §8](docs/SESSION_HANDOFF_CRSF_LUA.md)
