@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.30"   // 固件版本 — SC16IS752 AUX UART 诊断
+#define VERSION     "1.6.31"   // 固件版本 — CRSF 发送 CRC 修复 + 主循环驱动输出
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;

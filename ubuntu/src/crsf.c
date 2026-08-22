@@ -71,7 +71,9 @@ int crsf_pack_frame(uint8_t addr, uint8_t type,
     out[1] = len;
     out[2] = type;
     if (plen) memcpy(out + 3, payload, plen);
-    out[len + 1] = crsf_crc8(out, len);  /* crc 在索引 len+1 */
+    /* CRC 从 type 起 (EdgeTX/ELRS 标准), 覆盖 type..payload 共 len-1 字节。
+     * 修复: 原从 addr 起, 标准接收方(飞控/ELRS)按 type 起校验会拒帧。 */
+    out[len + 1] = crsf_crc8(out + 2, len - 1);
     return (int)len + 2;                 /* 整帧 = addr + len + len 字节 = 2 + len */
 }
 
@@ -89,7 +91,8 @@ int crsf_pack_ext_frame(uint8_t addr, uint8_t type, uint8_t dest, uint8_t orig,
     out[3] = dest;
     out[4] = orig;
     if (plen) memcpy(out + 5, payload, plen);
-    out[len + 1] = crsf_crc8(out, len);  /* crc 在索引 len+1 */
+    /* CRC 从 type 起 (EdgeTX/ELRS 标准), 覆盖 type..payload 共 len-1 字节。 */
+    out[len + 1] = crsf_crc8(out + 2, len - 1);
     return (int)len + 2;
 }
 

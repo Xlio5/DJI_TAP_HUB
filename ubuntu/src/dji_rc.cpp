@@ -755,7 +755,9 @@ static void rx_thread(DjiPort *p)
             g_mtx.lock();
             handle_pkt(p, &pk);
             g_mtx.unlock();
-            sbus_send_if_p20(p);  // SBUS write outside mutex: no blocking I/O in critical section
+            /* 输出改由主循环统一驱动 (P20/P0 任一输入), 停用 P20 事件驱动:
+             * 否则 P20 有帧时事件驱动 + 主循环双输出导致帧率翻倍。 */
+            // sbus_send_if_p20(p);
             off += pk.pkt_len;
         }
 
@@ -1638,6 +1640,10 @@ int main(int argc, char **argv)
             // 状态文件 (供 web_server /api/rc)
             write_state_file(m, g20, g0, rx20, rx0, now_us());
             send_rcmsg(rcmsg_fd, rcmsg_dst, m, true, ++rcmsg_seq, n);
+            /* 统一输出: 由主循环驱动 (P20/P0 任一有效输入都输出),
+             * 不再依赖 P20 事件驱动 (sbus_send_if_p20 已停用)。
+             * 输出频率 = 主循环周期 (S99 --interval 20 → 50Hz)。 */
+            out_send(m);
         } else if (rx20 > 0 || rx0 > 0) {
             // UART有数据但RC掉线: 写空状态防旧数据残留
             static const char no_rc[] = "{\"error\":\"no RC data\",\"rx1\":%u,\"rx2\":%u}\n";
