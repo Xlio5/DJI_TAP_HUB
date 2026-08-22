@@ -1022,10 +1022,15 @@ static void out_send(const rc_state_t &m)
     /* CRSF 时分复用: 有 Lua 帧待发 → 发 Lua (替代通道帧, EdgeTX 规范);
        否则发通道帧。直接写 UART0 (单一写者 out_send + 主循环 Lua 发送互斥)。 */
     if (outMode == 'c') {
+        /* Lua 帧限流: App 的 elrsV3.lua 持续发参数请求时, 若每次替代通道帧,
+         * 摇杆 RC 帧(0x16)会被挤掉。每 3 个 out_send 周期取一次 Lua, 其余发摇杆。 */
+        static int lua_counter = 0;
         uint8_t lua[64];
-        size_t luaLen = tx_lua_take(lua, sizeof(lua));
+        size_t luaLen = 0;
+        if (lua_counter % 3 == 0) luaLen = tx_lua_take(lua, sizeof(lua));
+        lua_counter++;
         if (luaLen > 0) {
-            /* Lua 帧优先: 替代本次通道帧 */
+            /* Lua 帧优先: 替代本次通道帧 (限流后摇杆帧仍保底 2/3) */
             std::lock_guard<std::mutex> lock(g_out_write_mtx);
             if (g_out_fd.load() != outFd) return;
             if (!tx_write_uart(outFd, lua, luaLen)) out_errors++;
