@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import kotlinx.coroutines.delay
 
 class LuaParamActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -37,6 +38,12 @@ private fun LuaParamPage(host: String) {
     var title by remember { mutableStateOf("ELRS") }
     var loading by remember { mutableStateOf(true) }
     var phase by remember { mutableStateOf("连接 V3s...") }
+
+    // 加载进度条至少显示 800ms, 避免参数加载过快一闪而过
+    LaunchedEffect(Unit) {
+        delay(800)
+        if (!controller.isLoading) loading = false
+    }
 
     // 订阅控制器行变化 (rebuildRows 可能在后台线程, 切主线程更新 Compose)
     DisposableEffect(controller) {
