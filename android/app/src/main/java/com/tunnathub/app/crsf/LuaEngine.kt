@@ -85,6 +85,7 @@ object LuaEngine {
     var onCrsfSend: ((Int, ByteArray) -> Unit)? = null  // crossfireTelemetryPush
     @Volatile
     var onClear: (() -> Unit)? = null             // lcd.clear
+    var onPopup: ((String) -> Unit)? = null       // popupConfirmation 提示 (Bind 等)
 
     private val crsf = CrsfBridge
 
@@ -243,9 +244,14 @@ object LuaEngine {
         })
         g.set("model", model)
 
-        // popupConfirmation(text, button, event) → 返回 "OK" 允许确认
+        // popupConfirmation(text, button, event) → 显示提示文本 + 返回 "OK" 允许确认
         g.set("popupConfirmation", object : VarArgFunction() {
-            override fun invoke(args: Varargs): Varargs = LuaValue.valueOf("OK")
+            override fun invoke(args: Varargs): Varargs {
+                val text = if (args.narg() >= 1) args.arg(1).tojstring() else ""
+                Log.d(TAG, "popupConfirmation: $text")
+                onPopup?.invoke(text)
+                return LuaValue.valueOf("OK")
+            }
         })
 
         // lcd 表

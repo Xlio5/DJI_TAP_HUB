@@ -38,6 +38,7 @@ fun LuaParamScreen(
     rows: List<ParamRow>,
     isLoading: Boolean = false,
     loadingPhase: String = "",
+    popupText: String = "",
     onUp: () -> Unit,
     onDown: () -> Unit,
     onEnter: () -> Unit,
@@ -73,6 +74,17 @@ fun LuaParamScreen(
                     TextButton(onClick = onReload) {
                         Text("刷新", color = Color(0xFF7DD3FC))
                     }
+                }
+
+                // ── Bind/命令弹出提示 (popupConfirmation) ──
+                if (popupText.isNotEmpty()) {
+                    Text(
+                        "▶ $popupText",
+                        color = Color(0xFFF59E0B),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                    )
                 }
 
                 // ── 加载进度条 (连接 V3s / 加载脚本 / 等待 ELRS) ──

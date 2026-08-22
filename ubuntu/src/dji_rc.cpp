@@ -149,7 +149,9 @@ static bool tx_write_uart(int fd, const uint8_t *data, size_t len) {
     static int err_cnt = 0;
     const int TX_ERR_LIMIT = 50;   /* 连续 50 次写失败(约数百 ms)判 UART0 卡死 */
     bool crsf = (g_out_mode.load() == 'c');
-    if (crsf) aux_tmux_set(0, 1, 0, 0);   /* CRSF TX: TX_BUS_EN=1, 其他 0 */
+    /* CRSF TX: TX_BUS_EN=1 + 保持 CRSF_RX_EN=1, 防止发帧切断 SC16 UART A RX
+     * (ELRS 全双工, 摇杆帧输出时也要接收 ELRS 响应) */
+    if (crsf) aux_tmux_set(0, 1, 1, 0);
     ssize_t w = ::write(fd, data, len);
     if (w != (ssize_t)len) {
         err_cnt++;
@@ -165,8 +167,9 @@ static bool tx_write_uart(int fd, const uint8_t *data, size_t len) {
     }
     err_cnt = 0;
     if (crsf) {
-        uart_drain_tx(fd);                    /* 等帧物理发完再切回 RX, 防截断 */
-        aux_tmux_set(0, 0, 1, 0);             /* CRSF RX: CRSF_RX_EN=1, 其他 0 */
+        uart_drain_tx(fd);                    /* 等帧物理发完 */
+        /* 切回 RX 保持态 (TX_BUS_EN + CRSF_RX_EN), SC16 UART A RX 一直通 */
+        aux_tmux_set(0, 1, 1, 0);
     }
     return true;
 }
@@ -384,7 +387,10 @@ static void aux_tmux_apply()
     if (g_out_mode.load() == 's') {
         aux_tmux_set(0, 0, 0, 1);   /* SBUS: SBUS_TX_EN=1 */
     } else {
-        aux_tmux_set(0, 0, 1, 0);   /* CRSF: 接收态基线 */
+        /* CRSF: 基线保持 TX_BUS_EN + CRSF_RX_EN (0,1,1,0).
+         * 实测 SC16 UART A RX 走 TX_BUS_EN 通路, 仅 CRSF_RX_EN(0,0,1,0) 时 RX 断,
+         * ELRS 全双工响应收不到. 保持 TX_BUS_EN 使 RX 一直通。 */
+        aux_tmux_set(0, 1, 1, 0);
     }
 }
 

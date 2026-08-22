@@ -28,6 +28,8 @@ class LuaParamController(private val context: Context) {
     var onLoadingChanged: ((Boolean) -> Unit)? = null
     /** 加载阶段文本 (连接中/加载脚本/等待 ELRS 响应) */
     var onPhaseChanged: ((String) -> Unit)? = null
+    /** Bind/命令弹出提示 (popupConfirmation) */
+    var onPopupChanged: ((String) -> Unit)? = null
     var isLoading: Boolean = false
         private set
     private var phase: String = ""
@@ -66,6 +68,11 @@ class LuaParamController(private val context: Context) {
         // Lua crossfireTelemetryPush → 发 CRSF 帧 (mock 模式不建网络, 忽略)
         LuaEngine.onCrsfSend = { type, frame ->
             if (frame.isNotEmpty() && !LuaEngine.useMock) CrsfBridge.sendFrame(frame)
+        }
+        // Lua popupConfirmation → Bind/命令弹出提示
+        LuaEngine.onPopup = { text ->
+            Log.d(TAG, "popup: $text")
+            onPopupChanged?.invoke(text)
         }
         // V3s 转发 CRSF 帧 → Lua 消息队列
         CrsfBridge.onFrame = { frame ->

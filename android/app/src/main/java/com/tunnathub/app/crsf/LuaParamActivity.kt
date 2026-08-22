@@ -38,6 +38,7 @@ private fun LuaParamPage(host: String) {
     var title by remember { mutableStateOf("ELRS") }
     var loading by remember { mutableStateOf(true) }
     var phase by remember { mutableStateOf("连接 V3s...") }
+    var popupText by remember { mutableStateOf("") }
 
     // 加载进度条至少显示 800ms, 避免参数加载过快一闪而过
     LaunchedEffect(Unit) {
@@ -67,12 +68,17 @@ private fun LuaParamPage(host: String) {
             if (activity != null) activity.runOnUiThread { phase = text }
             else phase = text
         }
+        controller.onPopupChanged = { text ->
+            if (activity != null) activity.runOnUiThread { popupText = text }
+            else popupText = text
+        }
         controller.start(host)
         onDispose {
             controller.onRowsChanged = null
             controller.onTitleChanged = null
             controller.onLoadingChanged = null
             controller.onPhaseChanged = null
+            controller.onPopupChanged = null
             controller.stop()
         }
     }
@@ -82,6 +88,7 @@ private fun LuaParamPage(host: String) {
         title = title,
         isLoading = loading,
         loadingPhase = phase,
+        popupText = popupText,
         onUp = { controller.up() },
         onDown = { controller.down() },
         onEnter = { controller.enter() },
