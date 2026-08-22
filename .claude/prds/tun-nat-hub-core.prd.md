@@ -114,6 +114,17 @@ We'll know we're right when **4Mbps RTSP 视频流持续稳定播放 >30 分钟�
 1. ~~Device_Info(36B) 偶发不到 App~~ → ✅ 根因: crsf_rx_thread 未启动 + 摇杆帧干扰, 已修复
 2. ~~参数渲染偶发 0 行~~ → ✅ 依赖 #1, 已随修复解决
 
+### ✅ SC16 115200 直连 ELRS 全链路（2026-08-22，固件 1.6.31→1.6.34 + App 1.6.38→1.6.41）
+- **架构升级**：V3s UART0 固定 debug，协议输出改 **SC16IS752 UART A (ttySC0) @115200**（1.8432MHz 晶振/16 = 115200 精确基准），PC 桥(COM30↔COM9)全双工转发 SC16↔ELRS
+- **修复链**（真机逐项验证）：
+  1. CRSF 发送 CRC 起点 addr→type + 主循环驱动输出（固件 1.6.31）
+  2. Lua 帧限流保底摇杆 RC 帧（0x16 保底 2/3，固件 1.6.32）
+  3. **TMUX CRSF 基线保持 RX**：SC16 UART A RX 走 TX_BUS_EN 通路，基线(0,0,1,0)时 RX 断 → 改(0,1,1,0)（固件 1.6.33）
+  4. **Lua 多帧队列(4帧) + 移除兜底 + out_send 限流统一发送**（固件 1.6.34）
+- **App**：Lua 界面进度条 + 美化 + 刷新进度条 + popupConfirmation 回传文本显示 Bind 提示（1.6.38-1.6.41）
+- **验证**：参数界面 6 行（T-14 900 TX）· 参数读写(0x2C/0x2D) · Bind "▶ Binding... [|]" 提示显示 · 退出绑定刷新 2→6 行 · 摇杆(0x16)+Lua(0x2D)并存
+- **版本**：固件 1.6.34（未固化 /tmp）、App 1.6.41（已部署）
+
 ### 🆕 RC 通道配置入口（2026-08-15）
 - **固件 src_cfg 移植**（v1.6.14）：RC 通道源配置系统（每输入源 min/max/mid/rev + 开关触发值）
   - rc_map.h/c: rc_src_cfg_t (85 参数) + rc_cfg_names + defaults/sanitize/set_cfg
