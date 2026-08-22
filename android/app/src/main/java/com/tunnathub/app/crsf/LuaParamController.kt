@@ -24,6 +24,13 @@ class LuaParamController(private val context: Context) {
     var onRowsChanged: (() -> Unit)? = null
     /** 当前设备名 (标题栏) */
     var onTitleChanged: ((String) -> Unit)? = null
+    /** 加载状态: true=正在连接/加载 Lua/等参数 */
+    var onLoadingChanged: ((Boolean) -> Unit)? = null
+    /** 加载阶段文本 (连接中/加载脚本/等待 ELRS 响应) */
+    var onPhaseChanged: ((String) -> Unit)? = null
+    var isLoading: Boolean = false
+        private set
+    private var phase: String = ""
 
     private val lineMap = sortedMapOf<Int, MutableList<Pair<Int, String>>>()  // y → (x,text)
     private var hasRowData = false   // Lua 是否已画出参数行 (区分"加载中"与"无参数")
@@ -89,20 +96,36 @@ class LuaParamController(private val context: Context) {
             )
         }.toMutableList()
         Log.d(TAG, "rebuildRows ${rows.size} 行 title='$title'")
+        // 参数行出现 = 加载完成 (隐藏进度条)
+        if (hasRowData && rows.isNotEmpty()) setLoading(false, "")
         onRowsChanged?.invoke()
         onTitleChanged?.invoke(title)
     }
 
+    /** 更新加载状态 + 阶段文本 (回调 UI) */
+    private fun setLoading(loading: Boolean, phaseText: String) {
+        if (loading == isLoading && phaseText == phase) return
+        isLoading = loading
+        phase = phaseText
+        onLoadingChanged?.invoke(loading)
+        onPhaseChanged?.invoke(phaseText)
+    }
+
     fun start(host: String) {
+        setLoading(true, "初始化 Lua 引擎...")
         if (!LuaEngine.isReady()) LuaEngine.init(context)
         if (!LuaEngine.useMock) {
             // 真机模式: 建网络连接 + 设备发现
+            setLoading(true, "连接 V3s ($host)...")
             CrsfBridge.start(host)
+            setLoading(true, "加载 elrsV3.lua 脚本...")
             loadElrsLua()
+            setLoading(true, "等待 ELRS 设备响应...")
             CrsfBridge.sendFrame(buildDevicePing())
         } else {
             // mock 模式: 不建网络, elrs.lua setMock() 直接加载假数据
             Log.i(TAG, "mock 模式: 加载假数据 (不连 V3s)")
+            setLoading(true, "加载 elrsV3.lua (mock)...")
             loadElrsLua()
         }
         // 驱动首帧渲染

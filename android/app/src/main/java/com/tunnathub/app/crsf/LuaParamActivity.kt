@@ -35,6 +35,8 @@ private fun LuaParamPage(host: String) {
     val controller = remember { LuaParamController(ctx) }
     var rows by remember { mutableStateOf<List<ParamRow>>(emptyList()) }
     var title by remember { mutableStateOf("ELRS") }
+    var loading by remember { mutableStateOf(true) }
+    var phase by remember { mutableStateOf("连接 V3s...") }
 
     // 订阅控制器行变化 (rebuildRows 可能在后台线程, 切主线程更新 Compose)
     DisposableEffect(controller) {
@@ -50,10 +52,20 @@ private fun LuaParamPage(host: String) {
             if (activity != null) activity.runOnUiThread { title = it }
             else title = it
         }
+        controller.onLoadingChanged = { isLoading ->
+            if (activity != null) activity.runOnUiThread { loading = isLoading }
+            else loading = isLoading
+        }
+        controller.onPhaseChanged = { text ->
+            if (activity != null) activity.runOnUiThread { phase = text }
+            else phase = text
+        }
         controller.start(host)
         onDispose {
             controller.onRowsChanged = null
             controller.onTitleChanged = null
+            controller.onLoadingChanged = null
+            controller.onPhaseChanged = null
             controller.stop()
         }
     }
@@ -61,6 +73,8 @@ private fun LuaParamPage(host: String) {
     LuaParamScreen(
         rows = rows,
         title = title,
+        isLoading = loading,
+        loadingPhase = phase,
         onUp = { controller.up() },
         onDown = { controller.down() },
         onEnter = { controller.enter() },
