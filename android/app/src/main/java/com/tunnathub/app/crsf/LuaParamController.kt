@@ -167,6 +167,7 @@ class LuaParamController(private val context: Context) {
     fun reload() {
         lineMap.clear()
         hasRowData = false
+        setLoading(true, "刷新参数...")
         CrsfBridge.sendFrame(buildDevicePing())
         LuaEngine.runFrame(0)
     }
