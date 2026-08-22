@@ -178,6 +178,13 @@ crsf 模式既要输出摇杆 CRSF（飞控控制），又要能配置 ELRS Lua�
 - 固件 v1.6.25（ringbuf 版）在 V3s，dji_rc 输出 460800 8N1
 - App v1.6.33
 
+### 6.7 Lua 桥全链路打通（2026-08-22，SC16 115200）
+- **SC16 115200 CRSF 输出**：SPI config mode=crsf baud=115200（SC16 uartclk 1.8432MHz，115200 = 晶振/16 精确基准）
+- **修复 CRSF 发送 CRC 起点 bug**（[crsf.c](ubuntu/src/crsf.c)）：crsf_pack_frame/crsf_pack_ext_frame CRC 从 addr 起 → **type 起**（EdgeTX/ELRS 标准）。修复前 ELRS/飞控按标准校验会拒收帧
+- **主循环驱动输出**：[dji_rc.cpp](ubuntu/src/dji_rc.cpp) 主循环统一 out_send（P0/P20 任一输入都输出），原 P20 事件驱动导致 P0 输入不输出
+- **App Lua 全链路验证**：App(elrsV3.lua) → CrsfBridge(65532) → V3s bridge → SC16 → PC桥(COM30↔COM9) → ELRS → **Device_Info(0x29 "T-14 900 TX")** → Settings_Entry(0x2B) → App 渲染参数界面（TX Power 等）→ Parameter_Read/Write(0x2C/0x2D) 正常
+- 固件版本 **1.6.31**（代码已提交 `84d9305`，未固化）
+
 ### 6.6 后续已知问题
 - **DJI RC 上 adb 注入滚动不可靠**（swipe 回弹锁死）——调试环境限制，非产品 bug；可考虑把通道设置卡片入口前置
 
