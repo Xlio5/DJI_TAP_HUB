@@ -126,6 +126,10 @@ V3s 输出 SBUS/CRSF 控制飞控。已有通道映射（rc_map）+ 输入源配
 - ⚠️ **自锁推进点回归**（2026-08-22 现场诊断，COM5 + adb 192.168.5.249）：当前板上 `good1=0`、`good2` 持续增长，说明有效 RC 帧来自第二路；`rec=1/stop=1` 能解码，CH8/CH13 会瞬时到 2000，但松手回 1000。根因不是配置或按键解码，而是非 bridge/SBUS 模式下 latch 仍依赖 P20 `out_send()` 推进，第一路无帧时永不 toggle。
   - **修复要求**：自锁 latch 由 `rc_merge` 后的统一 RC 状态推进一次；`write_state_file`、`send_rcmsg`、`out_send` 只应用当前 latch，不再各自推进，避免重复 toggle。
   - **验收**：默认映射下 `lock=...CH8/REC...CH13/STOP...` 时，按 REC 或 STOP 第一次应保持对应通道 2000，第二次按下解除回 1000；有效输入来自 P20 或 P0 都必须一致。
+- ✅ **自锁验收通过（2026-08-22 晚）**：固件 **1.6.30 OTA 固化**（`backup/rootfs_v1630.squashfs`，dji_rc md5 `df32e70e`）。P20 路注入验收（ioctl UART1 MCR LOOP + DUML RC/0xAE 帧，`/tmp/inject_tty`）：
+  - 按 REC 第一次 → ch8=**2000**（松手**保持不回落**，修复生效）→ 第二次按下 → ch8=**1000**（解除）
+  - STOP toggle 2000↔1000 正常
+  - P0 真实输入曾发 STOP=1（103 次）触发 ch13 保持 2000，P0 路自锁一致（老大确认 P20 验收已充分）
 
 ### 6.5 摇杆 CRSF 输出 + Lua 桥同时工作 — 调试记录（2026-08-16 进行中）
 

@@ -397,6 +397,19 @@ PB = bank 1 → bank offset 0x24
 
 **⚠️ 固化验证**：V3s 重启后 F1.6.29，路由 144.11/32 + proxy_arp 自动生效，dji_rc 自动用 144.11，电脑 ping 144.11 通，App rcmsg 正常。
 
+### v1.6.30（SC16 AUX UART + RC 自锁修复统一推进, App 1.6.37）— ✅ 已 OTA 固化 (2026-08-22)
+
+| 文件 | md5 |
+|---|---|
+| dji_rc（自锁 latch 统一 rc_merge 后推进, rcmsg-host 10.0.0.2）| `df32e70e` |
+| web_server（版本号 1.6.30, SC16 AUX UART 诊断）| `05dc617c` |
+| usb_tund（tun_hub 不配内部 IP）| `97562926` |
+| setup_v3s.sh（做法B: DNAT 144.11→10.0.0.2）| `5c7de27c` |
+| S99tun_nat_hub（dji_rc 启动参数 rcmsg-host 10.0.0.2）| 已含在 rootfs |
+| **rootfs_v1630.squashfs** | **`64527e64`**（3.80MB, 已 OTA 刷入 mtdblock4）|
+
+**✅ 自锁验收通过（2026-08-22）**：P20 路注入（ioctl UART1 LOOP + DUML RC/0xAE）——按 REC 第一次 ch8=2000 保持（松手不回落）→ 第二次 ch8=1000 解除；STOP toggle 正常；P0 真实 STOP=1 触发 ch13 保持 2000 一致。
+
 ### v1.6.28（LAN 身份: 手机 144.200 局域网直连, App 1.6.34）— 已真机验证（被 v1.6.29 取代）
 
 | 文件 | md5 |
