@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.33"   // 固件版本 — TMUX CRSF 基线保持 RX (SC16 UART A 全双工)
+#define VERSION     "1.6.34"   // 固件版本 — Lua 多帧队列 + out_send 限流统一发送
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;

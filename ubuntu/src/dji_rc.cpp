@@ -76,31 +76,30 @@ static int64_t now_us();   /* forward */
  * CRSF Lua 帧与通道帧是时分复用: Lua 帧替代通道帧发送, 不叠加。
  * bridge 收到 Lua 命令 → 存此单帧缓冲 (2s 超时丢弃, 像 EdgeTX);
  * 每拍发送时: 有 Lua 帧则发 Lua, 否则发通道帧。 */
-static uint8_t   g_lua_tx_buf[64];
-static size_t    g_lua_tx_len = 0;    // 0 = 无待发 Lua 帧
-static int64_t   g_lua_tx_us = 0;     // 入队时间 (2s 超时)
+/* Lua 帧多帧队列 (最多 4 帧): App 的 fieldPopup 可能持续发 lcsQuery(0x2D),
+ * 原单帧缓冲会被覆盖导致参数请求(0x2C)丢失。队列保证各帧依次发出。 */
+static uint8_t   g_lua_q[4][64];
+static uint8_t   g_lua_qlen[4];
+static int       g_lua_qh = 0;   /* 队头 (待发) */
+static int       g_lua_qt = 0;   /* 队尾 (入队) */
 static std::mutex g_tx_mtx;
 
 static void tx_lua_enqueue(const uint8_t *data, size_t len) {
-    if (len == 0 || len > sizeof(g_lua_tx_buf)) return;
+    if (len == 0 || len > 64) return;
     std::lock_guard<std::mutex> lock(g_tx_mtx);
-    if (len > sizeof(g_lua_tx_buf)) return;
-    memcpy(g_lua_tx_buf, data, len);
-    g_lua_tx_len = len;
-    g_lua_tx_us = now_us();
+    memcpy(g_lua_q[g_lua_qt], data, len);
+    g_lua_qlen[g_lua_qt] = (uint8_t)len;
+    g_lua_qt = (g_lua_qt + 1) % 4;
+    if (g_lua_qt == g_lua_qh) g_lua_qh = (g_lua_qh + 1) % 4;  /* 满则覆盖最旧 */
 }
 
-/* 取待发 Lua 帧 (有则返回长度并清空, 超时丢弃)。 */
+/* 取待发 Lua 帧 (队列先进先出)。 */
 static size_t tx_lua_take(uint8_t *out, size_t max) {
     std::lock_guard<std::mutex> lock(g_tx_mtx);
-    if (g_lua_tx_len == 0) return 0;
-    if (now_us() - g_lua_tx_us > 2000000LL) {   /* 2s 超时丢弃 (EdgeTX 同款) */
-        g_lua_tx_len = 0;
-        return 0;
-    }
-    size_t n = g_lua_tx_len < max ? g_lua_tx_len : max;
-    memcpy(out, g_lua_tx_buf, n);
-    g_lua_tx_len = 0;
+    if (g_lua_qh == g_lua_qt) return 0;
+    size_t n = g_lua_qlen[g_lua_qh] < max ? g_lua_qlen[g_lua_qh] : max;
+    memcpy(out, g_lua_q[g_lua_qh], n);
+    g_lua_qh = (g_lua_qh + 1) % 4;
     return n;
 }
 
@@ -1028,15 +1027,15 @@ static void out_send(const rc_state_t &m)
     /* CRSF 时分复用: 有 Lua 帧待发 → 发 Lua (替代通道帧, EdgeTX 规范);
        否则发通道帧。直接写 UART0 (单一写者 out_send + 主循环 Lua 发送互斥)。 */
     if (outMode == 'c') {
-        /* Lua 帧限流: App 的 elrsV3.lua 持续发参数请求时, 若每次替代通道帧,
-         * 摇杆 RC 帧(0x16)会被挤掉。每 3 个 out_send 周期取一次 Lua, 其余发摇杆。 */
+        /* Lua 帧限流: 每 3 个 out_send 周期取一次 Lua (多帧队列), 其余发摇杆,
+         * 保证摇杆 RC 帧(0x16)保底 2/3 输出。 */
         static int lua_counter = 0;
         uint8_t lua[64];
         size_t luaLen = 0;
         if (lua_counter % 3 == 0) luaLen = tx_lua_take(lua, sizeof(lua));
         lua_counter++;
         if (luaLen > 0) {
-            /* Lua 帧优先: 替代本次通道帧 (限流后摇杆帧仍保底 2/3) */
+            /* Lua 帧优先: 替代本次通道帧 (限流后摇杆帧仍保底) */
             std::lock_guard<std::mutex> lock(g_out_write_mtx);
             if (g_out_fd.load() != outFd) return;
             if (!tx_write_uart(outFd, lua, luaLen)) out_errors++;
@@ -1612,22 +1611,12 @@ int main(int argc, char **argv)
         struct timespec ts = {0, interval_ms * 1000000L};
         nanosleep(&ts, nullptr);
 
-        /* 兜底发送 Lua 帧: out_send 是事件驱动 (P20 解帧才触发), 若 P20 无数据
-           Lua 帧不会发出。主循环每 15ms 检查一次 Lua 缓冲, 有则发出 (替代通道帧)。 */
-        static int64_t last_lua = 0;
-        int64_t now_lua = now_us();
-        if (now_lua - last_lua >= 15000LL) {
-            last_lua = now_lua;
-            uint8_t lua[64];
-            size_t luaLen = tx_lua_take(lua, sizeof(lua));
-            if (luaLen > 0) {
-                int ofd = g_out_fd.load();
-                if (ofd >= 0) {
-                    std::lock_guard<std::mutex> lock(g_out_write_mtx);
-                    if (g_out_fd.load() == ofd) tx_write_uart(ofd, lua, luaLen);
-                }
-            }
-        }
+        /* Lua 帧由 out_send 限流统一发送 (每 3 周期取 1 帧), 移除兜底:
+         * 实测兜底线程的 tx_write_uart 写 Lua 帧 SC16 不输出 (被 out_send 摇杆覆盖),
+         * 而 out_send 发 Lua 正常。无 RC 输入时 Lua 参数请求低频, 可接受延迟。 */
+        // static int64_t last_lua = 0;
+        // int64_t now_lua = now_us();
+        // if (now_lua - last_lua >= 15000LL) { ... }
 
         rc_state_t s20, s0;
         uint32_t g20, g0, rx20, rx0;
