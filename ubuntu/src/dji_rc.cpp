@@ -685,9 +685,8 @@ static void send_rcmsg(int fd, const sockaddr_in &dst, const rc_state_t &st,
     rc_state_t neutral{};
     neutral.mode = '?';
     const rc_state_t &src = valid ? st : neutral;
-    /* bridge 模式: UART0 不输出摇杆 (out_send 跳过), 自锁 latch 需在此推进。
-     * 非 bridge: out_send 每帧已推进, 这里只应用 (false) 避免重复 toggle。 */
-    build_output_channels(src, msg.ch, g_crsf_bridge);
+    /* latch 由主循环的统一 RC 状态推进；rcmsg 只应用当前 latch，避免重复 toggle。 */
+    build_output_channels(src, msg.ch, false);
     for (int i = 0; i < 6; i++) msg.raw_ch[i] = src.ch[i];
     msg.buttons = valid ? button_bits(st) : 0;
 
@@ -848,8 +847,8 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
                              uint32_t rx1, uint32_t rx2, int64_t ts_us)
 {
     uint16_t ch[CH_COUNT];
-    /* bridge 模式: 主循环推进自锁 latch (out_send 跳过); 非 bridge 只应用 (out_send 已推进) */
-    build_output_channels(st, ch, g_crsf_bridge);
+    /* latch 由主循环的统一 RC 状态推进；状态文件只应用当前 latch。 */
+    build_output_channels(st, ch, false);
 
     char buf[2048];
     int w = snprintf(buf, sizeof(buf),
@@ -997,6 +996,12 @@ static void build_output_channels(const rc_state_t &st, uint16_t ch[CH_COUNT], b
     apply_channel_locks(st, ch, mapSnap, lockSnap, advance_latch);
 }
 
+static void advance_output_latches(const rc_state_t &st)
+{
+    uint16_t ch[CH_COUNT];
+    build_output_channels(st, ch, true);
+}
+
 static void out_send(const rc_state_t &m)
 {
     static uint32_t out_attempts = 0;
@@ -1009,7 +1014,8 @@ static void out_send(const rc_state_t &m)
     // C-1: 持锁拷贝 g_ch_map, 避免与主线程热重配 (load_rc_output_cfg) 的数据竞争。
     // g_ch_map_valid 只作为"映射是否有效"标志, 拷贝必须在 g_mtx 内完成,
     // 否则 reader 可能在 writer 写入过程中读到 torn map (g_ch_map_valid 永不复位的场景)。
-    build_output_channels(m, ch, true);
+    /* latch 由主循环统一推进；串口输出只应用当前 latch。 */
+    build_output_channels(m, ch, false);
 
     /* CRSF 时分复用: 有 Lua 帧待发 → 发 Lua (替代通道帧, EdgeTX 规范);
        否则发通道帧。直接写 UART0 (单一写者 out_send + 主循环 Lua 发送互斥)。 */
@@ -1627,6 +1633,8 @@ int main(int argc, char **argv)
         rc_merge(&s20, age20, &s0, age0, 500000LL, &m);  // 500ms stale
 
         if (m.type != RC_NONE) {
+            /* 以合并后的统一 RC 状态推进自锁，避免绑定到某一路串口。 */
+            advance_output_latches(m);
             // 状态文件 (供 web_server /api/rc)
             write_state_file(m, g20, g0, rx20, rx0, now_us());
             send_rcmsg(rcmsg_fd, rcmsg_dst, m, true, ++rcmsg_seq, n);
