@@ -11,15 +11,12 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_uart0_getty_is_started_by_init_script():
+def test_uart0_getty_is_owned_by_inittab():
+    # UART0 debug getty 由 Buildroot inittab 的 ttyS0::respawn 托管 (GENERIC_SERIAL),
+    # S99 不得重复拉 getty。此测试防双 getty 回归 (双 getty 抢 ttyS0 会打死 debug 登录)。
     text = read(S99)
-    assert "getty -L 115200 ttyS0" in text
-
-
-def test_uart0_getty_is_respawned_by_init_script():
-    text = read(S99)
-    assert "_respawn_uart0_getty" in text
-    assert "while true" in text
+    assert "_respawn_uart0_getty" not in text
+    assert "/sbin/getty" not in text
 
 
 def test_dji_rc_never_kills_uart0_debug_console():
@@ -80,8 +77,7 @@ def test_web_exposes_debug_status_for_uart0_getty():
 
 if __name__ == "__main__":
     tests = [
-        test_uart0_getty_is_started_by_init_script,
-        test_uart0_getty_is_respawned_by_init_script,
+        test_uart0_getty_is_owned_by_inittab,
         test_dji_rc_never_kills_uart0_debug_console,
         test_web_default_output_device_is_sc16_not_uart0,
         test_dji_rc_log_is_bounded_in_init_script,

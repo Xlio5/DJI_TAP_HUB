@@ -1,8 +1,19 @@
 # TUN_NAT_HUB 项目交接文档
 
-> 更新日期: 2026-08-16
+> 更新日期: 2026-08-24
 > 用途: 复制到新会话继续工作
 > 基于完整会话整理, 冲突处以最后一次确认为准
+
+---
+
+## 🔥 最新状态（2026-08-24）
+
+- **固件 F1.6.39**（`backup/rootfs_v1639.squashfs` = `backup/rootfs.squashfs`，md5 `28379694`）：修复 **UART0 debug 双 getty 冲突**
+  - **根因**：rootfs inittab 的 `ttyS0::respawn:/sbin/getty`（Buildroot GENERIC_SERIAL 自带）+ S99 新增的 `_respawn_uart0_getty` 两个 getty 抢 ttyS0。busybox init 先跑 sysinit(rcS→S99) 后跑 respawn，S99 的防重检查（ps grep getty）在 inittab getty 起来前必然落空 → 双 getty 互相覆盖 termios，登录提示重复、写 NUL、之后串口无响应
+  - **修复**：删除 [S99tun_nat_hub](ubuntu/scripts/S99tun_nat_hub) 里的 `_respawn_uart0_getty` 函数与调用，UART0 debug getty 由 inittab 独占托管
+  - **验证**：`scripts/test_v3s_debug_baseline.py` 通过；rootfs 读回验证（S99 无 getty 残留、web_server 1.6.39、dji_rc 仍走 ttySC0、uid root）
+- **UART0 角色**（SC16 架构下固定）：UART0 = PB8/PB9 = debug console（内核 console=ttyS0,115200 + inittab getty）；协议输出 = SC16IS752 `/dev/ttySC0`；dji_rc 完全不碰 ttyS0
+- **遗留坑**：`tmp/deploy_run.py` / `tmp/deploy_final.py` 仍用 `--out-dev /dev/ttyS0`（旧架构），SC16 远端测试禁用；`build_spi_v145.py` 有 PB6 检测 `console=null` 逻辑，勿用于新固件
 
 ---
 

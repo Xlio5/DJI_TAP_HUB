@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.38"   // 固件版本 — 增加真实 TX 速率和 UART0 debug 状态接口
+#define VERSION     "1.6.39"   // 固件版本 — 移除 S99 双 getty, UART0 debug 由 inittab 托管
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;

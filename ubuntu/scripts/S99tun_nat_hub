@@ -5,22 +5,6 @@ set -e
 
 _ts() { echo "[$(date +%H:%M:%S)] $*"; }
 
-_respawn_uart0_getty() {
-    if [ -c /dev/ttyS0 ]; then
-        if ps w 2>/dev/null | grep '[g]etty.*ttyS0' >/dev/null; then
-            _ts "uart0 getty: already running"
-            return
-        fi
-        (
-            while true; do
-                /sbin/getty -L 115200 ttyS0 vt100
-                sleep 1
-            done
-        ) &
-        _ts "uart0 getty: respawn @115200"
-    fi
-}
-
 _run_bounded_log() {
     LOG="$1"; shift
     MAX="${LOG_MAX_BYTES:-65536}"
@@ -43,7 +27,8 @@ case "$1" in
 
     mkdir -p /tmp /var/log
     mount -t tmpfs -o size=8m tmpfs /var/log 2>/dev/null || true
-    _respawn_uart0_getty
+    # UART0 debug getty 由 inittab 的 ttyS0::respawn 托管 (Buildroot GENERIC_SERIAL),
+    # 不再在 S99 里重复拉 getty, 避免双 getty 抢 ttyS0 导致登录失效。
 
     # 0.5 A/B OTA auto-fallback check (SPL also has NOR-based fallback for kernel panic)
     # SPI ctl block @ 0xFC000 (6 bytes):
