@@ -40,6 +40,9 @@ class LuaParamController(private val context: Context) {
     private val uiHandler = Handler(Looper.getMainLooper())
     private var luaTick: Runnable? = null
     private var running = false
+    // 收帧线程(rxThread)收到 CRSF 帧后, 是否已在主线程排队一个 runFrame。
+    // 防止高频帧逐个 post 导致主线程积压重复 runFrame (并发 Lua 执行会卡死 UI)
+    private val luaRunPending = java.util.concurrent.atomic.AtomicBoolean(false)
 
     init {
         // Lua lcd.drawText → 行 (选中行用 INVERS 属性标记)
@@ -74,10 +77,17 @@ class LuaParamController(private val context: Context) {
             Log.d(TAG, "popup: $text")
             onPopupChanged?.invoke(text)
         }
-        // V3s 转发 CRSF 帧 → Lua 消息队列
+        // V3s 转发 CRSF 帧 → Lua 消息队列。
+        // 注意: onFrame 在 CrsfBridge 的 rxThread 回调, 不能直接执行 Lua (LuaJ 非线程安全,
+        // 与主线程 tick 并发 runFrame 会卡死主线程/UI)。只入队, 再通知主线程跑一次 runFrame。
         CrsfBridge.onFrame = { frame ->
             LuaEngine.telemetryFrame(frame)
-            LuaEngine.runFrame(0)
+            if (!luaRunPending.getAndSet(true)) {
+                uiHandler.post {
+                    luaRunPending.set(false)
+                    LuaEngine.runFrame(0)
+                }
+            }
         }
     }
 

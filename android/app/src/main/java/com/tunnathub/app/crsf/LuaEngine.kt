@@ -157,7 +157,8 @@ object LuaEngine {
         // data = [dest][orig][data...] (跳过 addr/len/type, 排除末尾 crc)
         val payload = frame.copyOfRange(3, frame.size - 1)
         Log.d(TAG, "telemetryFrame type=0x${type.toString(16)} len=${payload.size} head=${payload.take(8).joinToString(" "){ "%02x".format(it) }}")
-        msgQueue.addLast(type to payload)
+        // 收帧线程(rxThread)入队, 主线程 tick 出队 → 必须加锁, 否则并发访问 ArrayDeque 损坏
+        synchronized(msgQueue) { msgQueue.addLast(type to payload) }
     }
 
     // ── EdgeTX API 绑定 ──
