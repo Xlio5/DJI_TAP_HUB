@@ -483,6 +483,14 @@ private fun LuaParamEmbed() {
     val controller = remember { com.tunnathub.app.crsf.LuaParamController(ctx) }
     var rows by remember { mutableStateOf<List<com.tunnathub.app.crsf.ParamRow>>(emptyList()) }
     var title by remember { mutableStateOf("ELRS") }
+    var loading by remember { mutableStateOf(true) }
+    var phase by remember { mutableStateOf("连接 V3s...") }
+    var popupText by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        delay(800)
+        if (!controller.isLoading) loading = false
+    }
 
     DisposableEffect(controller) {
         controller.onRowsChanged = {
@@ -494,6 +502,18 @@ private fun LuaParamEmbed() {
             if (activity != null) activity.runOnUiThread { title = it }
             else title = it
         }
+        controller.onLoadingChanged = {
+            if (activity != null) activity.runOnUiThread { loading = it }
+            else loading = it
+        }
+        controller.onPhaseChanged = {
+            if (activity != null) activity.runOnUiThread { phase = it }
+            else phase = it
+        }
+        controller.onPopupChanged = {
+            if (activity != null) activity.runOnUiThread { popupText = it }
+            else popupText = it
+        }
         // mock(模拟器) host 用 NAT 网关; 真机走 V3s eth0 IP 192.168.144.66 (USB隧道→tun_hub→eth0 INPUT)
         // 实测 (2026-08-16): eth0 INPUT 投递正常 (V3s INPUT policy ACCEPT, 144.66:8080 可访问)
         val v3sHost = if (com.tunnathub.app.crsf.LuaEngine.isEmulator()) "10.0.2.2" else "192.168.144.66"
@@ -501,12 +521,18 @@ private fun LuaParamEmbed() {
         onDispose {
             controller.onRowsChanged = null
             controller.onTitleChanged = null
+            controller.onLoadingChanged = null
+            controller.onPhaseChanged = null
+            controller.onPopupChanged = null
             controller.stop()
         }
     }
 
     com.tunnathub.app.crsf.LuaParamScreen(
         rows = rows,
+        isLoading = loading,
+        loadingPhase = phase,
+        popupText = popupText,
         title = title,
         onUp = { controller.up() },
         onDown = { controller.down() },
