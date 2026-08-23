@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.39"   // 固件版本 — 移除 S99 双 getty, UART0 debug 由 inittab 托管
+#define VERSION     "1.6.40"   // 固件版本 — 修复 aux_tmux_set PIO 布局错误破坏 UART0 pinmux
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;

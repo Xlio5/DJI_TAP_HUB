@@ -221,9 +221,11 @@ static std::atomic<bool> g_crsf_bridge{false};   // atomic: 主线程写, rx/crs
 // ── TMUX1511 模式控制 (PB2-PB5) ─────────────────────────────
 // PB2=NORMAL_RX_EN, PB3=TX_BUS_EN, PB4=CRSF_RX_EN, PB5=SBUS_TX_EN
 // sun8i-v3s pinctrl @0x01C20800 (mmap 页对齐 0x01C20000 + 页内偏移 0x800):
-//   CFG0 (PB0-3) @0x24: PB2=bit8-11, PB3=bit12-15 (值 1=输出)
-//   CFG1 (PB4-7) @0x28: PB4=bit0-3,  PB5=bit4-7
-//   DATA (PB0-31) @0x34: PB2=bit2, PB3=bit3, PB4=bit4, PB5=bit5
+//   每 CFG 寄存器管 8 引脚, 每引脚 4 位 (V3s 实测, 非 4 引脚/寄存器):
+//     PB_CFG0 @0x24 (PB0-7): PB2=bit8-11, PB3=bit12-15, PB4=bit16-19, PB5=bit20-23 (值 1=输出)
+//     PB_CFG1 @0x28 (PB8-15): 含 UART0 的 PB8/PB9 —— 严禁写!
+//       旧代码误当 PB_CFG1(PB4-7), 把 PB8/PB9 配成 GPIO 输出, 导致 UART0 debug 串口物理断连
+//     PB_DATA @0x34 (PB0-31): PB2=bit2, PB3=bit3, PB4=bit4, PB5=bit5
 // TMUX1511 = 4×SPST 独立模拟开关, 各通道可同时导通 (TI 数据手册 SCDS390)。
 // 互斥约束 (原理图规则, 防总线/接收冲突):
 //   - TX_BUS_EN 与 SBUS_TX_EN 互斥 (两个 TX 不能同时接共享 TXD/BUS)
@@ -247,19 +249,16 @@ static void aux_tmux_set(int normal_rx_en, int tx_bus_en, int crsf_rx_en, int sb
         return;
     }
     uint8_t *pio = (uint8_t *)map + PAGE_OFF;
-    volatile uint32_t *cfg0 = (volatile uint32_t *)(pio + 0x24);  /* PB CFG0 (PB0-3) */
-    volatile uint32_t *cfg1 = (volatile uint32_t *)(pio + 0x28);  /* PB CFG1 (PB4-7) */
-    volatile uint32_t *data = (volatile uint32_t *)(pio + 0x34);  /* PB DATA */
+    volatile uint32_t *cfg0 = (volatile uint32_t *)(pio + 0x24);  /* PB_CFG0 (PB0-7) */
+    volatile uint32_t *data = (volatile uint32_t *)(pio + 0x34);  /* PB_DATA (PB0-31) */
 
-    /* 1. 配 PB2-PB5 为输出 (CFG 值 01) */
+    /* 1. 配 PB2-PB5 为输出 (CFG 值 01), 全部在 PB_CFG0 (0x24) */
     uint32_t c0 = *cfg0;
     c0 = (c0 & ~(0xFu << 8)) | (0x1u << 8);    /* PB2 */
     c0 = (c0 & ~(0xFu << 12)) | (0x1u << 12);  /* PB3 */
+    c0 = (c0 & ~(0xFu << 16)) | (0x1u << 16);  /* PB4 */
+    c0 = (c0 & ~(0xFu << 20)) | (0x1u << 20);  /* PB5 */
     *cfg0 = c0;
-    uint32_t c1 = *cfg1;
-    c1 = (c1 & ~(0xFu << 0)) | (0x1u << 0);    /* PB4 */
-    c1 = (c1 & ~(0xFu << 4)) | (0x1u << 4);    /* PB5 */
-    *cfg1 = c1;
 
     /* 2. 写 DATA bit2-5 (PB2-5 电平) */
     uint32_t d = *data;

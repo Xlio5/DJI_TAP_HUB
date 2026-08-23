@@ -75,6 +75,19 @@ def test_web_exposes_debug_status_for_uart0_getty():
     assert "getty" in text
 
 
+def test_aux_tmux_never_touches_pb_cfg1_uart0():
+    # aux_tmux_set 不得操作 0x28 (PB_CFG1 = PB8-15, 含 UART0 的 PB8/PB9)。
+    # 旧代码按 4 引脚/CFG 布局把 0x28 当 PB_CFG1(PB4-7), 误把 PB8/PB9 配成 GPIO,
+    # 导致 UART0 debug 串口物理断连 (1.6.39 真机复现, COM10 收不到任何输出)。
+    text = read(DJI_RC)
+    start = text.index("static void aux_tmux_set")
+    end = text.index("static void aux_tmux_apply", start)
+    body = text[start:end]
+    # 不得存在 cfg1 变量或对 PB_CFG1(0x28) 的寄存器地址操作 (注释里的警告字样不算)
+    assert "cfg1" not in body
+    assert "pio + 0x28" not in body
+
+
 if __name__ == "__main__":
     tests = [
         test_uart0_getty_is_owned_by_inittab,
@@ -85,6 +98,7 @@ if __name__ == "__main__":
         test_web_api_reads_tmp_state_before_varlog,
         test_crsf_tx_does_not_reapply_tmux_every_frame,
         test_web_exposes_debug_status_for_uart0_getty,
+        test_aux_tmux_never_touches_pb_cfg1_uart0,
     ]
     for test in tests:
         test()
