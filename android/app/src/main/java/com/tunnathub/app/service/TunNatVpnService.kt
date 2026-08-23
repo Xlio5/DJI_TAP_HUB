@@ -284,9 +284,10 @@ class TunNatVpnService : VpnService() {
                 return START_STICKY
             } else {
                 // 服务在但隧道断了: 不强制重启, 服务内部 doReconnect 会重连。
-                // 只补一下 UI 状态标记。
+                // 再补一次重连触发，防止重连循环因异常/竞态退出后无人唤醒。
                 Log.w(TAG, "VPN 服务在但隧道未连, 交由 doReconnect 重连 (不强制重启)")
                 isStartedForUi = true
+                reconnectScope.launch { doReconnect() }
                 return START_STICKY
             }
         }
