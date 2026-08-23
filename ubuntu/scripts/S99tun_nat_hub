@@ -5,11 +5,45 @@ set -e
 
 _ts() { echo "[$(date +%H:%M:%S)] $*"; }
 
+_respawn_uart0_getty() {
+    if [ -c /dev/ttyS0 ]; then
+        if ps w 2>/dev/null | grep '[g]etty.*ttyS0' >/dev/null; then
+            _ts "uart0 getty: already running"
+            return
+        fi
+        (
+            while true; do
+                /sbin/getty -L 115200 ttyS0 vt100
+                sleep 1
+            done
+        ) &
+        _ts "uart0 getty: respawn @115200"
+    fi
+}
+
+_run_bounded_log() {
+    LOG="$1"; shift
+    MAX="${LOG_MAX_BYTES:-65536}"
+    (
+        "$@" 2>&1 | while IFS= read -r LINE; do
+            if [ -f "$LOG" ]; then
+                SZ=$(wc -c < "$LOG" 2>/dev/null || echo 0)
+                if [ "$SZ" -gt "$MAX" ] 2>/dev/null; then
+                    mv "$LOG" "$LOG.1" 2>/dev/null || : > "$LOG"
+                fi
+            fi
+            printf '%s\n' "$LINE" >> "$LOG" 2>/dev/null || true
+        done
+    ) &
+}
+
 case "$1" in
   start)
     _ts "Starting TUN_NAT_HUB v1.4.4..."
 
-    mount -t tmpfs tmpfs /var/log 2>/dev/null || true
+    mkdir -p /tmp /var/log
+    mount -t tmpfs -o size=8m tmpfs /var/log 2>/dev/null || true
+    _respawn_uart0_getty
 
     # 0.5 A/B OTA auto-fallback check (SPL also has NOR-based fallback for kernel panic)
     # SPI ctl block @ 0xFC000 (6 bytes):
@@ -53,7 +87,8 @@ case "$1" in
     if [ -c /dev/ttyS1 ] || [ -c /dev/ttyS2 ]; then
         # crsf-bridge mode: SC16IS752 CRSF frames <-> UDP 65532 (App Lua engine)
         # 波特率: SPI flash 配置优先 (ELRS/MLRS 兼容, 默认 400000, DLF 精确输出)
-        /usr/local/bin/dji_rc --interval 20 --out-dev /dev/ttySC0 --out-baud 400000 --crsf-telem 1 --rcmsg-host 10.0.0.2 --rcmsg-port 65530 --crsf-bridge --crsfbr-host 10.0.0.2 --crsfbr-port 65532 > /var/log/dji_rc.log 2>&1 &
+        _run_bounded_log /tmp/dji_rc.log /usr/local/bin/dji_rc --interval 20 --out-dev /dev/ttySC0 --out-baud 400000 --crsf-telem 1 --rcmsg-host 10.0.0.2 --rcmsg-port 65530 --crsf-bridge --crsfbr-host 10.0.0.2 --crsfbr-port 65532
+        ln -sf /tmp/dji_rc.log /var/log/dji_rc.log 2>/dev/null || true
         _ts "dji_rc: started (crsf-bridge)"
     fi
 

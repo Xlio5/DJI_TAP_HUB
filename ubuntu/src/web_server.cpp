@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.34"   // 固件版本 — Lua 多帧队列 + out_send 限流统一发送
+#define VERSION     "1.6.37"   // 固件版本 — UART0 debug 固定 getty, 移除 PB6 切换
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
@@ -77,6 +77,18 @@ static std::string exec(const std::vector<std::string>& args) {
     while (fgets(buf, sizeof(buf), fp)) out += buf;
     pclose(fp);
     return out;
+}
+
+static std::string readFirstExisting(const std::vector<std::string>& paths) {
+    for (const auto& path : paths) {
+        std::ifstream f(path);
+        if (!f.is_open()) continue;
+        std::stringstream ss;
+        ss << f.rdbuf();
+        auto body = ss.str();
+        if (!body.empty()) return body;
+    }
+    return "";
 }
 
 static int execRet(const std::vector<std::string>& args) {
@@ -194,7 +206,7 @@ struct Config {
 
     // ── RC 输出 (SBUS/CRSF @UART0) ──
     std::string rcOutMode = "sbus";       // "sbus" | "crsf"
-    std::string rcOutDevice = "/dev/ttyS0";
+    std::string rcOutDevice = "/dev/ttySC0";
     std::string rcOutBaud = "auto";       // "auto" | 具体波特率
     std::string rcOutPreset = "default";  // "default" | "aetr" | "taer" | "custom"
     std::string rcOutMap = "";            // 逗号分隔 source: "ch1,ch2,...,dir"
@@ -1217,23 +1229,18 @@ static Response handleRequest(const Request& req) {
             resp.contentType = "text/plain; charset=utf-8";
             resp.body = apiIptables();
         } else if (p == "/api/rc") {
-            // 读取 dji_rc 守护进程写入的状态文件
-            std::ifstream f("/var/log/rc_state.json");
-            if (f.is_open()) {
-                std::stringstream ss; ss << f.rdbuf();
-                resp.body = ss.str();
-                if (resp.body.empty()) resp.body = R"({"error":"no RC data yet"})";
-            } else {
-                resp.body = R"({"error":"RC daemon not running"})";
-            }
+            // 优先读 /tmp，避免 /var/log 被日志打满后状态卡在旧值。
+            resp.body = readFirstExisting({"/tmp/rc_state.json", "/var/log/rc_state.json"});
+            if (resp.body.empty()) resp.body = R"({"error":"no RC data yet"})";
         } else if (p == "/api/dji_rc/log") {
             // 诊断接口: 抓启动配置行 + 热重配检测行 + 状态刷屏行 + tail
             std::string boot = exec({"sh", "-c",
                 "echo '=== BOOT ==='; "
-                "grep -aE '输出|fd=|已打开' /var/log/dji_rc.log | head -8; "
+                "LOG=/tmp/dji_rc.log; [ -f \"$LOG\" ] || LOG=/var/log/dji_rc.log; "
+                "grep -aE '输出|fd=|已打开' \"$LOG\" | head -8; "
                 "echo '=== CFGCHK ==='; "
-                "grep -aE 'cfg chk|变化|重配' /var/log/dji_rc.log | tail -8; "
-                "echo '=== TAIL ==='; tail -4 /var/log/dji_rc.log"});
+                "grep -aE 'cfg chk|变化|重配' \"$LOG\" | tail -8; "
+                "echo '=== TAIL ==='; tail -4 \"$LOG\""});
             resp.contentType = "text/plain; charset=utf-8";
             resp.body = boot;
         } else if (p == "/api/rc/output") {

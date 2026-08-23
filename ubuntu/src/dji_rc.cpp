@@ -12,7 +12,6 @@
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
-#include <cstdarg>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -103,9 +102,6 @@ static size_t tx_lua_take(uint8_t *out, size_t max) {
     return n;
 }
 
-static int g_debug_fd = -1;
-static int64_t g_last_debug_us = 0;
-
 // ── 输出 (SBUS/CRSF @SC16IS752 UART-A) ──
 // C1: g_out_fd 被多线程 (rx_thread/t3/主线程) 无锁访问, 用 atomic 避免 fd 值撕裂
 static std::atomic<int> g_out_fd{-1};
@@ -141,16 +137,13 @@ static void uart_drain_tx(int fd) {
 }
 
 /* 写扩展 UART + 卡死检测: 连续失败 TX_ERR_LIMIT 次 → 自动重开。
- * CRSF 半双工 (TMUX1511): 发送前切 TX_BUS_EN=1, 帧发完 (drain) 切回 CRSF_RX_EN=1。
- * SBUS/全双工: 不切换 (模式已在 aux_tmux_apply 配好)。
+ * TMUX1511 模式由 aux_tmux_apply 统一设置。
+ * CRSF 基线保持 TX_BUS_EN + CRSF_RX_EN, 每帧不重复 mmap /dev/mem 切换。
  * 调用方须持 g_out_write_mtx。返回写是否成功。 */
 static bool tx_write_uart(int fd, const uint8_t *data, size_t len) {
     static int err_cnt = 0;
     const int TX_ERR_LIMIT = 50;   /* 连续 50 次写失败(约数百 ms)判 UART0 卡死 */
     bool crsf = (g_out_mode.load() == 'c');
-    /* CRSF TX: TX_BUS_EN=1 + 保持 CRSF_RX_EN=1, 防止发帧切断 SC16 UART A RX
-     * (ELRS 全双工, 摇杆帧输出时也要接收 ELRS 响应) */
-    if (crsf) aux_tmux_set(0, 1, 1, 0);
     ssize_t w = ::write(fd, data, len);
     if (w != (ssize_t)len) {
         err_cnt++;
@@ -161,14 +154,11 @@ static bool tx_write_uart(int fd, const uint8_t *data, size_t len) {
             err_cnt = 0;
             tx_recover();   /* 自动重开 UART0 */
         }
-        if (crsf) aux_tmux_set(0, 0, 1, 0);   /* 失败也切回接收态 */
         return false;
     }
     err_cnt = 0;
     if (crsf) {
         uart_drain_tx(fd);                    /* 等帧物理发完 */
-        /* 切回 RX 保持态 (TX_BUS_EN + CRSF_RX_EN), SC16 UART A RX 一直通 */
-        aux_tmux_set(0, 1, 1, 0);
     }
     return true;
 }
@@ -183,8 +173,6 @@ static bool g_lock_prev_high[CH_COUNT] = {};
 static uint16_t g_lock_on_value[CH_COUNT] = {};
 static uint16_t g_lock_off_value[CH_COUNT] = {};
 static std::mutex g_lock_mtx;
-static bool g_pb6_debug = false;        // PB6 接地=true → UART0 作为 debug 串口, 不输出协议
-
 // ── 长按触发 (每源按下起始时间; 0 = 未按下) ──
 static constexpr int64_t LP_THRESHOLD_US = 500000;   // 长按确认阈值 500ms
 static int64_t g_lp_press_us[SRC_COUNT] = {};        // 读写受 g_mtx 保护 (build_output_channels 内)
@@ -221,105 +209,16 @@ static void crsf_params_init(void)
     g_crsf_params[1].n_opts = 3;
 }
 
-// PB6 输入检测: 接地(0) → debug 模式; 上拉(1,默认) → 协议输出
-// 用 mmap /dev/mem 读物理寄存器。每次检测重新 open+mmap+munmap (新虚拟地址映射同一物理页),
-// 避免同一次映射读到旧值 (运行中切换失效的根因假设)。
-// sun8i-v3s GPIO: pinctrl base @0x01C20800, bank 内存 0x24 (BANK_MEM_SIZE)。
-// PB = bank 1 → bank offset 0x24。PB bank 寄存器:
-//   CFG0 (PB0-3) @0x24, CFG1 (PB4-7) @0x28, PB6 = CFG1 bit 24-25 (值 0=input)
-//   DATA (PB0-31) @0x34, PB6 = bit6
-//   PU0 (PB0-15)  @0x40, PB6 = bit 12-13 (值 01=pull-up)
-// 失败时返回 false (协议输出) 保持默认安全。
-static bool pb6_grounded(void)
-{
-    /* 注意: 0x01C20800 & ~0xFFF = 0x01C20000 是 clock 区!
-     * 必须加页内偏移 0x800 才能访问到 pinctrl (0x01C20800)。 */
-    const uintptr_t PIO_PHYS  = 0x01C20800u;      /* pinctrl 物理基址 */
-    const uintptr_t BASE      = PIO_PHYS & ~0xFFFu;  /* 页对齐 0x01C20000 */
-    const uintptr_t PAGE_OFF  = PIO_PHYS - BASE;      /* 0x800, 页内偏移 */
-    const size_t    PG        = (size_t)sysconf(_SC_PAGESIZE);
-
-    // 注: 此函数需要 O_RDWR (154-162 行配置 PB6 为 input + pull-up), 功能必需。
-    // 风险缓解: 每次 open+mmap+munmap+close, 写窗口极短。
-    int memfd = ::open("/dev/mem", O_RDWR | O_SYNC);
-    if (memfd < 0) {
-        std::fprintf(stderr, "[dji_rc] PB6 检测: 无法打开 /dev/mem (%s)\n", std::strerror(errno));
-        return false;
-    }
-    void *map = mmap(NULL, PG, PROT_READ | PROT_WRITE, MAP_SHARED, memfd, (off_t)BASE);
-    ::close(memfd);
-    if (map == MAP_FAILED) {
-        std::fprintf(stderr, "[dji_rc] PB6 检测: mmap 失败 (%s)\n", std::strerror(errno));
-        return false;
-    }
-
-    uint8_t *pio = (uint8_t *)map + PAGE_OFF;    /* 指向 0x01C20800 */
-    volatile uint32_t *cfg1 = (volatile uint32_t *)(pio + 0x28);  /* PB CFG1 (PB4-7) */
-    volatile uint32_t *data = (volatile uint32_t *)(pio + 0x34);  /* PB DATA */
-    volatile uint32_t *pu0  = (volatile uint32_t *)(pio + 0x40);  /* PB PU0 */
-
-    /* 1. 强制 PB6 为 input (CFG1 bit24-25 = 00) */
-    uint32_t c = *cfg1;
-    c &= ~(0x3u << 24);
-    *cfg1 = c;
-    /* 2. 强制 PB6 pull-up (PU0 bit12-13 = 01) */
-    uint32_t pu = *pu0;
-    pu &= ~(0x3u << 12);
-    pu |= (0x1u << 12);
-    *pu0 = pu;
-    /* 3. 短延时等寄存器生效 */
-    ::usleep(1000);
-    /* 4. 读 DATA bit6: 0=接地, 1=上拉 */
-    uint32_t reg = *data;
-    bool grounded = ((reg >> 6) & 1u) == 0;
-
-    /* 诊断打印 (仅首次调用, 避免每次 poll 刷屏) */
-    static bool dbg_once = false;
-    if (!dbg_once) {
-        dbg_once = true;
-        std::printf("[dji_rc] PB6 检测: CFG1=0x%08X PU0=0x%08X DATA=0x%08X grounded=%d\n",
-                    (unsigned)c, (unsigned)pu, (unsigned)reg, grounded ? 1 : 0);
-        std::fflush(stdout);
-    }
-
-    munmap(map, PG);
-    return grounded;
-}
-
-/* 启动/停止 ttyS0 getty (debug 串口登录终端) */
-static void getty_start(void)
-{
-    /* 先确保无残留 getty (busybox 无 pkill, 用 killall), 再启动新的 */
-    ::system("killall getty 2>/dev/null");
-    ::usleep(100000);   /* 等旧 getty 完全退出释放 ttyS0 */
-    if (::system("setsid /sbin/getty -L 115200 ttyS0 vt100 >/dev/null 2>&1 &") != 0) {
-        std::fprintf(stderr, "[dji_rc] getty 启动命令失败\n");
-    }
-}
-
-static void getty_stop(void)
-{
-    /* 杀掉所有挂 ttyS0 的进程 (含 getty + login shell):
-     * - killall getty 只杀 getty 进程, 但 getty 派生出的 login shell (-sh) 不是 getty,
-     *   killall 杀不到, 会一直占用 ttyS0, 导致切回协议时 uart_open_out 失败。
-     * - fuser -k /dev/ttyS0 按终端杀所有占用进程 (busybox 内置 fuser)。
-     * - inittab 若仍有 ttyS0::respawn:/sbin/getty, 杀掉的 getty 会被立刻 respawn,
-     *   需在 rootfs 构建时禁用该行 (见 build_rootfs_v*.sh)。 */
-    ::system("killall getty 2>/dev/null");
-    ::system("fuser -k /dev/ttyS0 2>/dev/null");
-    ::usleep(300000);   /* 等进程完全退出并释放 ttyS0 (避免 fd 占用) */
-}
-
 static int uart_open_out(const char *dev, int baud, bool even2);   /* forward */
 static void crsf_rx_thread();                                       /* forward */
 static void crsf_bridge_rx_thread();                                /* forward */
 
-// CRSF 桥开关 (crsf-bridge 模式): 前移声明, pb6_auto_switch 需访问
+// CRSF 桥开关 (crsf-bridge 模式)
 static std::atomic<bool> g_crsf_bridge{false};   // atomic: 主线程写, rx/crsf_rx 线程读
 
 // ── TMUX1511 模式控制 (PB2-PB5) ─────────────────────────────
 // PB2=NORMAL_RX_EN, PB3=TX_BUS_EN, PB4=CRSF_RX_EN, PB5=SBUS_TX_EN
-// sun8i-v3s pinctrl @0x01C20800 (mmap 页对齐 0x01C20000 + 页内偏移 0x800, 同 pb6_grounded):
+// sun8i-v3s pinctrl @0x01C20800 (mmap 页对齐 0x01C20000 + 页内偏移 0x800):
 //   CFG0 (PB0-3) @0x24: PB2=bit8-11, PB3=bit12-15 (值 1=输出)
 //   CFG1 (PB4-7) @0x28: PB4=bit0-3,  PB5=bit4-7
 //   DATA (PB0-31) @0x34: PB2=bit2, PB3=bit3, PB4=bit4, PB5=bit5
@@ -393,65 +292,6 @@ static void aux_tmux_apply()
     }
 }
 
-// ── PB6 运行中自动切换 (每 2s 检测, 连续 N 次相同才切换, 防抖) ──
-// 主循环调用。接地→debug(启 getty + 关协议), 上拉→协议(杀 getty + 开协议)。
-// 需要访问 main 局部变量 (out_dev/out_mode/out_baud/t3/t4), 由 main 传入。
-static void pb6_auto_switch(bool grounded, const char *out_dev, char out_mode,
-                            int out_baud, bool &out_pb6_debug, std::thread &t3, std::thread &t4)
-{
-    static int same_count = 0;
-    static bool last = false;
-    const int NEED = 3;   /* 连续 3 次相同才切换 (6s 确认) */
-
-    if (grounded == last) {
-        same_count++;
-    } else {
-        same_count = 1;
-        last = grounded;
-    }
-    if (same_count < NEED) return;
-    if (grounded == out_pb6_debug) return;   /* 状态未变, 已确认 */
-
-    same_count = 0;
-    std::printf("[dji_rc] PB6 变化 → %s\n", grounded ? "debug 模式" : "协议模式");
-    std::fflush(stdout);
-
-    if (grounded) {
-        /* 切到 debug: 停协议输出 + 启 getty */
-        if (t3.joinable()) {
-            g_crsf_stop.store(true);
-            int oldFd = g_out_fd.exchange(-1);   // C1: atomic 取出并置 -1
-            if (oldFd >= 0) { ::close(oldFd); }
-            t3.join();
-            g_crsf_stop.store(false);
-        }
-        int oldFd2 = g_out_fd.exchange(-1);      // C1: atomic
-        if (oldFd2 >= 0) { ::close(oldFd2); }
-        getty_start();
-        out_pb6_debug = true;
-    } else {
-        /* 切到协议: 杀 getty + 开协议输出 (等 getty 释放 ttyS0) */
-        getty_stop();
-        ::usleep(200000);   /* 200ms, 等 getty 释放 ttyS0 */
-        if (g_out_fd.load() < 0) {
-            bool even2 = (g_out_mode.load() == 's') && g_sbus_std;   /* 用全局, 避免参数过期 */
-            g_out_fd.store(uart_open_out(out_dev, g_out_baud.load(), even2));   // 复审: 用 atomic g_out_baud, 避免过时参数
-        }
-        /* 补启动上行 crsf_rx_thread: CRSF 遥测 或 bridge 模式都需要 (bridge 双向转发 ELRS 响应) */
-        if ((g_out_mode.load() == 'c' && g_crsf_telem || g_crsf_bridge) && g_out_fd.load() >= 0 && !t3.joinable()) {
-            g_crsf_stop.store(false);
-            t3 = std::thread(crsf_rx_thread);
-        }
-        /* 补启动 bridge 下行线程 (启动时 PB6 接地会跳过, 切协议后需补) */
-        if (g_crsf_bridge && g_out_fd.load() >= 0 && !t4.joinable()) {
-            g_bridge_stop.store(false);
-            t4 = std::thread(crsf_bridge_rx_thread);
-        }
-        out_pb6_debug = false;
-    }
-    (void)out_mode;   /* 已改用全局 g_out_mode */
-}
-
 // ── rcmsg (RC 数据 UDP) ──
 static constexpr uint32_t RCMSG_MAGIC = 0x314D4352u;  // "RCM1", little-endian on wire
 static constexpr int RCMSG_PORT = 65530;
@@ -459,9 +299,8 @@ static constexpr int RCMSG_PORT = 65530;
 // V3s 把电脑发的 144.11 包 DNAT 到 10.0.0.2, 手机在此收 rcmsg/局域网入向。
 static constexpr const char *RCMSG_HOST = "10.0.0.2";
 
-// ── CRSF 桥 (crsf-bridge 模式): UART0 CRSF 帧 ↔ 网口 UDP 透明转发 ──
-// App 跑 ELRS Lua 脚本, 经网口 UDP 发 CRSF 参数命令, V3s 转 UART0。
-// g_crsf_bridge 前移声明于文件顶部 (pb6_auto_switch 需访问), 见上
+// ── CRSF 桥 (crsf-bridge 模式): SC16IS752 CRSF 帧 ↔ 网口 UDP 透明转发 ──
+// App 跑 ELRS Lua 脚本, 经网口 UDP 发 CRSF 参数命令, V3s 转 SC16IS752。
 static constexpr uint32_t CRSFBR_MAGIC = 0x46534352u;   // "RCSF" little-endian = "CRSF"
 static int       crsfbr_port = 65532;                   // 网口 CRSF 桥端口
 static const char *crsfbr_host = "10.0.0.2";
@@ -487,8 +326,6 @@ struct RcMsg {
 };
 #pragma pack(pop)
 
-static void debug_log(const char *fmt, ...);
-
 // ═══════════════════════════════════════════════════════════════════════
 // helpers
 // ═══════════════════════════════════════════════════════════════════════
@@ -498,49 +335,6 @@ static int64_t now_us() {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     // CRIT#1: 用 1000000LL, 避免 32-bit ARM 上 ts.tv_sec*1000000 (long) 35分钟溢出回卷
     return (int64_t)ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
-}
-
-static void debug_uart0_open(const char *dev, int baud)
-{
-    g_debug_fd = ::open(dev, O_WRONLY | O_NOCTTY | O_NONBLOCK);
-    if (g_debug_fd < 0) {
-        std::fprintf(stderr, "[dji_rc] debug uart open %s failed: %s\n",
-                     dev, std::strerror(errno));
-        return;
-    }
-
-    struct termios tty;
-    std::memset(&tty, 0, sizeof(tty));
-    if (tcgetattr(g_debug_fd, &tty) == 0) {
-        tty.c_iflag = IGNPAR;
-        tty.c_oflag = 0;
-        tty.c_cflag = CLOCAL | CREAD | CS8;
-        tty.c_lflag = 0;
-        tty.c_cc[VMIN] = 0;
-        tty.c_cc[VTIME] = 0;
-        speed_t spd = (baud == 921600) ? B921600 : B115200;
-        cfsetispeed(&tty, spd);
-        cfsetospeed(&tty, spd);
-        tcsetattr(g_debug_fd, TCSANOW, &tty);
-    }
-
-    debug_log("[dji_rc][dbg] uart0 debug enabled dev=%s baud=%d", dev, baud);
-}
-
-static void debug_log(const char *fmt, ...)
-{
-    if (g_debug_fd < 0) return;
-
-    char buf[256];
-    va_list ap;
-    va_start(ap, fmt);
-    int n = std::vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    if (n <= 0) return;
-    if (n > (int)sizeof(buf) - 3) n = sizeof(buf) - 3;
-    buf[n++] = '\r';
-    buf[n++] = '\n';
-    ::write(g_debug_fd, buf, n);
 }
 
 static int uart_open(const char *dev, int baud)
@@ -618,7 +412,6 @@ static int uart_open_out(const char *dev, int baud, bool even2)
     }
 
     std::printf("[dji_rc] 输出 %s @%d %s fd=%d\n", dev, baud, even2 ? "8E2" : "8N1", fd);
-    debug_log("[dji_rc][dbg] out %s @%d %s fd=%d", dev, baud, even2 ? "8E2" : "8N1", fd);
     return fd;
 }
 
@@ -645,7 +438,6 @@ static int rcmsg_open(const char *host, int port, sockaddr_in *dst)
     if (fl >= 0) ::fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 
     std::printf("[dji_rc] rcmsg UDP: %s:%d fd=%d\n", host, port, fd);
-    debug_log("[dji_rc][dbg] rcmsg UDP %s:%d fd=%d", host, port, fd);
     return fd;
 }
 
@@ -850,12 +642,51 @@ static bool selftest()
 
 // ── 写状态文件(std::string, 无fmt库依赖) ──────────────────────
 
+static void write_text_atomic(const char *path, const char *buf, int len)
+{
+    char tmp[128];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    int fd = ::open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;
+
+    ssize_t written = ::write(fd, buf, len);
+    ::close(fd);
+    if (written == len)
+        ::rename(tmp, path);
+    else
+        std::fprintf(stderr, "[dji_rc] state write %s: wrote %zd of %d\n", path, written, len);
+}
+
 static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
                              uint32_t rx1, uint32_t rx2, int64_t ts_us)
 {
     uint16_t ch[CH_COUNT];
     /* latch 由主循环的统一 RC 状态推进；状态文件只应用当前 latch。 */
     build_output_channels(st, ch, false);
+
+    static int64_t prev_us = 0;
+    static uint32_t prev_g1 = 0, prev_g2 = 0, prev_rx1 = 0, prev_rx2 = 0;
+    static uint32_t out_count = 0;
+    static double good1_hz = 0.0, good2_hz = 0.0, rx1_bps = 0.0, rx2_bps = 0.0, out_hz = 0.0;
+
+    out_count++;
+    if (prev_us == 0) {
+        prev_us = ts_us;
+        prev_g1 = g1; prev_g2 = g2; prev_rx1 = rx1; prev_rx2 = rx2;
+    } else {
+        int64_t elapsed_us = ts_us - prev_us;
+        if (elapsed_us >= 1000000LL) {
+            double sec = elapsed_us / 1000000.0;
+            good1_hz = (g1 - prev_g1) / sec;
+            good2_hz = (g2 - prev_g2) / sec;
+            rx1_bps = (rx1 - prev_rx1) / sec;
+            rx2_bps = (rx2 - prev_rx2) / sec;
+            out_hz = out_count / sec;
+            prev_us = ts_us;
+            prev_g1 = g1; prev_g2 = g2; prev_rx1 = rx1; prev_rx2 = rx2;
+            out_count = 0;
+        }
+    }
 
     char buf[2048];
     int w = snprintf(buf, sizeof(buf),
@@ -868,6 +699,7 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
         "\"rth\":%d,\"c1\":%d,\"c2\":%d,\"c3\":%d,\"dial\":%d,"
         "\"up\":%d,\"down\":%d,\"left\":%d,\"right\":%d,\"aircraft\":%d,\"back\":%d,"
         "\"good1\":%u,\"good2\":%u,\"rx1\":%u,\"rx2\":%u,"
+        "\"good1_hz\":%.1f,\"good2_hz\":%.1f,\"rx1_bps\":%.1f,\"rx2_bps\":%.1f,\"out_hz\":%.1f,"
         "\"type\":\"%s\",\"ts_us\":%lld}\n",
         ch[0], ch[1], ch[2], ch[3], ch[4], ch[5], ch[6], ch[7],
         ch[8], ch[9], ch[10], ch[11], ch[12], ch[13], ch[14], ch[15],
@@ -875,22 +707,16 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
         st.mode, st.btn, st.stop, st.focus, st.shot, st.rec,
         st.rth, st.c1, st.c2, st.c3, st.dial,
         st.up, st.down, st.left, st.right, st.aircraft, st.back,
-        g1, g2, rx1, rx2, rc_type_name(st.type),
+        g1, g2, rx1, rx2,
+        good1_hz, good2_hz, rx1_bps, rx2_bps, out_hz, rc_type_name(st.type),
         (long long)ts_us);
 
     // atomic write: tmp → rename
     // H: snprintf 返回值可能超过 sizeof(buf) 或为负, clamp 避免越界写
     if (w < 0) w = 0;                       // 复审: 负值(编码错误) → 0
     if (w > (int)sizeof(buf)) w = (int)sizeof(buf);
-    int fd = ::open("/var/log/rc_state.json.tmp", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd >= 0) {
-        ssize_t written = ::write(fd, buf, w);
-        ::close(fd);
-        if (written == w)
-            ::rename("/var/log/rc_state.json.tmp", "/var/log/rc_state.json");
-        else
-            std::fprintf(stderr, "[dji_rc] state write: wrote %zd of %d\n", written, w);
-    }
+    write_text_atomic("/tmp/rc_state.json", buf, w);
+    write_text_atomic("/var/log/rc_state.json", buf, w);
 }
 
 // ── 协议输出: P20 每解一帧就立刻发 (SBUS/CRSF 由 g_out_mode 决定) ──────
@@ -1064,8 +890,6 @@ static void out_send(const rc_state_t &m)
     } else if ((out_attempts <= 10 || (out_attempts % 100) == 0) && out_errors == 0) {
         std::printf("[dji_rc] out ok mode=%c attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u\n",
                     outMode, out_attempts, ch[0], ch[1], ch[2], ch[3]);
-        debug_log("[dji_rc][dbg] out ok mode=%c attempts=%u ch1=%u ch2=%u ch3=%u ch4=%u",
-                  outMode, out_attempts, ch[0], ch[1], ch[2], ch[3]);
     }
 }
 
@@ -1482,9 +1306,6 @@ int main(int argc, char **argv)
     int baud1 = 921600;
     int baud2 = 115200;
     int interval_ms = 100;
-    bool debug_uart0 = false;
-    const char *debug_dev = "/dev/ttyS0";
-    int debug_baud = 115200;
     const char *out_dev = "/dev/ttySC0";     /* 协议输出口: 默认 SC16IS752 通道 A */
     char out_mode = 's';                     /* 's'=SBUS, 'c'=CRSF */
     int  out_baud = 100000;                  /* 默认 SBUS 100k */
@@ -1499,9 +1320,6 @@ int main(int argc, char **argv)
         else if (std::strcmp(argv[i], "--baud1") == 0 && i + 1 < argc) baud1 = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--baud2") == 0 && i + 1 < argc) baud2 = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--interval") == 0 && i + 1 < argc) interval_ms = std::atoi(argv[++i]);
-        else if (std::strcmp(argv[i], "--debug-uart0") == 0) debug_uart0 = true;
-        else if (std::strcmp(argv[i], "--debug-uart0-dev") == 0 && i + 1 < argc) debug_dev = argv[++i];
-        else if (std::strcmp(argv[i], "--debug-uart0-baud") == 0 && i + 1 < argc) debug_baud = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--out-mode") == 0 && i + 1 < argc) out_mode = argv[++i][0];
         else if (std::strcmp(argv[i], "--out-dev") == 0 && i + 1 < argc) out_dev = argv[++i];
         else if (std::strcmp(argv[i], "--out-baud") == 0 && i + 1 < argc) out_baud = std::atoi(argv[++i]);
@@ -1541,8 +1359,6 @@ int main(int argc, char **argv)
         std::printf("[dji_rc] crsf-bridge 模式: SC16 UART-A CRSF %d baud, 参数帧转发网口\n", out_baud);
     }
 
-    if (debug_uart0) debug_uart0_open(debug_dev, debug_baud);
-
     std::printf("\n=== DJI RC daemon (V3s) ===\n");
     std::printf("P20: %s @%d  |  P0: %s @%d  |  print every %dms\n\n",
                 dev1, baud1, dev2, baud2, interval_ms);
@@ -1557,26 +1373,23 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "[dji_rc] 所有串口打开失败,退出\n");
         return 1;
     }
-    // UART0 固定作为 debug console；协议输出固定走 SC16IS752。
-    g_pb6_debug = false;
+    // UART0 固定作为 debug console；dji_rc 只使用 SC16IS752 协议输出口。
     std::printf("[dji_rc] UART0 fixed debug console; protocol output on %s\n", out_dev);
     std::fflush(stdout);
 
     // TMUX1511 模式: 协议输出前先配 PB2-PB5 (SC16IS752 共享总线开关)
     aux_tmux_apply();
 
-    // 协议输出 (UART0): SBUS 标准=100k 8E2, SBUS 非标=115200 8N1, CRSF=115200 8N1
+    // 协议输出: SBUS 标准=100k 8E2, SBUS 非标=115200 8N1, CRSF=115200/400000 8N1
     bool out_even2 = (out_mode == 's') && g_sbus_std;
-    if (!g_pb6_debug) {
-        int newFd = uart_open_out(out_dev, out_baud, out_even2);
-        g_out_fd.store(newFd);   // C1: atomic store
-        if (newFd < 0) {
-            std::fprintf(stderr, "[dji_rc] 输出口打开失败: %s @%d\n", out_dev, out_baud);
-        } else {
-            std::printf("[dji_rc] 输出 %c: %s @%d %s fd=%d (通道映射 %s)\n",
-                        out_mode, out_dev, out_baud, out_even2 ? "8E2" : "8N1", newFd,
-                        g_ch_map_valid.load() ? "custom" : "default");
-        }
+    int newFd = uart_open_out(out_dev, out_baud, out_even2);
+    g_out_fd.store(newFd);   // C1: atomic store
+    if (newFd < 0) {
+        std::fprintf(stderr, "[dji_rc] 输出口打开失败: %s @%d\n", out_dev, out_baud);
+    } else {
+        std::printf("[dji_rc] 输出 %c: %s @%d %s fd=%d (通道映射 %s)\n",
+                    out_mode, out_dev, out_baud, out_even2 ? "8E2" : "8N1", newFd,
+                    g_ch_map_valid.load() ? "custom" : "default");
     }
     sockaddr_in rcmsg_dst;
     int rcmsg_fd = rcmsg_open(rcmsg_host, rcmsg_port, &rcmsg_dst);
@@ -1649,12 +1462,8 @@ int main(int argc, char **argv)
             static const char no_rc[] = "{\"error\":\"no RC data\",\"rx1\":%u,\"rx2\":%u}\n";
             char buf[128];
             int w = snprintf(buf, sizeof(buf), no_rc, rx20, rx0);
-            int fd = ::open("/var/log/rc_state.json.tmp", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (fd >= 0) {
-                if (::write(fd, buf, w) == w)
-                    ::rename("/var/log/rc_state.json.tmp", "/var/log/rc_state.json");
-                ::close(fd);
-            }
+            write_text_atomic("/tmp/rc_state.json", buf, w);
+            write_text_atomic("/var/log/rc_state.json", buf, w);
             send_rcmsg(rcmsg_fd, rcmsg_dst, m, false, ++rcmsg_seq, n);
         }
 
@@ -1750,11 +1559,6 @@ int main(int argc, char **argv)
             rc_state_to_kv(&m, line, sizeof(line));
         }
         std::printf("[dji_rc] %s | g1=%u g2=%u rx1=%u rx2=%u\n", line, g20, g0, rx20, rx0);
-        if (debug_uart0 && (n - g_last_debug_us) >= 5000000LL) {
-            debug_log("[dji_rc][dbg] %s g1=%u g2=%u rx1=%u rx2=%u age1=%lld age2=%lld",
-                      line, g20, g0, rx20, rx0, (long long)age20, (long long)age0);
-            g_last_debug_us = n;
-        }
     }
 
     g_stop.store(true);
@@ -1769,7 +1573,6 @@ int main(int argc, char **argv)
     if (t4.joinable()) t4.join();   /* bridge 下行线程 */
     if (t1.joinable()) t1.join();
     if (t2.joinable()) t2.join();
-    if (g_debug_fd >= 0) ::close(g_debug_fd);
     if (rcmsg_fd >= 0) ::close(rcmsg_fd);
     if (tlm_fd >= 0) ::close(tlm_fd);
     return 0;
