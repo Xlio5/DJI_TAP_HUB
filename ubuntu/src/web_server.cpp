@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.37"   // 固件版本 — UART0 debug 固定 getty, 移除 PB6 切换
+#define VERSION     "1.6.38"   // 固件版本 — 增加真实 TX 速率和 UART0 debug 状态接口
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
@@ -1243,6 +1243,16 @@ static Response handleRequest(const Request& req) {
                 "echo '=== TAIL ==='; tail -4 \"$LOG\""});
             resp.contentType = "text/plain; charset=utf-8";
             resp.body = boot;
+        } else if (p == "/api/debug/status") {
+            resp.contentType = "text/plain; charset=utf-8";
+            resp.body = exec({"sh", "-c",
+                "echo '=== CMDLINE ==='; cat /proc/cmdline 2>/dev/null; "
+                "echo '=== UART0 ==='; ls -l /dev/ttyS0 2>&1; "
+                "stty -F /dev/ttyS0 -a 2>&1 | head -3; "
+                "echo '=== GETTY ==='; ps w 2>/dev/null | grep '[g]etty.*ttyS0' || echo 'getty ttyS0 not running'; "
+                "echo '=== LOG FS ==='; mount | grep -E ' /var/log | /tmp ' || true; df -h /tmp /var/log 2>/dev/null; "
+                "echo '=== DJI_RC ==='; ps w 2>/dev/null | grep '[d]ji_rc' || true; "
+                "echo '=== RC STATE ==='; head -c 512 /tmp/rc_state.json 2>/dev/null || head -c 512 /var/log/rc_state.json 2>/dev/null"});
         } else if (p == "/api/rc/output") {
             Config c = loadConfig();
             resp.body = apiRcOutput(c);

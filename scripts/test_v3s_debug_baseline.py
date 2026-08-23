@@ -49,6 +49,9 @@ def test_rc_state_has_tmp_runtime_fallback_and_rates():
     assert "good1_hz" in text
     assert "good2_hz" in text
     assert "out_hz" in text
+    assert "tx_hz" in text
+    assert "tx_ok" in text
+    assert "tx_err" in text
 
 
 def test_web_api_reads_tmp_state_before_varlog():
@@ -68,6 +71,13 @@ def test_crsf_tx_does_not_reapply_tmux_every_frame():
     assert "aux_tmux_set" not in body
 
 
+def test_web_exposes_debug_status_for_uart0_getty():
+    text = read(WEB_SERVER)
+    assert 'p == "/api/debug/status"' in text
+    assert "ttyS0" in text
+    assert "getty" in text
+
+
 if __name__ == "__main__":
     tests = [
         test_uart0_getty_is_started_by_init_script,
@@ -78,6 +88,7 @@ if __name__ == "__main__":
         test_rc_state_has_tmp_runtime_fallback_and_rates,
         test_web_api_reads_tmp_state_before_varlog,
         test_crsf_tx_does_not_reapply_tmux_every_frame,
+        test_web_exposes_debug_status_for_uart0_getty,
     ]
     for test in tests:
         test()

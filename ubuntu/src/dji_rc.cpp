@@ -109,6 +109,8 @@ static std::atomic<char> g_out_mode{'s'}; // 's' = SBUS, 'c' = CRSF
 static std::atomic<int>  g_out_baud{100000}; // 实际波特率 (SBUS标准=100000, SBUS非标=115200, CRSF=115200)
 static bool g_sbus_std = true;          // SBUS 标准模式: true=100k 8E2, false=115200 8N1
 static std::mutex g_out_write_mtx;        // CO-4: 保护对 g_out_fd 的写 (out_send + crsf_rx_thread 并发)
+static std::atomic<uint32_t> g_tx_ok{0};
+static std::atomic<uint32_t> g_tx_err{0};
 
 static int uart_open_out(const char *dev, int baud, bool even2);   /* forward */
 static void aux_tmux_set(int normal_rx_en, int tx_bus_en, int crsf_rx_en, int sbus_tx_en);  /* forward: TMUX1511 (定义在文件中部) */
@@ -665,14 +667,16 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
     build_output_channels(st, ch, false);
 
     static int64_t prev_us = 0;
-    static uint32_t prev_g1 = 0, prev_g2 = 0, prev_rx1 = 0, prev_rx2 = 0;
+    static uint32_t prev_g1 = 0, prev_g2 = 0, prev_rx1 = 0, prev_rx2 = 0, prev_tx_ok = 0;
     static uint32_t out_count = 0;
-    static double good1_hz = 0.0, good2_hz = 0.0, rx1_bps = 0.0, rx2_bps = 0.0, out_hz = 0.0;
+    static double good1_hz = 0.0, good2_hz = 0.0, rx1_bps = 0.0, rx2_bps = 0.0, out_hz = 0.0, tx_hz = 0.0;
+    uint32_t tx_ok = g_tx_ok.load();
+    uint32_t tx_err = g_tx_err.load();
 
     out_count++;
     if (prev_us == 0) {
         prev_us = ts_us;
-        prev_g1 = g1; prev_g2 = g2; prev_rx1 = rx1; prev_rx2 = rx2;
+        prev_g1 = g1; prev_g2 = g2; prev_rx1 = rx1; prev_rx2 = rx2; prev_tx_ok = tx_ok;
     } else {
         int64_t elapsed_us = ts_us - prev_us;
         if (elapsed_us >= 1000000LL) {
@@ -682,8 +686,9 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
             rx1_bps = (rx1 - prev_rx1) / sec;
             rx2_bps = (rx2 - prev_rx2) / sec;
             out_hz = out_count / sec;
+            tx_hz = (tx_ok - prev_tx_ok) / sec;
             prev_us = ts_us;
-            prev_g1 = g1; prev_g2 = g2; prev_rx1 = rx1; prev_rx2 = rx2;
+            prev_g1 = g1; prev_g2 = g2; prev_rx1 = rx1; prev_rx2 = rx2; prev_tx_ok = tx_ok;
             out_count = 0;
         }
     }
@@ -700,6 +705,7 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
         "\"up\":%d,\"down\":%d,\"left\":%d,\"right\":%d,\"aircraft\":%d,\"back\":%d,"
         "\"good1\":%u,\"good2\":%u,\"rx1\":%u,\"rx2\":%u,"
         "\"good1_hz\":%.1f,\"good2_hz\":%.1f,\"rx1_bps\":%.1f,\"rx2_bps\":%.1f,\"out_hz\":%.1f,"
+        "\"tx_hz\":%.1f,\"tx_ok\":%u,\"tx_err\":%u,"
         "\"type\":\"%s\",\"ts_us\":%lld}\n",
         ch[0], ch[1], ch[2], ch[3], ch[4], ch[5], ch[6], ch[7],
         ch[8], ch[9], ch[10], ch[11], ch[12], ch[13], ch[14], ch[15],
@@ -708,7 +714,8 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
         st.rth, st.c1, st.c2, st.c3, st.dial,
         st.up, st.down, st.left, st.right, st.aircraft, st.back,
         g1, g2, rx1, rx2,
-        good1_hz, good2_hz, rx1_bps, rx2_bps, out_hz, rc_type_name(st.type),
+        good1_hz, good2_hz, rx1_bps, rx2_bps, out_hz,
+        tx_hz, tx_ok, tx_err, rc_type_name(st.type),
         (long long)ts_us);
 
     // atomic write: tmp → rename
@@ -864,16 +871,16 @@ static void out_send(const rc_state_t &m)
             /* Lua 帧优先: 替代本次通道帧 (限流后摇杆帧仍保底) */
             std::lock_guard<std::mutex> lock(g_out_write_mtx);
             if (g_out_fd.load() != outFd) return;
-            if (!tx_write_uart(outFd, lua, luaLen)) out_errors++;
-            else out_attempts++;
+            if (!tx_write_uart(outFd, lua, luaLen)) { out_errors++; g_tx_err.fetch_add(1); }
+            else { out_attempts++; g_tx_ok.fetch_add(1); }
         } else {
             uint8_t frame[CRSF_FRAME_MAX];
             int n = crsf_pack_channels(ch, frame);
             if (n > 0) {
                 std::lock_guard<std::mutex> lock(g_out_write_mtx);
                 if (g_out_fd.load() != outFd) return;
-                if (!tx_write_uart(outFd, frame, (size_t)n)) out_errors++;
-                else out_attempts++;
+                if (!tx_write_uart(outFd, frame, (size_t)n)) { out_errors++; g_tx_err.fetch_add(1); }
+                else { out_attempts++; g_tx_ok.fetch_add(1); }
             }
         }
     } else {
@@ -881,8 +888,8 @@ static void out_send(const rc_state_t &m)
         sbus_encode(ch, frame);
         std::lock_guard<std::mutex> lock(g_out_write_mtx);
         if (g_out_fd.load() != outFd) return;
-        if (!tx_write_uart(outFd, frame, SBUS_FRAME_LEN)) out_errors++;
-        else out_attempts++;
+        if (!tx_write_uart(outFd, frame, SBUS_FRAME_LEN)) { out_errors++; g_tx_err.fetch_add(1); }
+        else { out_attempts++; g_tx_ok.fetch_add(1); }
     }
 
     if (out_errors && out_attempts <= 10) {
