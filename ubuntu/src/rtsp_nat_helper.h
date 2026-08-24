@@ -6,6 +6,10 @@
 #include <string>
 #include <vector>
 
+static constexpr const char* rtspForwardTarget() {
+    return "10.0.0.2";
+}
+
 static inline bool isIpv4Literal(const std::string& host) {
     if (host.empty()) return false;
     int parts = 0;
