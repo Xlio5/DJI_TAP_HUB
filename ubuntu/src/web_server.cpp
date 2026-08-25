@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.44"   // 固件版本 — 修复 RTSP UDP DNAT 目标地址
+#define VERSION     "1.6.45"   // 固件版本 — 固化 RTSP 回流路由与 SNAT
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;

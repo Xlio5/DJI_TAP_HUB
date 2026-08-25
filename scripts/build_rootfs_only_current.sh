@@ -18,7 +18,7 @@ mkdir -p "$TGT/etc/init.d" "$TGT/usr/local/bin" "$BUILDROOT/output/images" "$PRO
 
 echo "=== Copy startup scripts ==="
 cp "$PROJECT/ubuntu/scripts/S99tun_nat_hub" "$TGT/etc/init.d/"
-cp "$PROJECT/ubuntu/scripts/setup_v3s_fixed.sh" "$TGT/usr/local/bin/setup_v3s.sh"
+cp "$PROJECT/ubuntu/scripts/setup_v3s.sh" "$TGT/usr/local/bin/setup_v3s.sh"
 chmod +x "$TGT/etc/init.d/S99tun_nat_hub" "$TGT/usr/local/bin/setup_v3s.sh"
 
 echo "=== Compile web_server ==="

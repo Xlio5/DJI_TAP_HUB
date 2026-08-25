@@ -8,6 +8,8 @@ set -e
 _ts() { echo "[$(date +%H:%M:%S)] $*"; }
 
 TUN_NAME=tun_hub
+TUN_IP=10.0.0.1
+TUN_PREFIX=24
 TUN_MTU=1400
 PHONE_IP_OCTET=11          # 手机 LAN 身份 IP 尾号 (V3s eth0 = x.x.x.66, 手机 = x.x.x.11)
 INTERNAL_FWD_ADDR=10.0.0.2 # 手机主地址 (内部转发, V3s DNAT 目标)
@@ -32,13 +34,14 @@ ip addr add 172.20.10.3/24 dev eth0 2>/dev/null || true
 ip link set eth0 up
 ip route replace default via 192.168.144.1 dev eth0 2>/dev/null || true
 
-# TUN — 只建接口 (手机地址用 /32 主机路由 + DNAT, 与 eth0 同网段不冲突)
+# TUN — V3s 保留 10.0.0.1/24 作为隧道内管理地址，手机主地址为 10.0.0.2。
 if ! ip link show $TUN_NAME >/dev/null 2>&1; then
     ip tuntap add dev $TUN_NAME mode tun
 fi
+ip addr replace ${TUN_IP}/${TUN_PREFIX} dev $TUN_NAME
 ip link set $TUN_NAME mtu $TUN_MTU
 ip link set $TUN_NAME up
-_ts "TUN: $TUN_NAME (mtu=$TUN_MTU, 无内部 IP)"
+_ts "TUN: $TUN_IP/$TUN_PREFIX (mtu=$TUN_MTU)"
 
 # IP forwarding
 echo 1 > /proc/sys/net/ipv4/ip_forward
@@ -72,6 +75,10 @@ if [ -n "$LAN_PHONE_IP" ] && [ "$LAN_PHONE_IP" != ".$PHONE_IP_OCTET" ]; then
     # FORWARD 放行: DNAT 后目标 10.0.0.2 转发进隧道
     iptables -D FORWARD -i $LAN_IF -o $TUN_NAME -d $INTERNAL_FWD_ADDR -j ACCEPT 2>/dev/null || true
     iptables -A FORWARD -i $LAN_IF -o $TUN_NAME -d $INTERNAL_FWD_ADDR -j ACCEPT
+    # SNAT: 手机以 LAN 身份 x.x.x.11 主动访问同网段摄像头时，必须改源为 V3s eth0。
+    # 否则摄像头会直接 ARP x.x.x.11，回包绕过 V3s，RTSP TCP 三次握手卡住。
+    iptables -t nat -D POSTROUTING -s $LAN_PHONE_IP/32 -o $LAN_IF -j MASQUERADE 2>/dev/null || true
+    iptables -t nat -A POSTROUTING -s $LAN_PHONE_IP/32 -o $LAN_IF -j MASQUERADE
     # 出向: 手机 → LAN 放行
     iptables -D FORWARD -i $TUN_NAME -o $LAN_IF -j ACCEPT 2>/dev/null || true
     iptables -A FORWARD -i $TUN_NAME -o $LAN_IF -j ACCEPT
