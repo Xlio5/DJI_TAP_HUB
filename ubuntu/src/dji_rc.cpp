@@ -36,6 +36,7 @@ extern "C" {
 #include "crsf.h"
 #include "rc_map.h"
 }
+#include "rc_source_select.h"
 
 // 自定义波特率 (termios2 BOTHER): 标准 termios 表没有 100000/400000/420000。
 // 用宏把内核 <asm/termbits.h> 的 struct termios 重命名, 避免与 glibc <termios.h> 冲突。
@@ -70,6 +71,8 @@ static std::atomic<bool> g_crsf_stop{false};   /* 独立控制 CRSF 回传线程
 static std::atomic<bool> g_bridge_stop{false}; /* 独立控制 bridge 下行线程 (t4), 避免与 t3 的 g_crsf_stop 互相干扰 */
 
 static int64_t now_us();   /* forward */
+static constexpr int64_t P20_PRIORITY_US = 50000LL;
+static constexpr int64_t RC_STALE_US = 500000LL;
 
 /* ── Lua 发送缓冲 (单帧, 模仿 EdgeTX outputTelemetryBuffer) ──
  * CRSF Lua 帧与通道帧是时分复用: Lua 帧替代通道帧发送, 不叠加。
@@ -499,9 +502,9 @@ static void send_rcmsg(int fd, const sockaddr_in &dst, const rc_state_t &st,
 
 // ── 处理一个DUML包 → 更新端口状态 ──────────────────────────────
 
-static void sbus_send_if_p20(DjiPort *p);  // forward: 定义在 SBUS 输出区域
+static void output_from_input_event(DjiPort *p);  // forward: 定义在输出区域
 
-static void handle_pkt(DjiPort *p, const duml_pkt_t *pk)
+static bool handle_pkt(DjiPort *p, const duml_pkt_t *pk)
 {
     rc_state_t st;
     bool ok = false;
@@ -522,6 +525,7 @@ static void handle_pkt(DjiPort *p, const duml_pkt_t *pk)
     }
     int nb = pk->payload_len < 16 ? pk->payload_len : 16;
     for (int i = 0; i < nb; i++) p->dbg_b[i] = pk->payload[i];
+    return ok;
 }
 
 // ── 串口接收线程 ──────────────────────────────────────────────
@@ -551,11 +555,9 @@ static void rx_thread(DjiPort *p)
             if (r == 0) { off += 1; continue; }
 
             g_mtx.lock();
-            handle_pkt(p, &pk);
+            bool rc_ok = handle_pkt(p, &pk);
             g_mtx.unlock();
-            /* 输出改由主循环统一驱动 (P20/P0 任一输入), 停用 P20 事件驱动:
-             * 否则 P20 有帧时事件驱动 + 主循环双输出导致帧率翻倍。 */
-            // sbus_send_if_p20(p);
+            if (rc_ok) output_from_input_event(p);
             off += pk.pkt_len;
         }
 
@@ -658,7 +660,8 @@ static void write_text_atomic(const char *path, const char *buf, int len)
         std::fprintf(stderr, "[dji_rc] state write %s: wrote %zd of %d\n", path, written, len);
 }
 
-static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
+static void write_state_file(const rc_state_t &st, const char *active_src,
+                             uint32_t g1, uint32_t g2,
                              uint32_t rx1, uint32_t rx2, int64_t ts_us)
 {
     uint16_t ch[CH_COUNT];
@@ -704,7 +707,7 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
         "\"up\":%d,\"down\":%d,\"left\":%d,\"right\":%d,\"aircraft\":%d,\"back\":%d,"
         "\"good1\":%u,\"good2\":%u,\"rx1\":%u,\"rx2\":%u,"
         "\"good1_hz\":%.1f,\"good2_hz\":%.1f,\"rx1_bps\":%.1f,\"rx2_bps\":%.1f,\"out_hz\":%.1f,"
-        "\"tx_hz\":%.1f,\"tx_ok\":%u,\"tx_err\":%u,"
+        "\"tx_hz\":%.1f,\"tx_ok\":%u,\"tx_err\":%u,\"active_src\":\"%s\","
         "\"type\":\"%s\",\"ts_us\":%lld}\n",
         ch[0], ch[1], ch[2], ch[3], ch[4], ch[5], ch[6], ch[7],
         ch[8], ch[9], ch[10], ch[11], ch[12], ch[13], ch[14], ch[15],
@@ -714,7 +717,7 @@ static void write_state_file(const rc_state_t &st, uint32_t g1, uint32_t g2,
         st.up, st.down, st.left, st.right, st.aircraft, st.back,
         g1, g2, rx1, rx2,
         good1_hz, good2_hz, rx1_bps, rx2_bps, out_hz,
-        tx_hz, tx_ok, tx_err, rc_type_name(st.type),
+        tx_hz, tx_ok, tx_err, active_src ? active_src : "none", rc_type_name(st.type),
         (long long)ts_us);
 
     // atomic write: tmp → rename
@@ -899,10 +902,9 @@ static void out_send(const rc_state_t &m)
     }
 }
 
-/* P20 解到帧时的事件驱动发送 (forward 声明在 rx_thread 上方) */
-static void sbus_send_if_p20(DjiPort *p)
+/* 输入事件驱动输出: 921600 在 50ms 窗口内优先；超时后 115200 接管。 */
+static void output_from_input_event(DjiPort *p)
 {
-    if (p != &g_p20) return;
     if (g_out_fd.load() < 0) return;   // C1: atomic load
 
     int64_t n = now_us();
@@ -915,18 +917,19 @@ static void sbus_send_if_p20(DjiPort *p)
     s0  = g_p0.state;  l0  = g_p0.last_us;
     g_mtx.unlock();
 
-    if (s20.type == RC_NONE) return;
-    if ((n - l20) > 500000LL) return;
-
-    int64_t age20 = n - l20;
+    int64_t age20 = (s20.type == RC_NONE) ? INT64_MAX : n - l20;
     int64_t age0  = (s0.type == RC_NONE) ? INT64_MAX : n - l0;
 
-    rc_state_t m;
-    rc_merge(&s20, age20, &s0, age0, 500000LL, &m);
+    RcSourceDecision d = rc_select_priority_source(s20, age20, s0, age0,
+                                                   P20_PRIORITY_US, RC_STALE_US);
+    if (d.active == RcActiveSource::None) return;
+    if (p == &g_p20 && d.active != RcActiveSource::P20_921600) return;
+    if (p == &g_p0 && d.active != RcActiveSource::P0_115200) return;
 
     /* CRSF 模式: 同时输出摇杆帧 + Lua 桥 (老大要求 crsf 既能输出摇杆又能配 Lua)。
      * bridge 下行线程写 UART0 与 out_send 用 g_out_write_mtx 互斥, 防帧交错。 */
-    if (m.type != RC_NONE) out_send(m);   // write() outside mutex
+    advance_output_latches(d.state);
+    out_send(d.state);   // write() outside mutex
 }
 
 // ── CRSF 回传接收线程: 读 UART0 上行帧 (GPS/BATT/ATT/VARIO/LINK) ──
@@ -1450,19 +1453,14 @@ int main(int argc, char **argv)
         int64_t age20 = (s20.type == RC_NONE) ? INT64_MAX : n - l20;
         int64_t age0  = (s0.type  == RC_NONE) ? INT64_MAX : n - l0;
 
-        rc_state_t m;
-        rc_merge(&s20, age20, &s0, age0, 500000LL, &m);  // 500ms stale
+        RcSourceDecision d = rc_select_priority_source(s20, age20, s0, age0,
+                                                       P20_PRIORITY_US, RC_STALE_US);
+        rc_state_t m = d.state;
 
         if (m.type != RC_NONE) {
-            /* 以合并后的统一 RC 状态推进自锁，避免绑定到某一路串口。 */
-            advance_output_latches(m);
             // 状态文件 (供 web_server /api/rc)
-            write_state_file(m, g20, g0, rx20, rx0, now_us());
+            write_state_file(m, rc_active_source_name(d.active), g20, g0, rx20, rx0, now_us());
             send_rcmsg(rcmsg_fd, rcmsg_dst, m, true, ++rcmsg_seq, n);
-            /* 统一输出: 由主循环驱动 (P20/P0 任一有效输入都输出),
-             * 不再依赖 P20 事件驱动 (sbus_send_if_p20 已停用)。
-             * 输出频率 = 主循环周期 (S99 --interval 20 → 50Hz)。 */
-            out_send(m);
         } else if (rx20 > 0 || rx0 > 0) {
             // UART有数据但RC掉线: 写空状态防旧数据残留
             static const char no_rc[] = "{\"error\":\"no RC data\",\"rx1\":%u,\"rx2\":%u}\n";

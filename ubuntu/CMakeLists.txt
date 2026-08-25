@@ -59,12 +59,22 @@ target_include_directories(rtsp_nat_helper_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
+add_executable(rc_source_select_test
+    tests/rc_source_select_test.cpp
+    src/rc_source_select.cpp
+)
+
+target_include_directories(rc_source_select_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
 install(TARGETS usb_tund web_server DESTINATION /usr/local/bin)
 
 # DJI RC 双路串口解码守护进程
 # 注意: dji_rc.cpp 使用 crsf.c (CRSF 编解码/回传) 和 rc_map.c (通道映射), 必须链接
 add_executable(dji_rc
     src/dji_rc.cpp
+    src/rc_source_select.cpp
     src/duml.c
     src/rc_decode.c
     src/chmap.c

@@ -46,6 +46,7 @@ done
 "$GPP" -std=c++17 -O2 -s -Wall \
   -o "$TGT/usr/local/bin/dji_rc" \
   "$PROJECT/ubuntu/src/dji_rc.cpp" \
+  "$PROJECT/ubuntu/src/rc_source_select.cpp" \
   "$DJI_TMP/duml.o" "$DJI_TMP/rc_decode.o" "$DJI_TMP/chmap.o" "$DJI_TMP/sbus.o" "$DJI_TMP/crsf.o" "$DJI_TMP/rc_map.o" \
   -lpthread
 chmod +x "$TGT/usr/local/bin/dji_rc"
