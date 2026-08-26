@@ -138,7 +138,7 @@ We'll know we're right when **4Mbps RTSP 视频流持续稳定播放 >30 分钟�
   - **待验证**：修复版 dji_rc 编译部署后，CH8=REC、CH13=STOP 自锁应在按键松开后保持，再次按下解除。
 - **RC 输入源升级**（2026-08-26）：摇杆高频数据优先来自 Android `getevent`，40007 TCP 本机端口提供低频摇杆 fallback 与按键/模式/DIAL；App 将 `getevent + 40007` 融合结果按 20ms 定时编码为 `RCM1` 风格数据。
   - **关键约束**：`getevent` 是变化触发输入源，没有输入变化时不会自然产生事件；输出链路不能跟随 event 触发，必须由 Android 侧 publisher 定时输出完整遥控状态。
-  - **兼容边界**：App UI 继续消费现有 `RcMsg.Data`，V3s 输出链路后续消费 App 发出的 `RCM1`，旧双串口摇杆解码保留为 fallback/诊断，不再作为正常摇杆来源。
+  - **兼容边界**：App UI 继续消费现有 `RcMsg.Data`，V3s 监听 UDP `65531` 接收 App 发出的 `RCM1` 并在 80ms fresh 窗口内作为主输入；旧双串口摇杆解码保留为 fallback/诊断，不再作为正常摇杆来源。
 - **App 配置界面清理**（v1.6.23，commit 7b2ef64）：删 RC 遥控器占位 + 通道映射编辑（遥控页已有），播放引擎/解码器合并组合下拉
 - ⚠️ **已知问题**: App USB 授权弹窗反复弹（DJI RC 不保存 USB 授权, hasPermission 反复 false）→ 待修
 3. 固件未固化（V3s 跑 /tmp 调试版 dji_rc）→ 待固化（M7）

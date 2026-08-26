@@ -21,7 +21,7 @@ extern "C" {
 #include <stdbool.h>
 #include <stddef.h>
 
-typedef enum { RC_NONE = 0, RC_AE, RC_SPECIAL } rc_type_t;
+typedef enum { RC_NONE = 0, RC_AE, RC_SPECIAL, RC_APP_FUSED } rc_type_t;
 
 typedef struct {
     rc_type_t type;
