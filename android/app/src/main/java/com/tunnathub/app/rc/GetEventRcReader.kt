@@ -35,12 +35,12 @@ class GetEventRcReader(
 
     companion object {
         val DEFAULT_AXIS_MAP: Map<String, Int> = mapOf(
-            "ABS_X" to 0,
-            "ABS_Y" to 1,
-            "ABS_RX" to 2,
-            "ABS_RY" to 3,
-            "ABS_Z" to 4,
-            "ABS_RZ" to 5
+            "ABS_RX" to 0,
+            "ABS_RY" to 1,
+            "ABS_Y" to 2,
+            "ABS_X" to 3,
+            "ABS_RZ" to 4,
+            "ABS_Z" to 5
         )
 
         @JvmStatic

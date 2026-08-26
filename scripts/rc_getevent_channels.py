@@ -26,14 +26,19 @@ AXIS_RANGES = {
 }
 
 AXIS_TO_RC = {
-    "ABS_X": "CH1?",
-    "ABS_Y": "CH2?",
-    "ABS_RX": "CH3?",
-    "ABS_RY": "CH4?",
-    "ABS_Z": "CH5?",
-    "ABS_RZ": "CH6?",
+    "ABS_RX": "CH1",
+    "ABS_RY": "CH2",
+    "ABS_Y": "CH3",
+    "ABS_X": "CH4",
+    "ABS_RZ": "CH5",
+    "ABS_Z": "CH6",
     "ABS_HAT0X": "HAT_X",
     "ABS_HAT0Y": "HAT_Y",
+}
+
+KEY_TO_RC = {
+    "BTN_TL": "REC",
+    "BTN_TR": "SHOT",
 }
 
 KEY_NAMES = [
@@ -183,12 +188,13 @@ def render(
         )
     print("", file=output)
     print("Keys:", file=output)
-    print("  key              state  changes  age_ms", file=output)
+    print("  rc      key              state  changes  age_ms", file=output)
     for code in KEY_NAMES:
         state = key_states[code]
         age_ms = int((now - state.updated_at) * 1000) if state.updated_at else -1
         text = "DOWN" if state.down else "UP"
-        print(f"  {code:<16} {text:<5} {state.changes:>8} {age_ms:>7}", file=output)
+        rc_name = KEY_TO_RC.get(code, "-")
+        print(f"  {rc_name:<7} {code:<16} {text:<5} {state.changes:>8} {age_ms:>7}", file=output)
     output.flush()
 
 
@@ -251,7 +257,8 @@ def main() -> int:
                 state.updated_at = now
                 if args.changes:
                     text = "DOWN" if state.down else "UP"
-                    print(f"{now - start_time:8.3f}s key  {code:<16} {text:<4} n={state.changes}")
+                    rc_name = KEY_TO_RC.get(code, "-")
+                    print(f"{now - start_time:8.3f}s key  {rc_name:<7} {code:<16} {text:<4} n={state.changes}")
 
             if not args.changes and now >= next_render_at:
                 render(axis_states, key_states, sys.stdout, start_time)

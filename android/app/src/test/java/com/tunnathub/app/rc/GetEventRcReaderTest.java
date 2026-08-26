@@ -5,6 +5,7 @@ public final class GetEventRcReaderTest {
         parsesAxisLine();
         parsesKeyLine();
         normalizesWideAndByteAxes();
+        exposesConfirmedDefaultAxisMap();
     }
 
     private static void parsesAxisLine() {
@@ -30,6 +31,15 @@ public final class GetEventRcReaderTest {
         assertEquals(-1024, GetEventRcReader.normalizeAxis("ABS_Y", -32768), "wide min");
         assertEquals(0, GetEventRcReader.normalizeAxis("ABS_Z", 127), "byte mid");
         assertEquals(1024, GetEventRcReader.normalizeAxis("ABS_RZ", 255), "byte max");
+    }
+
+    private static void exposesConfirmedDefaultAxisMap() {
+        assertEquals(0, GetEventRcReader.Companion.getDEFAULT_AXIS_MAP().get("ABS_RX").intValue(), "CH1 axis");
+        assertEquals(1, GetEventRcReader.Companion.getDEFAULT_AXIS_MAP().get("ABS_RY").intValue(), "CH2 axis");
+        assertEquals(2, GetEventRcReader.Companion.getDEFAULT_AXIS_MAP().get("ABS_Y").intValue(), "CH3 axis");
+        assertEquals(3, GetEventRcReader.Companion.getDEFAULT_AXIS_MAP().get("ABS_X").intValue(), "CH4 axis");
+        assertEquals(4, GetEventRcReader.Companion.getDEFAULT_AXIS_MAP().get("ABS_RZ").intValue(), "CH5 axis");
+        assertEquals(5, GetEventRcReader.Companion.getDEFAULT_AXIS_MAP().get("ABS_Z").intValue(), "CH6 axis");
     }
 
     private static void assertEquals(Object expected, Object actual, String name) {
