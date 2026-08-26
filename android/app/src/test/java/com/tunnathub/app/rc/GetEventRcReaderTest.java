@@ -12,6 +12,10 @@ public final class GetEventRcReaderTest {
             GetEventRcReader.parseAxisLine("[  123.456789] /dev/input/event4: EV_ABS ABS_X 00007fff");
         assertEquals("ABS_X", event.getCode(), "axis code");
         assertEquals(32767, event.getValue(), "axis value");
+
+        GetEventRcReader.AxisEvent negative =
+            GetEventRcReader.parseAxisLine("[  123.456790] /dev/input/event4: EV_ABS ABS_RX ffff8000");
+        assertEquals(-32768, negative.getValue(), "signed hex value");
     }
 
     private static void parsesKeyLine() {
