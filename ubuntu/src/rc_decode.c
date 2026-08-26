@@ -9,6 +9,7 @@ const char *rc_type_name(rc_type_t t)
     switch (t) {
         case RC_AE:      return "RC/0xAE";
         case RC_SPECIAL: return "SPECIAL/0x02";
+        case RC_APP_FUSED: return "APP/RCM1";
         default:         return "NONE";
     }
 }
@@ -108,7 +109,7 @@ int rc_state_to_kv(const rc_state_t *st, char *out, size_t n)
         st->ch[0], st->ch[1], st->ch[2], st->ch[3], st->ch[4], st->ch[5],
         st->mode, st->btn, st->stop, st->focus, st->shot, st->rec);
 
-    if (st->type == RC_AE && w > 0 && (size_t)w < n) {
+    if ((st->type == RC_AE || st->type == RC_APP_FUSED) && w > 0 && (size_t)w < n) {
         w += snprintf(out + w, n - (size_t)w,
             " C1=%d C2=%d C3=%d DIAL=%d RTH=%d UP=%d DN=%d L=%d R=%d AC=%d BACK=%d",
             st->c1, st->c2, st->c3, st->dial, st->rth,

@@ -53,6 +53,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.tunnathub.app.BuildConfig
+import com.tunnathub.app.rc.GetEventRcReader
+import com.tunnathub.app.rc.Port40007RcReader
+import com.tunnathub.app.rc.RcFusionRuntime
+import com.tunnathub.app.rc.RcMsgTransport
+import com.tunnathub.app.rc.Tcp40007PacketSource
 import com.tunnathub.app.service.TunNatVpnService
 import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
@@ -633,6 +638,22 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var rcAircraft by remember { mutableStateOf(0) }; var rcBack by remember { mutableStateOf(0) }
     var rcType by remember { mutableStateOf("") }
 
+    fun applyRcData(data: RcMsg.Data, type: String) {
+        rcConnected = true
+        rcChs = data.chs
+        rcRawChs = data.rawChs
+        rcMode = data.mode
+        rcBtn = data.btn; rcStop = data.stop
+        rcFocus = data.focus; rcShot = data.shot
+        rcRec = data.rec; rcRth = data.rth
+        rcC1 = data.c1; rcC2 = data.c2
+        rcC3 = data.c3; rcDial = data.dial
+        rcUp = data.up; rcDown = data.down
+        rcLeft = data.left; rcRight = data.right
+        rcAircraft = data.aircraft; rcBack = data.back
+        rcType = type
+    }
+
     // ── 摄像头列表 ──
     data class CamInfo(val name: String, val url: String)
     var cameras by remember { mutableStateOf(listOf<CamInfo>()) }
@@ -782,19 +803,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         sock.receive(pkt)
                         val data = RcMsg.parse(pkt.data.copyOf(pkt.length))
                         if (data != null) {
-                            rcConnected = true
-                            rcChs = data.chs
-                            rcRawChs = data.rawChs
-                            rcMode = data.mode
-                            rcBtn = data.btn; rcStop = data.stop
-                            rcFocus = data.focus; rcShot = data.shot
-                            rcRec = data.rec; rcRth = data.rth
-                            rcC1 = data.c1; rcC2 = data.c2
-                            rcC3 = data.c3; rcDial = data.dial
-                            rcUp = data.up; rcDown = data.down
-                            rcLeft = data.left; rcRight = data.right
-                            rcAircraft = data.aircraft; rcBack = data.back
-                            rcType = "RC"
+                            applyRcData(data, "RC")
                         }
                     } catch (_: java.net.SocketTimeoutException) {
                         // 空闲超时, 继续等
@@ -810,6 +819,41 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 rcConnected = false
             } finally {
                 // 不关闭 socket: 它是 protectPort 持有的锚定 socket, 由 VPN 服务管理
+            }
+        }
+    }
+
+    // ── Android 侧 RC 融合输入: getevent/40007 是输入更新, 这里按 20ms 定时发布完整状态 ──
+    LaunchedEffect(vpnRunning) {
+        if (!vpnRunning) return@LaunchedEffect
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            var runtime: RcFusionRuntime? = null
+            try {
+                val socket = java.net.DatagramSocket()
+                TunNatVpnService.bindSocketToVpn(socket)
+                val transport = RcMsgTransport(socket, onLocalData = { data ->
+                    applyRcData(data, "RC-FUSION")
+                })
+                runtime = RcFusionRuntime(
+                    geteventReaderFactory = { onSample ->
+                        GetEventRcReader(onSample = onSample)
+                    },
+                    port40007ReaderFactory = { onSample ->
+                        Port40007RcReader(Tcp40007PacketSource(), onSample)
+                    },
+                    transport = transport,
+                    onError = { source, error ->
+                        AppLog.w("RcFusion", "$source 输入停止: ${error.message}")
+                    }
+                )
+                runtime.start()
+                while (vpnRunning) kotlinx.coroutines.delay(1000)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.e("RcFusion", "融合输入启动失败: ${e.message}")
+            } finally {
+                runtime?.close()
             }
         }
     }

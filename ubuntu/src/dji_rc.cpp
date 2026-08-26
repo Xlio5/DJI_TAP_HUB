@@ -11,6 +11,7 @@
  */
 #include <atomic>
 #include <cerrno>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -65,6 +66,10 @@ struct DjiPort {
 
 static DjiPort g_p20;      // ttyS1 @921600
 static DjiPort g_p0;       // ttyS2 @115200
+static rc_state_t g_app_rc; // App 侧 getevent+40007 融合后的 RCM1 状态
+static uint32_t g_app_good = 0;
+static uint32_t g_app_rx = 0;
+static int64_t g_app_last_us = 0;
 static std::mutex g_mtx;
 static std::atomic<bool> g_stop{false};
 static std::atomic<bool> g_crsf_stop{false};   /* 独立控制 CRSF 回传线程 (t3), 不干扰 t1/t2 */
@@ -104,6 +109,12 @@ static size_t tx_lua_take(uint8_t *out, size_t max) {
     g_lua_qh = (g_lua_qh + 1) % 4;
     return n;
 }
+
+/* UART0 debug 日志 (--debug-uart0 启用): 状态/输出行镜像到独立串口。
+ * 来自 merge codex/adb-getevent-rc-fusion 的 UART0 调试子系统。 */
+static int g_debug_fd = -1;
+static int64_t g_last_debug_us = 0;
+static void debug_log(const char *fmt, ...);   /* forward: 定义在 helpers */
 
 // ── 输出 (SBUS/CRSF @SC16IS752 UART-A) ──
 // C1: g_out_fd 被多线程 (rx_thread/t3/主线程) 无锁访问, 用 atomic 避免 fd 值撕裂
@@ -299,6 +310,7 @@ static void aux_tmux_apply()
 // ── rcmsg (RC 数据 UDP) ──
 static constexpr uint32_t RCMSG_MAGIC = 0x314D4352u;  // "RCM1", little-endian on wire
 static constexpr int RCMSG_PORT = 65530;
+static constexpr int APP_RC_PORT = 65531;
 // 手机主地址 10.0.0.2 (Android VpnService 只对主地址投递 protect 隧道包)。
 // V3s 把电脑发的 144.11 包 DNAT 到 10.0.0.2, 手机在此收 rcmsg/局域网入向。
 static constexpr const char *RCMSG_HOST = "10.0.0.2";
@@ -339,6 +351,50 @@ static int64_t now_us() {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     // CRIT#1: 用 1000000LL, 避免 32-bit ARM 上 ts.tv_sec*1000000 (long) 35分钟溢出回卷
     return (int64_t)ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
+}
+
+/* UART0 debug 输出口: --debug-uart0 启用后, 状态/输出行镜像写独立串口 (默认 /dev/ttyS0)。 */
+static void debug_uart0_open(const char *dev, int baud)
+{
+    g_debug_fd = ::open(dev, O_WRONLY | O_NOCTTY | O_NONBLOCK);
+    if (g_debug_fd < 0) {
+        std::fprintf(stderr, "[dji_rc] debug uart open %s failed: %s\n",
+                     dev, std::strerror(errno));
+        return;
+    }
+
+    struct termios tty;
+    std::memset(&tty, 0, sizeof(tty));
+    if (tcgetattr(g_debug_fd, &tty) == 0) {
+        tty.c_iflag = IGNPAR;
+        tty.c_oflag = 0;
+        tty.c_cflag = CLOCAL | CREAD | CS8;
+        tty.c_lflag = 0;
+        tty.c_cc[VMIN] = 0;
+        tty.c_cc[VTIME] = 0;
+        speed_t spd = (baud == 921600) ? B921600 : B115200;
+        cfsetispeed(&tty, spd);
+        cfsetospeed(&tty, spd);
+        tcsetattr(g_debug_fd, TCSANOW, &tty);
+    }
+
+    debug_log("[dji_rc][dbg] uart0 debug enabled dev=%s baud=%d", dev, baud);
+}
+
+static void debug_log(const char *fmt, ...)
+{
+    if (g_debug_fd < 0) return;
+
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n <= 0) return;
+    if (n > (int)sizeof(buf) - 3) n = sizeof(buf) - 3;
+    buf[n++] = '\r';
+    buf[n++] = '\n';
+    ::write(g_debug_fd, buf, n);
 }
 
 static int uart_open(const char *dev, int baud)
@@ -466,6 +522,34 @@ static uint32_t button_bits(const rc_state_t &st)
     return b;
 }
 
+static bool rcmsg_to_state(const RcMsg &msg, rc_state_t *out)
+{
+    if (!out) return false;
+    if (msg.magic != RCMSG_MAGIC || msg.version != 1 || msg.size != sizeof(RcMsg)) return false;
+    std::memset(out, 0, sizeof(*out));
+    out->type = RC_APP_FUSED;
+    for (int i = 0; i < 6; i++) out->ch[i] = msg.raw_ch[i];
+    uint32_t b = msg.buttons;
+    out->btn      = (b >> 0) & 1u;
+    out->stop     = (b >> 1) & 1u;
+    out->focus    = (b >> 2) & 1u;
+    out->shot     = (b >> 3) & 1u;
+    out->rec      = (b >> 4) & 1u;
+    out->rth      = (b >> 5) & 1u;
+    out->c1       = (b >> 6) & 1u;
+    out->c2       = (b >> 7) & 1u;
+    out->c3       = (b >> 8) & 1u;
+    out->up       = (b >> 9) & 1u;
+    out->down     = (b >> 10) & 1u;
+    out->left     = (b >> 11) & 1u;
+    out->right    = (b >> 12) & 1u;
+    out->aircraft = (b >> 13) & 1u;
+    out->back     = (b >> 14) & 1u;
+    out->mode = (msg.mode == 'S' || msg.mode == 'N' || msg.mode == 'F') ? (char)msg.mode : '?';
+    out->dial = msg.dial;
+    return true;
+}
+
 static void build_output_channels(const rc_state_t &st, uint16_t ch[CH_COUNT], bool advance_latch);
 
 static void send_rcmsg(int fd, const sockaddr_in &dst, const rc_state_t &st,
@@ -573,6 +657,55 @@ static void rx_thread(DjiPort *p)
     }
 }
 
+// ── App 融合 RC 接收线程: Android 侧按 20ms 定时发 RCM1 到 65531 ──────
+
+static void app_rc_thread()
+{
+    int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        std::fprintf(stderr, "[dji_rc] app_rc socket failed: %s\n", std::strerror(errno));
+        return;
+    }
+    int one = 1;
+    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 200000;
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(APP_RC_PORT);
+    addr.sin_addr.s_addr = INADDR_ANY;
+    if (::bind(fd, (sockaddr *)&addr, sizeof(addr)) < 0) {
+        std::fprintf(stderr, "[dji_rc] app_rc bind :%d failed: %s\n",
+                     APP_RC_PORT, std::strerror(errno));
+        ::close(fd);
+        return;
+    }
+    std::printf("[dji_rc] app_rc UDP listen :%d fd=%d\n", APP_RC_PORT, fd);
+
+    while (!g_stop.load(std::memory_order_relaxed)) {
+        RcMsg msg{};
+        ssize_t n = ::recv(fd, &msg, sizeof(msg), 0);
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
+            std::fprintf(stderr, "[dji_rc] app_rc recv error: %s\n", std::strerror(errno));
+            break;
+        }
+        g_mtx.lock();
+        g_app_rx += (uint32_t)n;
+        rc_state_t st;
+        if (n == (ssize_t)sizeof(msg) && rcmsg_to_state(msg, &st)) {
+            g_app_rc = st;
+            g_app_good++;
+            g_app_last_us = now_us();
+        }
+        g_mtx.unlock();
+    }
+    ::close(fd);
+}
+
 // ── 自检 ──────────────────────────────────────────────────────
 
 static bool selftest()
@@ -662,7 +795,10 @@ static void write_text_atomic(const char *path, const char *buf, int len)
 
 static void write_state_file(const rc_state_t &st, const char *active_src,
                              uint32_t g1, uint32_t g2,
-                             uint32_t rx1, uint32_t rx2, int64_t ts_us)
+                             uint32_t rx1, uint32_t rx2,
+                             uint32_t app_good, uint32_t app_rx,
+                             int64_t app_age_us, bool app_primary,
+                             int64_t ts_us)
 {
     uint16_t ch[CH_COUNT];
     /* latch 由主循环的统一 RC 状态推进；状态文件只应用当前 latch。 */
@@ -708,6 +844,8 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
         "\"good1\":%u,\"good2\":%u,\"rx1\":%u,\"rx2\":%u,"
         "\"good1_hz\":%.1f,\"good2_hz\":%.1f,\"rx1_bps\":%.1f,\"rx2_bps\":%.1f,\"out_hz\":%.1f,"
         "\"tx_hz\":%.1f,\"tx_ok\":%u,\"tx_err\":%u,\"active_src\":\"%s\","
+        "\"app_rc_good\":%u,\"app_rc_rx\":%u,\"app_rc_age_ms\":%lld,"
+        "\"rc_input_primary\":\"%s\","
         "\"type\":\"%s\",\"ts_us\":%lld}\n",
         ch[0], ch[1], ch[2], ch[3], ch[4], ch[5], ch[6], ch[7],
         ch[8], ch[9], ch[10], ch[11], ch[12], ch[13], ch[14], ch[15],
@@ -717,7 +855,11 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
         st.up, st.down, st.left, st.right, st.aircraft, st.back,
         g1, g2, rx1, rx2,
         good1_hz, good2_hz, rx1_bps, rx2_bps, out_hz,
-        tx_hz, tx_ok, tx_err, active_src ? active_src : "none", rc_type_name(st.type),
+        tx_hz, tx_ok, tx_err, active_src ? active_src : "none",
+        app_good, app_rx,
+        (long long)((app_age_us == INT64_MAX) ? -1 : app_age_us / 1000),
+        app_primary ? "android_rcm1" : "uart_fallback",
+        rc_type_name(st.type),
         (long long)ts_us);
 
     // atomic write: tmp → rename
@@ -1315,6 +1457,9 @@ int main(int argc, char **argv)
     int baud1 = 921600;
     int baud2 = 115200;
     int interval_ms = 100;
+    bool debug_uart0 = false;                /* --debug-uart0 启用 UART0 调试镜像输出 */
+    const char *debug_dev = "/dev/ttyS0";
+    int debug_baud = 115200;
     const char *out_dev = "/dev/ttySC0";     /* 协议输出口: 默认 SC16IS752 通道 A */
     char out_mode = 's';                     /* 's'=SBUS, 'c'=CRSF */
     int  out_baud = 100000;                  /* 默认 SBUS 100k */
@@ -1329,6 +1474,9 @@ int main(int argc, char **argv)
         else if (std::strcmp(argv[i], "--baud1") == 0 && i + 1 < argc) baud1 = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--baud2") == 0 && i + 1 < argc) baud2 = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--interval") == 0 && i + 1 < argc) interval_ms = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--debug-uart0") == 0) debug_uart0 = true;
+        else if (std::strcmp(argv[i], "--debug-uart0-dev") == 0 && i + 1 < argc) debug_dev = argv[++i];
+        else if (std::strcmp(argv[i], "--debug-uart0-baud") == 0 && i + 1 < argc) debug_baud = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--out-mode") == 0 && i + 1 < argc) out_mode = argv[++i][0];
         else if (std::strcmp(argv[i], "--out-dev") == 0 && i + 1 < argc) out_dev = argv[++i];
         else if (std::strcmp(argv[i], "--out-baud") == 0 && i + 1 < argc) out_baud = std::atoi(argv[++i]);
@@ -1367,6 +1515,8 @@ int main(int argc, char **argv)
         g_out_baud = out_baud;
         std::printf("[dji_rc] crsf-bridge 模式: SC16 UART-A CRSF %d baud, 参数帧转发网口\n", out_baud);
     }
+
+    if (debug_uart0) debug_uart0_open(debug_dev, debug_baud);
 
     std::printf("\n=== DJI RC daemon (V3s) ===\n");
     std::printf("P20: %s @%d  |  P0: %s @%d  |  print every %dms\n\n",
@@ -1413,10 +1563,11 @@ int main(int argc, char **argv)
     }
 
     // 启动接收线程 (协议输出在 P20 rx_thread 的 handle_pkt 里事件驱动)
-    std::thread t1, t2, t3, t4;
+    std::thread t1, t2, t3, t4, t_app;
     crsf_params_init();   /* 初始化 CRSF 参数表 (Device_Ping 响应用) */
     if (g_p20.fd >= 0) t1 = std::thread(rx_thread, &g_p20);
     if (g_p0.fd  >= 0) t2 = std::thread(rx_thread, &g_p0);
+    t_app = std::thread(app_rc_thread);
     /* 上行 crsf_rx_thread: CRSF 遥测回传 或 bridge 模式都需要 (bridge 双向转发 ELRS 响应) */
     if ((out_mode == 'c' && g_crsf_telem) || g_crsf_bridge) {
         if (g_out_fd.load() >= 0)
@@ -1440,26 +1591,39 @@ int main(int argc, char **argv)
         // int64_t now_lua = now_us();
         // if (now_lua - last_lua >= 15000LL) { ... }
 
-        rc_state_t s20, s0;
-        uint32_t g20, g0, rx20, rx0;
-        int64_t l20, l0;
+        rc_state_t s20, s0, sapp;
+        uint32_t g20, g0, rx20, rx0, appGood, appRx;
+        int64_t l20, l0, lapp;
 
         g_mtx.lock();
         s20 = g_p20.state; g20 = g_p20.good; rx20 = g_p20.rx_bytes; l20 = g_p20.last_us;
         s0  = g_p0.state;  g0  = g_p0.good;  rx0  = g_p0.rx_bytes;  l0  = g_p0.last_us;
+        sapp = g_app_rc; appGood = g_app_good; appRx = g_app_rx; lapp = g_app_last_us;
         g_mtx.unlock();
 
         int64_t n = now_us();
         int64_t age20 = (s20.type == RC_NONE) ? INT64_MAX : n - l20;
         int64_t age0  = (s0.type  == RC_NONE) ? INT64_MAX : n - l0;
+        int64_t ageApp = (sapp.type == RC_NONE) ? INT64_MAX : n - lapp;
+        bool appFresh = (sapp.type != RC_NONE) && (ageApp <= 80000LL);
 
-        RcSourceDecision d = rc_select_priority_source(s20, age20, s0, age0,
-                                                       P20_PRIORITY_US, RC_STALE_US);
-        rc_state_t m = d.state;
+        RcSourceDecision d = {};
+        rc_state_t m;
+        if (appFresh) {
+            /* App RCM1 融合输入 (getevent) 有效时优先, 否则回退 UART 串口输入 */
+            m = sapp;
+        } else {
+            /* UART 双路: 921600 (P20) 输入优先 (b855de7) */
+            d = rc_select_priority_source(s20, age20, s0, age0,
+                                          P20_PRIORITY_US, RC_STALE_US);
+            m = d.state;
+        }
 
         if (m.type != RC_NONE) {
             // 状态文件 (供 web_server /api/rc)
-            write_state_file(m, rc_active_source_name(d.active), g20, g0, rx20, rx0, now_us());
+            const char *activeSrc = appFresh ? "android_rcm1" : rc_active_source_name(d.active);
+            write_state_file(m, activeSrc, g20, g0, rx20, rx0,
+                             appGood, appRx, ageApp, appFresh, now_us());
             send_rcmsg(rcmsg_fd, rcmsg_dst, m, true, ++rcmsg_seq, n);
         } else if (rx20 > 0 || rx0 > 0) {
             // UART有数据但RC掉线: 写空状态防旧数据残留
@@ -1562,7 +1726,13 @@ int main(int argc, char **argv)
         } else {
             rc_state_to_kv(&m, line, sizeof(line));
         }
-        std::printf("[dji_rc] %s | g1=%u g2=%u rx1=%u rx2=%u\n", line, g20, g0, rx20, rx0);
+        std::printf("[dji_rc] %s | g1=%u g2=%u app=%u primary=%s rx1=%u rx2=%u app_rx=%u\n",
+                    line, g20, g0, appGood, appFresh ? "app" : "uart", rx20, rx0, appRx);
+        if (debug_uart0 && (n - g_last_debug_us) >= 5000000LL) {
+            debug_log("[dji_rc][dbg] %s g1=%u g2=%u rx1=%u rx2=%u age1=%lld age2=%lld",
+                      line, g20, g0, rx20, rx0, (long long)age20, (long long)age0);
+            g_last_debug_us = n;
+        }
     }
 
     g_stop.store(true);
@@ -1573,8 +1743,10 @@ int main(int argc, char **argv)
     if (g_p0.fd  >= 0) { ::close(g_p0.fd);  g_p0.fd  = -1; }
     int outFdClean = g_out_fd.exchange(-1);   // C1: atomic
     if (outFdClean >= 0) { ::close(outFdClean); }
+    if (g_debug_fd >= 0) ::close(g_debug_fd);
     if (t3.joinable()) t3.join();
     if (t4.joinable()) t4.join();   /* bridge 下行线程 */
+    if (t_app.joinable()) t_app.join();
     if (t1.joinable()) t1.join();
     if (t2.joinable()) t2.join();
     if (rcmsg_fd >= 0) ::close(rcmsg_fd);
