@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import queue
 import socket
 import sys
@@ -201,6 +202,40 @@ def tcp_reader(name: str, host: str, port: int, out: queue.Queue[tuple[str, byte
             time.sleep(1)
 
 
+def adb_40007_reader(
+    name: str,
+    serial: str | None,
+    host: str,
+    port: int,
+    out: queue.Queue[tuple[str, bytes | None, str | None]],
+) -> None:
+    while True:
+        cmd = ["adb"]
+        if serial:
+            cmd += ["-s", serial]
+        cmd += ["exec-out", "toybox", "nc", host, str(port)]
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            assert proc.stdout is not None
+            out.put((name, None, f"adb exec-out toybox nc {host} {port}"))
+            while True:
+                data = proc.stdout.read1(4096)
+                if not data:
+                    break
+                out.put((name, data, None))
+            err = b""
+            if proc.stderr is not None:
+                err = proc.stderr.read(1024)
+            rc = proc.wait(timeout=2)
+            msg = f"adb nc exited rc={rc}"
+            if err:
+                msg += f" stderr={err.decode('utf-8', errors='replace').strip()}"
+            raise OSError(msg)
+        except Exception as exc:
+            out.put((name, None, f"adb reconnect after error: {exc}"))
+            time.sleep(1)
+
+
 def serial_reader(name: str, port: str, baud: int, out: queue.Queue[tuple[str, bytes | None, str | None]]) -> None:
     try:
         import serial  # type: ignore
@@ -226,6 +261,15 @@ def file_reader(name: str, path: Path, out: queue.Queue[tuple[str, bytes | None,
 
 def start_source_threads(args: argparse.Namespace, out: queue.Queue[tuple[str, bytes | None, str | None]]) -> set[str]:
     names: set[str] = set()
+    if args.adb is not None:
+        serial = args.adb or None
+        name = f"adb:{serial or 'default'}:{args.adb_host}:{args.adb_port}"
+        names.add(name)
+        threading.Thread(
+            target=adb_40007_reader,
+            args=(name, serial, args.adb_host, args.adb_port, out),
+            daemon=True,
+        ).start()
     if args.tcp:
         host, _, port_text = args.tcp.partition(":")
         port = int(port_text or "40007")
@@ -244,7 +288,15 @@ def start_source_threads(args: argparse.Namespace, out: queue.Queue[tuple[str, b
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Monitor DJI RC DUML messages from TCP 40007 and V3s serial")
+    parser = argparse.ArgumentParser(description="Monitor DJI RC DUML messages from adb 40007, TCP 40007, and V3s serial")
+    parser.add_argument(
+        "--adb",
+        nargs="?",
+        const="",
+        help="ADB source. Optional serial, e.g. --adb 7XJCM630011XC9 or --adb 192.168.5.249:5555",
+    )
+    parser.add_argument("--adb-host", default="127.0.0.1", help="host to connect inside Android, default 127.0.0.1")
+    parser.add_argument("--adb-port", type=int, default=40007, help="port to connect inside Android, default 40007")
     parser.add_argument("--tcp", help="TCP source, e.g. 192.168.5.249:40007")
     parser.add_argument("--serial", help="serial source, e.g. COM5")
     parser.add_argument("--baud", type=int, default=115200, help="serial baud, default 115200")
@@ -254,8 +306,8 @@ def main() -> int:
     parser.add_argument("--duration", type=float, default=0.0, help="seconds to run; 0 means forever")
     args = parser.parse_args()
 
-    if not (args.tcp or args.serial or args.file):
-        parser.error("set at least one source: --tcp, --serial, or --file")
+    if args.adb is None and not (args.tcp or args.serial or args.file):
+        parser.error("set at least one source: --adb, --tcp, --serial, or --file")
 
     events: queue.Queue[tuple[str, bytes | None, str | None]] = queue.Queue()
     source_names = start_source_threads(args, events)

@@ -44,6 +44,10 @@
 - 监听地址: `0.0.0.0:40007`
 - 从 Windows 连接 `192.168.5.249:40007` 可建立 TCP 连接，但未主动推送数据。
 - 发送 HTTP GET 和简单二进制探测包均无响应，说明 40007 不是裸流，也不是 HTTP；大概率需要 DJI 内部协议握手或特定 payload。
+- ADB 本机读取已确认可用:
+  - `adb -s 7XJCM630011XC9 exec-out toybox nc 127.0.0.1 40007`
+  - 5 秒内可抓到连续 DUML 包，其中 `cmd_set=0x06/cmd_id=0xAE`、长度 30 的 RC 帧可按 V3s 115200 串口同一套 `RC/0xAE` 规则解码。
+  - 因此脚本/APP 侧调试优先使用 ADB 本机源，不把 `192.168.5.249:40007` 当作电脑直连裸 TCP 流。
 - DJI APK 明文 proto 线索:
   - `AppSpecialControlJoyStickDataType.proto`
   - `AppVirtualStickDataType.proto`
