@@ -131,10 +131,13 @@ def event_lines_from_adb(device: str | None, event_paths: list[str], duration: f
     cmd = ["adb"]
     if device:
         cmd += ["-s", device]
+    getevent_args = ["getevent", "-lt"]
+    if len(event_paths) == 1:
+        getevent_args += event_paths
     if duration > 0:
-        cmd += ["shell", "timeout", str(max(1, ceil(duration))), "getevent", "-lt"] + event_paths
+        cmd += ["shell", "timeout", str(max(1, ceil(duration)))] + getevent_args
     else:
-        cmd += ["shell", "getevent", "-lt"] + event_paths
+        cmd += ["shell"] + getevent_args
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -239,7 +242,11 @@ def main() -> int:
     else:
         if not args.no_wake:
             maybe_wake_device(args.serial)
-        lines = event_lines_from_adb(args.serial, args.events or DEFAULT_EVENTS, args.duration)
+        events = args.events or DEFAULT_EVENTS
+        if args.changes:
+            mode = "all input devices" if len(events) > 1 else events[0]
+            print(f"monitoring {mode}; move sticks or press keys, Ctrl+C to stop", flush=True)
+        lines = event_lines_from_adb(args.serial, events, args.duration)
 
     try:
         for line in lines:
