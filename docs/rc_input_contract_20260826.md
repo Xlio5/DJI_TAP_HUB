@@ -25,6 +25,11 @@
 - 实测确认按键映射:
   - REC: `BTN_TL`
   - SHOT: `BTN_TR`
+- 补充按键设备:
+  - 设备路径: `/dev/input/event3`
+  - 设备名: `gpio-keys`
+  - 能力: `KEY_F1`、`KEY_F2`、`KEY_F3`、`KEY_F4`、`KEY_F5`、`KEY_F6`、`KEY_VOLUMEUP`
+  - 当前脚本映射: L1=`KEY_F1`、L2=`KEY_F2`、L3=`KEY_F3`、R1=`KEY_F4`、R2=`KEY_F5`、R3=`KEY_F6`
 - 归一化:
   - -32768..32767 -> -1024..1023
   - 0..255 -> -1016..1024，以 127 为中位

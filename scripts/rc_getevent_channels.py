@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from typing import Iterable, TextIO
 
 
+DEFAULT_EVENTS = ["/dev/input/event4", "/dev/input/event3"]
+
 AXIS_RANGES = {
     "ABS_X": (-32768, 32767),
     "ABS_Y": (-32768, 32767),
@@ -39,9 +41,22 @@ AXIS_TO_RC = {
 KEY_TO_RC = {
     "BTN_TL": "REC",
     "BTN_TR": "SHOT",
+    "KEY_F1": "L1",
+    "KEY_F2": "L2",
+    "KEY_F3": "L3",
+    "KEY_F4": "R1",
+    "KEY_F5": "R2",
+    "KEY_F6": "R3",
 }
 
 KEY_NAMES = [
+    "KEY_F1",
+    "KEY_F2",
+    "KEY_F3",
+    "KEY_F4",
+    "KEY_F5",
+    "KEY_F6",
+    "KEY_VOLUMEUP",
     "KEY_ENTER",
     "KEY_RECORD",
     "KEY_UP",
@@ -112,14 +127,14 @@ def normalize_axis(code: str, raw: int) -> int:
     return max(-1024, min(1024, value))
 
 
-def event_lines_from_adb(device: str | None, event_path: str, duration: float) -> Iterable[str]:
+def event_lines_from_adb(device: str | None, event_paths: list[str], duration: float) -> Iterable[str]:
     cmd = ["adb"]
     if device:
         cmd += ["-s", device]
     if duration > 0:
-        cmd += ["shell", "timeout", str(max(1, ceil(duration))), "getevent", "-lt", event_path]
+        cmd += ["shell", "timeout", str(max(1, ceil(duration))), "getevent", "-lt"] + event_paths
     else:
-        cmd += ["shell", "getevent", "-lt", event_path]
+        cmd += ["shell", "getevent", "-lt"] + event_paths
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -201,7 +216,12 @@ def render(
 def main() -> int:
     parser = argparse.ArgumentParser(description="List DJI RC getevent channel values")
     parser.add_argument("-s", "--serial", help="ADB serial, e.g. 7XJCM630011XC9 or 192.168.5.249:5555")
-    parser.add_argument("--event", default="/dev/input/event4", help="input device path, default /dev/input/event4")
+    parser.add_argument(
+        "--event",
+        action="append",
+        dest="events",
+        help="input device path; repeatable. default: /dev/input/event4 and /dev/input/event3",
+    )
     parser.add_argument("--duration", type=float, default=0.0, help="capture seconds; 0 means forever")
     parser.add_argument("--refresh", type=float, default=0.2, help="dashboard refresh interval seconds")
     parser.add_argument("--from-file", help="parse a saved getevent -lt text file")
@@ -219,7 +239,7 @@ def main() -> int:
     else:
         if not args.no_wake:
             maybe_wake_device(args.serial)
-        lines = event_lines_from_adb(args.serial, args.event, args.duration)
+        lines = event_lines_from_adb(args.serial, args.events or DEFAULT_EVENTS, args.duration)
 
     try:
         for line in lines:
