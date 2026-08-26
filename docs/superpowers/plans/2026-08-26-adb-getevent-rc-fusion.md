@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a new RC acquisition path where high-frequency joystick values come from DJI RC Android input events and low-frequency joystick/key state comes from UDP port 40007, then fuse them into the existing unified RC state used by channel mapping, lock, rcmsg display, and V3s output.
+**Goal:** Replace the current two-serial joystick acquisition path with an Android-side RC acquisition path: high-frequency joystick values come from DJI RC Android input events, low-frequency joystick/key state comes from UDP port 40007, and the fused result is encoded as an `RCM1`-style RC message so the App UI and V3s output chain can both consume the same unified RC data.
 
-**Architecture:** Keep V3s `rc_state_t` and channel mapping as the single downstream contract. Add Android-side acquisition modules for getevent and 40007, a pure fusion engine that prefers fresh high-frequency stick axes while preserving keys from 40007, and an explicit App-to-V3s RC uplink so V3s can output SBUS/CRSF from the fused state. Add a feasibility gate first because `adb shell getevent` proves the shell user can read input devices, but the APK process may not have the same permission.
+**Architecture:** Treat `RCM1` / `RcMsg.Data` semantics as the compatibility boundary instead of keeping the old UART frame path as the primary source. Add Android-side acquisition modules for getevent and 40007, fuse them into one `RcInputSample`, encode that sample through an `RCM1`-compatible codec, and feed the existing App RC page through the same model it already uses for V3s `rcmsg`. V3s then receives this App-generated RC message as its primary RC source and reuses the existing channel mapping, latch, SBUS/CRSF, rcmsg echo, and diagnostics path; UART decoding stays as an optional fallback/diagnostic, not the joystick source of truth.
 
 **Tech Stack:** Kotlin, Android coroutines, UDP sockets, existing `TunNatVpnService` protected socket helpers, C/C++ V3s `dji_rc`, existing `rc_state_t` / `rc_merge` / `rc_map` / `RcMsg`.
 
@@ -20,12 +20,14 @@
   - Receives low-frequency RC packets from UDP `40007`; extracts stick and key fields.
 - Create `android/app/src/main/java/com/tunnathub/app/rc/RcFusionEngine.kt`
   - Pure fusion logic: getevent axes win while fresh; 40007 supplies keys and fallback axes.
-- Create `android/app/src/main/java/com/tunnathub/app/rc/RcUplink.kt`
-  - Sends fused RC state from App to V3s over a new UDP uplink port.
+- Create `android/app/src/main/java/com/tunnathub/app/rc/RcMsgCodec.kt`
+  - Encodes fused Android RC state into the same `RCM1`-style binary shape that `RcMsg.kt` already parses.
+- Create `android/app/src/main/java/com/tunnathub/app/rc/RcMsgTransport.kt`
+  - Publishes the encoded RC message locally for App UI and sends it to V3s so the output chain can consume it.
 - Modify `android/app/src/main/java/com/tunnathub/app/MainActivity.kt`
-  - Replace direct `RcMsg` UI updates with fused local state where enabled; keep old V3s rcmsg path visible as diagnostic.
+  - Feed the existing RC page from `RcMsg.Data` no matter whether the data came from V3s legacy rcmsg or Android-side `event + 40007` fusion.
 - Modify `android/app/src/main/java/com/tunnathub/app/service/TunNatVpnService.kt`
-  - Reuse protected socket helpers for the App-to-V3s uplink and 40007 listener if the packet path goes through TUN.
+  - Reuse protected socket helpers for App-to-V3s RC message transport and the 40007 listener if the packet path goes through TUN.
 - Create `android/app/src/test/java/com/tunnathub/app/rc/RcFusionEngineTest.java`
   - Covers freshness, key preservation, stale fallback, and no-double-toggle assumptions.
 - Create `android/app/src/test/java/com/tunnathub/app/rc/GetEventRcReaderTest.java`
@@ -35,7 +37,7 @@
 - Modify `ubuntu/src/rc_decode.h`
   - Add `RC_APP_FUSED` source type.
 - Modify `ubuntu/src/dji_rc.cpp`
-  - Add App RC uplink UDP receiver, merge it into the existing unified RC state, and expose diagnostics in `/tmp/dji_rc_state.json`.
+  - Add an App-generated `RCM1` receiver, make it the primary RC input when fresh, bypass old dual-UART joystick acquisition for normal operation, and expose diagnostics in `/tmp/dji_rc_state.json`.
 - Modify `ubuntu/src/web_server.cpp`
   - Surface `app_rc_good`, `app_rc_age_ms`, `getevent_hz`, `p40007_hz`, and active source in `/api/rc`.
 - Modify `.claude/prds/tun-nat-hub-core.prd.md`
@@ -550,87 +552,129 @@ git add android/app/src/main/java/com/tunnathub/app/rc/Port40007RcReader.kt andr
 git commit -m "feat(android): 解析 40007 低频 RC 输入"
 ```
 
-## Task 5: Add App-to-V3s RC Uplink
+## Task 5: Add RCM1-Compatible Encoding And Transport
 
 **Files:**
-- Create: `android/app/src/main/java/com/tunnathub/app/rc/RcUplink.kt`
+- Create: `android/app/src/main/java/com/tunnathub/app/rc/RcMsgCodec.kt`
+- Create: `android/app/src/main/java/com/tunnathub/app/rc/RcMsgTransport.kt`
 - Modify: `ubuntu/src/rc_decode.h`
 - Modify: `ubuntu/src/dji_rc.cpp`
 - Modify: `ubuntu/src/web_server.cpp`
 
-- [ ] **Step 1: Define uplink packet**
+- [ ] **Step 1: Define the compatibility rule**
 
-Use a new binary packet to avoid overloading existing V3s-to-App `RCM1`:
+Use the existing `RCM1` semantics as the common RC message shape. The Android fusion path must produce the same logical fields as `RcMsg.kt` already parses:
 
 ```text
-magic: "RCA1" u32 little-endian
+magic: "RCM1" u32 little-endian
 version: u16 = 1
-size: u16 = 40
+size: u16 = 72
 seq: u32
-ts_ms: u64
-ch[6]: i16 signed centered axes
-buttons: u32 same bit order as RcMsg.kt button_bits
+ts_us: u64
+ch[16]: u16 output-style channel values, 1000..2000
+raw_ch[6]: i16 signed centered axes, same meaning as old rc_state_t.ch
+buttons: u32 same bit order as existing RcMsg.kt parser
 mode: u8 'S'/'N'/'F'/'?'
-flags: u8 bit0=getevent_fresh bit1=p40007_fresh
-reserved: u16
+dial: u8
+flags: u16 bit0=getevent_fresh bit1=p40007_fresh bit2=android_fused
 ```
 
-- [ ] **Step 2: Add Android sender**
+This keeps the App generic: the RC page consumes `RcMsg.Data` whether the packet came from old V3s serial decoding or new Android `event + 40007` fusion.
 
-Create `android/app/src/main/java/com/tunnathub/app/rc/RcUplink.kt`:
+- [ ] **Step 2: Add Android RCM1 codec**
+
+Create `android/app/src/main/java/com/tunnathub/app/rc/RcMsgCodec.kt`:
 
 ```kotlin
 package com.tunnathub.app.rc
 
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
+import com.tunnathub.app.RcMsg
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-class RcUplink(
-    private val socket: DatagramSocket,
-    private val host: InetAddress = InetAddress.getByName("10.0.0.1"),
-    private val port: Int = PORT
-) {
-    private var seq = 0
+object RcMsgCodec {
+    private const val FLAG_GETEVENT_FRESH = 1
+    private const val FLAG_40007_FRESH = 2
+    private const val FLAG_ANDROID_FUSED = 4
 
-    fun send(sample: RcInputSample, geteventFresh: Boolean, port40007Fresh: Boolean) {
-        val buf = ByteBuffer.allocate(LENGTH).order(ByteOrder.LITTLE_ENDIAN)
-        buf.putInt(MAGIC)
+    fun encode(sample: RcInputSample, seq: Int, geteventFresh: Boolean, port40007Fresh: Boolean): ByteArray {
+        val raw = sample.axes.take(6).map { it.coerceIn(-1024, 1024) }
+        val channels = List(16) { idx ->
+            if (idx < 6) rawToUs(raw[idx]) else 1500
+        }
+        val buf = ByteBuffer.allocate(RcMsg.LENGTH).order(ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(RcMsg.MAGIC)
         buf.putShort(1)
-        buf.putShort(LENGTH.toShort())
-        buf.putInt(++seq)
-        buf.putLong(sample.timestampMs)
-        sample.axes.take(6).forEach { buf.putShort(it.toShort()) }
+        buf.putShort(RcMsg.LENGTH.toShort())
+        buf.putInt(seq)
+        buf.putLong(sample.timestampMs * 1000L)
+        channels.forEach { buf.putShort(it.toShort()) }
+        raw.forEach { buf.putShort(it.toShort()) }
         buf.putInt(buttonBits(sample))
         buf.put(sample.mode.firstOrNull()?.code?.toByte() ?: '?'.code.toByte())
-        var flags = 0
-        if (geteventFresh) flags = flags or 1
-        if (port40007Fresh) flags = flags or 2
-        buf.put(flags.toByte())
-        buf.putShort(0)
-        socket.send(DatagramPacket(buf.array(), LENGTH, host, port))
+        buf.put(0)
+        var flags = FLAG_ANDROID_FUSED
+        if (geteventFresh) flags = flags or FLAG_GETEVENT_FRESH
+        if (port40007Fresh) flags = flags or FLAG_40007_FRESH
+        buf.putShort(flags.toShort())
+        return buf.array()
+    }
+
+    fun decodeLocal(packet: ByteArray): RcMsg.Data? = RcMsg.parse(packet)
+
+    private fun rawToUs(v: Int): Int = (1500 + v * 500 / 1024).coerceIn(1000, 2000)
+
+    @JvmStatic
+    fun buttonBits(sample: RcInputSample): Int =
+        ((sample.stop and 1) shl 1) or
+        ((sample.focus and 1) shl 2) or
+        ((sample.shot and 1) shl 3) or
+        ((sample.rec and 1) shl 4) or
+        ((sample.c1 and 1) shl 6) or
+        ((sample.c2 and 1) shl 7)
+}
+```
+
+- [ ] **Step 3: Add Android transport**
+
+Create `android/app/src/main/java/com/tunnathub/app/rc/RcMsgTransport.kt`:
+
+```kotlin
+package com.tunnathub.app.rc
+
+import com.tunnathub.app.RcMsg
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
+import java.util.concurrent.atomic.AtomicInteger
+
+class RcMsgTransport(
+    private val socket: DatagramSocket,
+    private val host: InetAddress = InetAddress.getByName("10.0.0.1"),
+    private val port: Int = PORT,
+    private val onLocalData: (RcMsg.Data) -> Unit
+) {
+    private val seq = AtomicInteger()
+
+    fun publish(sample: RcInputSample, geteventFresh: Boolean, port40007Fresh: Boolean) {
+        val packet = RcMsgCodec.encode(sample, seq.incrementAndGet(), geteventFresh, port40007Fresh)
+        RcMsgCodec.decodeLocal(packet)?.let(onLocalData)
+        socket.send(DatagramPacket(packet, packet.size, host, port))
     }
 
     companion object {
         const val PORT = 65531
-        const val LENGTH = 40
-        const val MAGIC = 0x31414352
-
-        @JvmStatic
-        fun buttonBits(sample: RcInputSample): Int =
-            ((sample.stop and 1) shl 1) or
-            ((sample.focus and 1) shl 2) or
-            ((sample.shot and 1) shl 3) or
-            ((sample.rec and 1) shl 4) or
-            ((sample.c1 and 1) shl 6) or
-            ((sample.c2 and 1) shl 7)
     }
 }
 ```
 
-- [ ] **Step 3: Add V3s receiver design**
+Expected behavior:
+
+- App UI gets the local decoded `RcMsg.Data` immediately.
+- V3s gets the same packet over UDP `65531`.
+- Existing V3s-to-App `65530` rcmsg remains available as downstream echo/diagnostic.
+
+- [ ] **Step 4: Add V3s RCM1 receiver design**
 
 In `ubuntu/src/rc_decode.h`, add enum value:
 
@@ -638,15 +682,28 @@ In `ubuntu/src/rc_decode.h`, add enum value:
 typedef enum { RC_NONE = 0, RC_AE, RC_SPECIAL, RC_APP_FUSED } rc_type_t;
 ```
 
-In `ubuntu/src/dji_rc.cpp`, add a non-blocking UDP socket on `65531`, parse `RCA1`, convert to `rc_state_t`, and feed it into the main loop as the freshest common source when `app_rc_age <= 80000us`.
+In `ubuntu/src/dji_rc.cpp`, add a non-blocking UDP socket on `65531`, parse `RCM1`, convert `raw_ch[6]`, `buttons`, `mode`, and `dial` into `rc_state_t`, and make that App-generated state the primary RC source when `app_rc_age <= 80000us`.
 
-- [ ] **Step 4: Preserve self-lock semantics**
+The old two-UART decode remains behind a fallback switch:
+
+```cpp
+const bool app_primary = app_rc_fresh;
+if (app_primary) {
+    m = app_rc_state;
+} else {
+    rc_merge(&s20, age20, &s0, age0, 500000LL, &m);
+}
+```
+
+Expected: when Android fusion is online, joystick data no longer depends on `/dev/ttyS1` or `/dev/ttyS2`.
+
+- [ ] **Step 5: Preserve self-lock semantics**
 
 In the main loop, ensure this ordering remains:
 
 ```cpp
-rc_merge(..., &m);
-if (app_rc_fresh) merge_app_rc(&m, app_rc_state);
+if (app_rc_fresh) m = app_rc_state;
+else rc_merge(..., &m);
 advance_output_latches(m);
 write_state_file(m, ...);
 send_rcmsg(..., m, true, ...);
@@ -655,7 +712,7 @@ out_send(m);
 
 Expected: latch advances exactly once from the final unified state.
 
-- [ ] **Step 5: Expose diagnostics**
+- [ ] **Step 6: Expose diagnostics**
 
 Add fields to `/tmp/dji_rc_state.json` and `/api/rc`:
 
@@ -665,17 +722,18 @@ Add fields to `/tmp/dji_rc_state.json` and `/api/rc`:
   "app_rc_age_ms": 0,
   "getevent_hz": 0,
   "p40007_hz": 0,
-  "active_rc_axis_source": "getevent"
+  "active_rc_axis_source": "getevent",
+  "rc_input_primary": "android_rcm1"
 }
 ```
 
-- [ ] **Step 6: Commit uplink**
+- [ ] **Step 7: Commit RCM1-compatible transport**
 
 Run:
 
 ```powershell
-git add android/app/src/main/java/com/tunnathub/app/rc/RcUplink.kt ubuntu/src/rc_decode.h ubuntu/src/dji_rc.cpp ubuntu/src/web_server.cpp
-git commit -m "feat(rc): 添加 App 融合 RC 上行通道"
+git add android/app/src/main/java/com/tunnathub/app/rc/RcMsgCodec.kt android/app/src/main/java/com/tunnathub/app/rc/RcMsgTransport.kt ubuntu/src/rc_decode.h ubuntu/src/dji_rc.cpp ubuntu/src/web_server.cpp
+git commit -m "feat(rc): 添加 RCM1 兼容融合输入链路"
 ```
 
 ## Task 6: Wire Readers Into App Runtime
@@ -700,14 +758,17 @@ Add a `LaunchedEffect(vpnRunning, rcFusionEnabled)` that starts:
 ```kotlin
 val geteventReader = GetEventRcReader(axisMap = loadedAxisMap, onSample = { latestGetevent = it })
 val p40007Reader = Port40007RcReader(socketFactory = { DatagramSocket(Port40007RcReader.PORT) }, onSample = { latest40007 = it })
-val uplink = RcUplink(DatagramSocket())
+val transport = RcMsgTransport(DatagramSocket(), onLocalData = { data ->
+    rcConnected = true
+    applyRcMsgDataToUi(data)
+})
 ```
 
-Every 20ms, fuse latest samples and send one uplink packet:
+Every 20ms, fuse latest samples and publish one `RCM1`-style packet:
 
 ```kotlin
 val fused = RcFusionEngine.fuse(latestGetevent, latest40007, System.currentTimeMillis())
-uplink.send(fused, fused.source.contains("getevent"), fused.source.contains("40007"))
+transport.publish(fused, fused.source.contains("getevent"), fused.source.contains("40007"))
 ```
 
 - [ ] **Step 3: Update UI diagnostic text**
@@ -718,10 +779,10 @@ On the RC page, show:
 RC 输入: getevent+40007
 getevent: 80-120Hz
 40007: 5-20Hz
-V3s uplink: online
+RCM1 transport: local+V3s online
 ```
 
-Keep existing V3s `RcMsg` receiver as the downstream confirmation that V3s accepted and re-emitted the fused state.
+Keep existing V3s `RcMsg` receiver as downstream echo/diagnostic only. Normal App UI should not depend on V3s decoding the two serial ports once Android fusion is enabled.
 
 - [ ] **Step 4: Commit runtime wiring**
 
@@ -792,6 +853,7 @@ Expected:
 - `p40007_hz` is lower but non-zero.
 - Stick channels in `/api/rc` update smoothly from getevent.
 - REC/STOP/FOCUS/SHOT keys still follow 40007.
+- With Android fusion enabled, joystick output remains live even if the old UART joystick decoders report no fresh frames.
 - CH8/CH13 self-lock remains stable after button release.
 
 - [ ] **Step 5: Update PRD**
@@ -799,7 +861,7 @@ Expected:
 Add to `.claude/prds/tun-nat-hub-core.prd.md`:
 
 ```markdown
-- **RC 输入源升级**（2026-08-26）：摇杆高频数据优先来自 Android `getevent`，40007 端口作为低频摇杆 fallback 与按键/模式来源；V3s 仍以统一 RC 状态推进通道映射、自锁和 SBUS/CRSF 输出。
+- **RC 输入源升级**（2026-08-26）：摇杆高频数据优先来自 Android `getevent`，40007 端口作为低频摇杆 fallback 与按键/模式来源；App 将融合结果编码为 `RCM1` 风格 RC 数据，App UI 和 V3s 输出链路都消费同一份统一 RC 状态。旧双串口摇杆解码仅保留为 fallback/诊断，不再作为正常摇杆来源。
 ```
 
 - [ ] **Step 6: Commit verification docs**
@@ -813,7 +875,7 @@ git commit -m "docs(rc): 更新 getevent 与 40007 融合验收标准"
 
 ## Self-Review
 
-- Spec coverage: The plan covers both new facts: getevent high-frequency joystick and 40007 low-frequency joystick/key data. It keeps the existing unified RC state as the downstream source of truth, matching the previous self-lock fix.
+- Spec coverage: The plan covers both new facts: getevent high-frequency joystick and 40007 low-frequency joystick/key data. It also covers the architectural change that old dual-UART joystick acquisition should no longer be required in normal operation; Android fusion emits `RCM1`-style data and the output path consumes that unified state.
 - Risk gate: Task 1 explicitly verifies whether APK runtime can execute `getevent`; if not, implementation must switch to an approved sidecar or keep getevent as adb-only diagnostic.
 - Testability: Fusion, getevent parsing, and 40007 parsing are pure unit-testable before touching runtime wiring.
 - No raw capture commit: `tmp/` captures are intentionally left uncommitted unless needed, to avoid pushing noisy binary field logs.
