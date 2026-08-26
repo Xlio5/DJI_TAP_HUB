@@ -128,9 +128,12 @@ ctl block @ 0xFC000 (6 bytes):
 ### web_server（改 HTML 面板或 API）
 
 ```bash
+# web_server 必须动态链接 (勿加 -static)! rootfs 已有 libstdc++.so.6/libc.so.6,
+# 静态链接会让 web_server 达 1MB, rootfs 超 4MB 无法 OTA。动态版 ~86KB (v1.6.48 起)。
+# 需链接 rc_map.o + rc_decode.o (RC 输出配置依赖)
 /home/xlong/v3s/buildroot-2024.02/output/host/bin/arm-buildroot-linux-gnueabihf-g++ \
-    -std=c++17 -Os -s -static -Wall \
-    -o web_server ubuntu/src/web_server.cpp -lpthread
+    -std=c++17 -Os -s -Wall \
+    -o web_server ubuntu/src/web_server.cpp rc_map.o rc_decode.o -lpthread
 ```
 
 ### dji_rc（改 DJI RC 解码）
@@ -139,11 +142,13 @@ ctl block @ 0xFC000 (6 bytes):
 GCC=/home/xlong/v3s/buildroot-2024.02/output/host/bin/arm-buildroot-linux-gnueabihf-gcc
 GPP=/home/xlong/v3s/buildroot-2024.02/output/host/bin/arm-buildroot-linux-gnueabihf-g++
 
-for f in duml rc_decode chmap sbus; do
+# 依赖: duml rc_decode chmap sbus rc_map crsf (C) + rc_source_select (C++)
+for f in duml rc_decode chmap sbus rc_map crsf; do
     $GCC -O2 -s -c -o /tmp/${f}.o ubuntu/src/${f}.c
 done
+$GPP -std=c++17 -O2 -s -c -o /tmp/rc_source_select.o ubuntu/src/rc_source_select.cpp
 $GPP -std=c++17 -O2 -s -Wall -o dji_rc ubuntu/src/dji_rc.cpp \
-    /tmp/duml.o /tmp/rc_decode.o /tmp/chmap.o /tmp/sbus.o -lpthread
+    /tmp/duml.o /tmp/rc_decode.o /tmp/chmap.o /tmp/sbus.o /tmp/rc_map.o /tmp/crsf.o /tmp/rc_source_select.o -lpthread
 ```
 
 ### 打包 rootfs

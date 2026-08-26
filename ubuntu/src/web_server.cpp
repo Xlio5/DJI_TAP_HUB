@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.47"   // 固件版本 — 接收 App RCM1 getevent/40007 融合遥控输入 (merge adb-getevent-rc-fusion)
+#define VERSION     "1.6.48"   // 固件版本 — web_server 改动态链接, rootfs 体积优化到 <4MB (OTA)
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;

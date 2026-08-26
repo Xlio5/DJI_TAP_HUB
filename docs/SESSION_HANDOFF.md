@@ -8,7 +8,8 @@
 
 ## 🔥 最新状态（2026-08-26）
 
-- **当前固件 F1.6.47**（`backup/rootfs_v1647.squashfs` = `backup/rootfs.squashfs`，md5 `610ab7fe`）+ App **v1.6.44**
+- **当前固件 F1.6.48**（`backup/rootfs_v1648.squashfs` = `backup/rootfs.squashfs`，md5 `eac6d6d8`，**3.80MB <4MB OTA**）+ App **v1.6.44**
+  - 1.6.48：**web_server 改动态链接**，rootfs 体积 4.21→3.80MB（OTA 限制 4MB 内；静态版 web_server 达 1MB，动态版仅 ~86KB，依赖 rootfs 已有 libstdc++.so.6）
   - 1.6.47：**merge codex/adb-getevent-rc-fusion** — dji_rc 接收 App RCM1 getevent/40007 融合遥控输入（`g_app_rc`，appFresh 优先，否则 UART 921600 优先）
   - 1.6.46：RC 921600 输入优先事件驱动输出（`b855de7`，`rc_source_select.h/cpp`）
   - 1.6.41-1.6.45：RTSP UDP DNAT + 固化（`24385a0`/`b31e44b`/`e041314`）
