@@ -8,10 +8,11 @@
 
 ## 🔥 最新状态（2026-08-26）
 
-- **当前固件 F1.6.46**（`94ff874` RC 优先输出镜像）+ App **v1.6.44**（UDP_SELF 默认视频播放）
-  - 1.6.41-1.6.44：RTSP UDP DNAT target 修复（web_server）+ App 视频 RTP 通配 socket（`24385a0`/`1ee3482`）
-  - 1.6.45：RTSP 回流 NAT 固化（`e041314`）
-  - 1.6.46：RC 921600 输入优先事件驱动输出（`b855de7`，新增 `rc_source_select.h/cpp`）
+- **当前固件 F1.6.47**（`backup/rootfs_v1647.squashfs` = `backup/rootfs.squashfs`，md5 `610ab7fe`）+ App **v1.6.44**
+  - 1.6.47：**merge codex/adb-getevent-rc-fusion** — dji_rc 接收 App RCM1 getevent/40007 融合遥控输入（`g_app_rc`，appFresh 优先，否则 UART 921600 优先）
+  - 1.6.46：RC 921600 输入优先事件驱动输出（`b855de7`，`rc_source_select.h/cpp`）
+  - 1.6.41-1.6.45：RTSP UDP DNAT + 固化（`24385a0`/`b31e44b`/`e041314`）
+  - App v1.6.44：UDP_SELF 默认 + RTP 通配 socket 视频播放（`1ee3482`）
 - **UART0 debug 修复已合入（1.6.39/1.6.40）**，见下两条；相关知识已同步 PLATFORM.md + Obsidian
 - **固件 F1.6.40**（`backup/rootfs_v1640.squashfs` = `backup/rootfs.squashfs`，md5 `681d08d0`）：修复 **dji_rc aux_tmux_set PIO 布局错误破坏 UART0 pinmux**
   - **根因**：`aux_tmux_set`（TMUX1511 控制，mmap /dev/mem 直写 PIO）按"每 CFG 管 4 引脚"算偏移，但 V3s 实际是**每 CFG 管 8 引脚**。它把 `0x28`（实际 PB_CFG1 = **PB8-15**）当成 PB_CFG1(PB4-7) 去配 TMUX 的 PB4/PB5，结果把 **PB8/PB9（UART0）配成 GPIO 输出** → UART0 debug 串口物理断连（`/dev/ttyS0` write 成功但字节不到线上，COM10 收不到任何输出）

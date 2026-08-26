@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.46"   // 固件版本 — 921600 输入优先事件驱动 RC 输出
+#define VERSION     "1.6.47"   // 固件版本 — 接收 App RCM1 getevent/40007 融合遥控输入 (merge adb-getevent-rc-fusion)
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;

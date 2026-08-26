@@ -1610,7 +1610,7 @@ int main(int argc, char **argv)
         RcSourceDecision d = {};
         rc_state_t m;
         if (appFresh) {
-            /* App RCM1 融合输入 (getevent) 有效时优先, 否则回退 UART 串口输入 */
+            /* App RCM1 融合输入 (getevent/40007) 有效时优先, 否则回退 UART 串口输入 */
             m = sapp;
         } else {
             /* UART 双路: 921600 (P20) 输入优先 (b855de7) */
