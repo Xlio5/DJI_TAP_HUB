@@ -3,7 +3,9 @@ package com.tunnathub.app.rc
 /** 将变化触发的 getevent 和低频 40007 合成为定时发布可复用的 RC 状态。 */
 object RcFusionEngine {
     const val GETEVENT_FRESH_MS = 80L
-    const val PORT40007_FRESH_MS = 500L
+    // 40007 实测 ~0.4Hz (2.5s/帧), 500ms fresh 太短 → 帧间摇杆回 0 显示跳动;
+    // 改 3000ms 覆盖帧间隔, 保持最后一次 40007 数据到下一帧 (getevent 高频时摇杆由它主导)。
+    const val PORT40007_FRESH_MS = 3000L
 
     @JvmStatic
     fun fuse(getevent: RcInputSample?, port40007: RcInputSample?, nowMs: Long): RcInputSample {

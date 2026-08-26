@@ -10,7 +10,7 @@ import kotlinx.coroutines.launch
 
 /** 运行期桥接: 输入源变化更新最新状态, 发布协程按固定周期输出完整 RC。 */
 class RcFusionRuntime(
-    private val geteventReaderFactory: ((RcInputSample) -> Unit) -> GetEventRcReader,
+    private val geteventReaderFactory: ((RcInputSample) -> Unit) -> RcReader,
     private val port40007ReaderFactory: ((RcInputSample) -> Unit) -> Port40007RcReader,
     private val transport: RcMsgTransport,
     private val nowMs: () -> Long = { System.currentTimeMillis() },

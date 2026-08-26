@@ -11,11 +11,11 @@ class GetEventRcReader(
     private val keyMap: Map<String, String> = DEFAULT_KEY_MAP,
     private val onSample: (RcInputSample) -> Unit,
     private val nowMs: () -> Long = { System.currentTimeMillis() }
-) {
+) : RcReader {
     data class AxisEvent(val code: String, val value: Int)
     data class KeyEvent(val code: String, val pressed: Boolean)
 
-    suspend fun run() = withContext(Dispatchers.IO) {
+    override suspend fun run() = withContext(Dispatchers.IO) {
         val axes = MutableList(6) { 0 }
         val keys = mutableMapOf<String, Int>()
         val command = mutableListOf("getevent", "-lt")

@@ -53,7 +53,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.tunnathub.app.BuildConfig
-import com.tunnathub.app.rc.GetEventRcReader
+import com.tunnathub.app.rc.AdbGetEventReader
 import com.tunnathub.app.rc.Port40007RcReader
 import com.tunnathub.app.rc.RcFusionRuntime
 import com.tunnathub.app.rc.RcMsgTransport
@@ -836,7 +836,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 })
                 runtime = RcFusionRuntime(
                     geteventReaderFactory = { onSample ->
-                        GetEventRcReader(onSample = onSample)
+                        // 通过 adb 连本机 adbd (shell 权限 + adbkey 认证) 读 getevent 高频摇杆
+                        com.tunnathub.app.rc.AdbGetEventReader(context = ctx, onSample = onSample)
                     },
                     port40007ReaderFactory = { onSample ->
                         Port40007RcReader(Tcp40007PacketSource(), onSample)
