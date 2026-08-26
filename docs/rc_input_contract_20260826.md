@@ -56,24 +56,19 @@
   - `adb -s 7XJCM630011XC9 exec-out toybox nc 127.0.0.1 40007`
   - 5 秒内可抓到连续 DUML 包，其中 `cmd_set=0x06/cmd_id=0xAE`、长度 30 的 RC 帧可按 V3s 115200 串口同一套 `RC/0xAE` 规则解码。
   - 因此脚本/APP 侧调试优先使用 ADB 本机源，不把 `192.168.5.249:40007` 当作电脑直连裸 TCP 流。
-- DJI APK 明文 proto 线索:
-  - `AppSpecialControlJoyStickDataType.proto`
-  - `AppVirtualStickDataType.proto`
-- 已按两个 proto 增加解析支持:
-  - `DJISpecialControllJoyStickStruct`: menu/playback/record、channel0..6、ioc/rs、button、shutter/focus/mode/gohome
-  - `DJIGSJoystickData`: roll/pitch/yaw/throttle float
-- 当前假设:
-  - `DJISpecialControllJoyStickStruct` 对应低频按键 + 7 路 1 字节模拟通道。
-  - `DJIGSJoystickData` 对应虚拟摇杆 float 控制量。
-  - 40007 实际帧可能有长度头或封装头，后续抓到真实 payload 后再锁定包头。
+- 已确认 DUML 帧:
+  - `cmd_set=0x06/cmd_id=0xAE`: 17 字节 payload，含 6 路摇杆、STOP/FOCUS/SHOT/REC/RTH、C1/C2/C3、方向键、DIAL、MODE。
+  - `cmd_set=0x01/cmd_id=0x02`: 13 字节 payload，含低频 6 路摇杆和 STOP/FOCUS/SHOT/REC/MODE fallback。
+  - `RC/0xAE` 解码后 CH5/CH6 需要对调才对应物理控件。
 
 ## 融合规则
 
 1. 摇杆轴优先使用 getevent，fresh 窗口暂定 80ms。
 2. getevent 轴超过 80ms 未更新时，回落到 40007 轴。
 3. 按键、模式、拨轮优先使用 40007。
-4. Android 侧融合结果编码为 `RCM1` 风格 RC 数据，App 页面和 V3s 输出链路都消费同一份统一 RC 状态。
-5. V3s 旧双串口解码只保留为 fallback/诊断，不再作为新方案的正常摇杆来源。
+4. `getevent` 和 40007 都是输入更新源，不能作为输出节拍；Android 侧 publisher 必须按固定周期定时输出完整状态，当前周期为 20ms。
+5. Android 侧融合结果编码为 `RCM1` 风格 RC 数据，App 页面和 V3s 输出链路都消费同一份统一 RC 状态。
+6. V3s 旧双串口解码只保留为 fallback/诊断，不再作为新方案的正常摇杆来源。
 
 ## 调试脚本
 

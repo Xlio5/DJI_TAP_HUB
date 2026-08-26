@@ -136,6 +136,9 @@ We'll know we're right when **4Mbps RTSP 视频流持续稳定播放 >30 分钟�
   - **现场根因**：COM5 + adb 192.168.5.249 诊断确认 `good1=0`、`good2` 持续增长；REC/STOP 按键能解码，CH8/CH13 会瞬时 1000→2000，但松手回 1000，说明配置和按键解码正常，latch 未推进。
   - **产品要求**：无论有效输入来自 P20、P0，还是未来的其他 RC 输入源，通道自锁都应按统一 RC 状态的上升沿 toggle，并且每个合并状态周期最多推进一次，避免双路输入时重复 toggle。
   - **待验证**：修复版 dji_rc 编译部署后，CH8=REC、CH13=STOP 自锁应在按键松开后保持，再次按下解除。
+- **RC 输入源升级**（2026-08-26）：摇杆高频数据优先来自 Android `getevent`，40007 TCP 本机端口提供低频摇杆 fallback 与按键/模式/DIAL；App 将 `getevent + 40007` 融合结果按 20ms 定时编码为 `RCM1` 风格数据。
+  - **关键约束**：`getevent` 是变化触发输入源，没有输入变化时不会自然产生事件；输出链路不能跟随 event 触发，必须由 Android 侧 publisher 定时输出完整遥控状态。
+  - **兼容边界**：App UI 继续消费现有 `RcMsg.Data`，V3s 输出链路后续消费 App 发出的 `RCM1`，旧双串口摇杆解码保留为 fallback/诊断，不再作为正常摇杆来源。
 - **App 配置界面清理**（v1.6.23，commit 7b2ef64）：删 RC 遥控器占位 + 通道映射编辑（遥控页已有），播放引擎/解码器合并组合下拉
 - ⚠️ **已知问题**: App USB 授权弹窗反复弹（DJI RC 不保存 USB 授权, hasPermission 反复 false）→ 待修
 3. 固件未固化（V3s 跑 /tmp 调试版 dji_rc）→ 待固化（M7）

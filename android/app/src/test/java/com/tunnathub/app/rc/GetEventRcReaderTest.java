@@ -6,6 +6,8 @@ public final class GetEventRcReaderTest {
         parsesKeyLine();
         normalizesWideAndByteAxes();
         exposesConfirmedDefaultAxisMap();
+        exposesConfirmedDefaultKeyMap();
+        buildsSampleWithRecShotAndLrKeys();
     }
 
     private static void parsesAxisLine() {
@@ -40,6 +42,30 @@ public final class GetEventRcReaderTest {
         assertEquals(3, GetEventRcReader.Companion.getDEFAULT_AXIS_MAP().get("ABS_X").intValue(), "CH4 axis");
         assertEquals(4, GetEventRcReader.Companion.getDEFAULT_AXIS_MAP().get("ABS_RZ").intValue(), "CH5 axis");
         assertEquals(5, GetEventRcReader.Companion.getDEFAULT_AXIS_MAP().get("ABS_Z").intValue(), "CH6 axis");
+    }
+
+    private static void exposesConfirmedDefaultKeyMap() {
+        assertEquals("REC", GetEventRcReader.Companion.getDEFAULT_KEY_MAP().get("BTN_TL"), "REC key");
+        assertEquals("SHOT", GetEventRcReader.Companion.getDEFAULT_KEY_MAP().get("BTN_TR"), "SHOT key");
+        assertEquals("L1", GetEventRcReader.Companion.getDEFAULT_KEY_MAP().get("KEY_F1"), "L1 key");
+        assertEquals("R3", GetEventRcReader.Companion.getDEFAULT_KEY_MAP().get("KEY_F6"), "R3 key");
+    }
+
+    private static void buildsSampleWithRecShotAndLrKeys() {
+        java.util.Map<String, Integer> keys = new java.util.HashMap<>();
+        keys.put("REC", 1);
+        keys.put("SHOT", 1);
+        keys.put("L1", 1);
+        keys.put("R3", 1);
+        RcInputSample sample = GetEventRcReader.sampleForTest(
+            java.util.Arrays.asList(1, 2, 3, 4, 5, 6),
+            keys,
+            1_000L
+        );
+        assertEquals(1, sample.getRec(), "REC sample");
+        assertEquals(1, sample.getShot(), "SHOT sample");
+        assertEquals(1, sample.getL1(), "L1 sample");
+        assertEquals(1, sample.getR3(), "R3 sample");
     }
 
     private static void assertEquals(Object expected, Object actual, String name) {

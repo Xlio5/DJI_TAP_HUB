@@ -4,10 +4,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
-/** 读取 DJI embedded joystick 的 getevent 输出并转换为 RC 轴。 */
+/** 读取 DJI RC 的 getevent 输出并转换为 RC 轴和按键。 */
 class GetEventRcReader(
-    private val eventDevice: String = "/dev/input/event4",
+    private val eventDevice: String? = null,
     private val axisMap: Map<String, Int> = DEFAULT_AXIS_MAP,
+    private val keyMap: Map<String, String> = DEFAULT_KEY_MAP,
     private val onSample: (RcInputSample) -> Unit,
     private val nowMs: () -> Long = { System.currentTimeMillis() }
 ) {
@@ -16,22 +17,69 @@ class GetEventRcReader(
 
     suspend fun run() = withContext(Dispatchers.IO) {
         val axes = MutableList(6) { 0 }
-        val process = ProcessBuilder("getevent", "-lt", eventDevice)
+        val keys = mutableMapOf<String, Int>()
+        val command = mutableListOf("getevent", "-lt")
+        eventDevice?.let(command::add)
+        val process = ProcessBuilder(command)
             .redirectErrorStream(true)
             .start()
-        process.inputStream.bufferedReader().useLines { lines ->
-            val iterator = lines.iterator()
-            while (isActive && iterator.hasNext()) {
-                val line = iterator.next()
-                val axis = parseAxisLine(line)
-                if (axis != null) {
-                    val idx = axisMap[axis.code] ?: continue
-                    axes[idx] = normalizeAxis(axis.code, axis.value)
-                    onSample(RcInputSample.axes("getevent", axes.toList(), nowMs()))
+        try {
+            process.inputStream.bufferedReader().useLines { lines ->
+                val iterator = lines.iterator()
+                while (isActive && iterator.hasNext()) {
+                    val line = iterator.next()
+                    val axis = parseAxisLine(line)
+                    if (axis != null) {
+                        val idx = axisMap[axis.code] ?: continue
+                        axes[idx] = normalizeAxis(axis.code, axis.value)
+                        onSample(sampleFromState(axes, keys, nowMs()))
+                        continue
+                    }
+
+                    val key = parseKeyLine(line) ?: continue
+                    val name = keyMap[key.code] ?: continue
+                    keys[name] = if (key.pressed) 1 else 0
+                    onSample(sampleFromState(axes, keys, nowMs()))
                 }
             }
+        } finally {
+            process.destroy()
         }
     }
+
+    private fun sampleFromState(
+        axes: List<Int>,
+        keys: Map<String, Int>,
+        timestampMs: Long
+    ): RcInputSample =
+        RcInputSample.complete(
+            source = "getevent",
+            axes = axes,
+            btn = 0,
+            stop = 0,
+            focus = 0,
+            shot = keys.bit("SHOT"),
+            rec = keys.bit("REC"),
+            rth = 0,
+            c1 = 0,
+            c2 = 0,
+            c3 = 0,
+            up = 0,
+            down = 0,
+            left = 0,
+            right = 0,
+            aircraft = 0,
+            back = 0,
+            l1 = keys.bit("L1"),
+            l2 = keys.bit("L2"),
+            l3 = keys.bit("L3"),
+            r1 = keys.bit("R1"),
+            r2 = keys.bit("R2"),
+            r3 = keys.bit("R3"),
+            dial = 0,
+            mode = "?",
+            timestampMs = timestampMs
+        )
 
     companion object {
         val DEFAULT_AXIS_MAP: Map<String, Int> = mapOf(
@@ -42,6 +90,25 @@ class GetEventRcReader(
             "ABS_RZ" to 4,
             "ABS_Z" to 5
         )
+
+        val DEFAULT_KEY_MAP: Map<String, String> = mapOf(
+            "BTN_TL" to "REC",
+            "BTN_TR" to "SHOT",
+            "KEY_F1" to "L1",
+            "KEY_F2" to "L2",
+            "KEY_F3" to "L3",
+            "KEY_F4" to "R1",
+            "KEY_F5" to "R2",
+            "KEY_F6" to "R3"
+        )
+
+        @JvmStatic
+        fun sampleForTest(
+            axes: List<Int>,
+            keys: Map<String, Int>,
+            timestampMs: Long
+        ): RcInputSample =
+            GetEventRcReader(onSample = {}).sampleFromState(axes, keys, timestampMs)
 
         @JvmStatic
         fun parseAxisLine(line: String): AxisEvent? {
@@ -84,3 +151,5 @@ class GetEventRcReader(
         }
     }
 }
+
+private fun Map<String, Int>.bit(name: String): Int = if ((this[name] ?: 0) != 0) 1 else 0

@@ -1,12 +1,12 @@
 package com.tunnathub.app.rc
 
+import java.io.InputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.SocketException
 import java.net.Socket
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
-/** 解析 40007 端口里的低频摇杆和按键数据。 */
+/** 解析 40007 端口和 V3s 串口同源的 DJI DUML RC 数据。 */
 class Port40007RcReader(
     private val packetSource: PacketSource,
     private val onSample: (RcInputSample) -> Unit,
@@ -25,122 +25,197 @@ class Port40007RcReader(
 
     companion object {
         const val PORT = 40007
+        private const val DUML_SOF = 0x55
+        private const val DUML_MIN_PACKET = 13
+        private const val DUML_MAX_PACKET = 1024
 
         @JvmStatic
-        fun parsePacket(packet: ByteArray, nowMs: Long): RcInputSample? =
-            parseSpecialControlProto(packet, nowMs)
-                ?: parseVirtualStickProto(packet, nowMs)
-                ?: parseCompactBytes(packet, nowMs)
-
-        @JvmStatic
-        fun parseSpecialControlProto(packet: ByteArray, nowMs: Long): RcInputSample? {
-            val fields = ProtoLite.readVarintFields(packet)
-            if (fields.keys.none { it in 1..22 }) return null
-            val axes = List(6) { idx -> byteAxisToCentered(fields[5 + idx] ?: 128) }
-            val mode = when ((fields[20] ?: 0).toInt()) {
-                0 -> "S"
-                1 -> "N"
-                2 -> "F"
-                else -> "?"
+        fun parsePacket(packet: ByteArray, nowMs: Long): RcInputSample? {
+            val duml = parseDumlPacket(packet) ?: return null
+            return when {
+                duml.cmdSet == 0x06 && duml.cmdId == 0xAE -> parseRcAe(duml.payload, nowMs)
+                duml.cmdSet == 0x01 && duml.cmdId == 0x02 -> parseSpecial02(duml.payload, nowMs)
+                else -> null
             }
-            return RcInputSample(
-                source = "40007-special",
+        }
+
+        @JvmStatic
+        fun parseRcAe(payload: ByteArray, nowMs: Long): RcInputSample? {
+            if (payload.size < 17) return null
+            val axes = MutableList(6) { idx ->
+                val off = 5 + idx * 2
+                val raw = u8(payload[off]) or (u8(payload[off + 1]) shl 8)
+                (raw - 1024).coerceIn(-1024, 1024)
+            }
+            // 实机已确认 RC/0xAE 的 CH5/CH6 需要对调才对应物理控件。
+            val tmp = axes[4]
+            axes[4] = axes[5]
+            axes[5] = tmp
+            val b0 = u8(payload[0])
+            val b1 = u8(payload[1])
+            val b2 = u8(payload[2])
+            return RcInputSample.complete(
+                source = "40007-rc-ae",
                 axes = axes,
-                btn = bitField(fields[14]),
-                focus = bitField(fields[19]),
-                shot = bitField(fields[18]),
-                rec = bitField(fields[3]),
-                rth = bitField(fields[22]),
-                c1 = bitField(fields[12]),
-                c2 = bitField(fields[13]),
-                mode = mode,
+                btn = (b1 shr 3) and 1,
+                stop = (b0 shr 4) and 1,
+                focus = (b0 shr 7) and 1,
+                shot = (b0 shr 6) and 1,
+                rec = b1 and 1,
+                rth = (b0 shr 5) and 1,
+                c1 = (b2 shr 2) and 1,
+                c2 = (b2 shr 3) and 1,
+                c3 = (b2 shr 4) and 1,
+                up = (b1 shr 7) and 1,
+                down = (b1 shr 6) and 1,
+                left = (b1 shr 5) and 1,
+                right = (b1 shr 4) and 1,
+                aircraft = (b1 shr 2) and 1,
+                back = (b1 shr 1) and 1,
+                l1 = 0,
+                l2 = 0,
+                l3 = 0,
+                r1 = 0,
+                r2 = 0,
+                r3 = 0,
+                dial = u8(payload[4]),
+                mode = modeName(b2 and 0x03),
                 timestampMs = nowMs
             )
         }
 
         @JvmStatic
-        fun parseVirtualStickProto(packet: ByteArray, nowMs: Long): RcInputSample? {
-            val fields = ProtoLite.readFixed32Fields(packet)
-            if (!fields.keys.containsAll(listOf(2, 3, 4, 5))) return null
-            val roll = fields[2] ?: 0f
-            val pitch = fields[3] ?: 0f
-            val yaw = fields[4] ?: 0f
-            val throttle = fields[5] ?: 0f
-            val axes = listOf(
-                scaleFloat(roll, 30f),
-                scaleFloat(pitch, 30f),
-                scaleFloat(yaw, 180f),
-                scaleFloat(throttle, 5f),
-                0,
-                0
+        fun parseSpecial02(payload: ByteArray, nowMs: Long): RcInputSample? {
+            if (payload.size < 13) return null
+            val axes = listOf(8, 19, 30, 41, 52, 63).map { start ->
+                specialChannel(payload, start).coerceIn(-1024, 1024)
+            }
+            val p10 = u8(payload[10])
+            val p12 = u8(payload[12])
+            return RcInputSample.complete(
+                source = "40007-special-02",
+                axes = axes,
+                btn = 0,
+                stop = (p12 shr 4) and 1,
+                focus = (p10 shr 6) and 1,
+                shot = p12 and 1,
+                rec = (p12 shr 5) and 1,
+                rth = 0,
+                c1 = 0,
+                c2 = 0,
+                c3 = 0,
+                up = 0,
+                down = 0,
+                left = 0,
+                right = 0,
+                aircraft = 0,
+                back = 0,
+                l1 = 0,
+                l2 = 0,
+                l3 = 0,
+                r1 = 0,
+                r2 = 0,
+                r3 = 0,
+                dial = 0,
+                mode = modeName((p12 shr 2) and 0x03),
+                timestampMs = nowMs
             )
-            return RcInputSample.axes("40007-virtual-stick", axes, nowMs)
         }
 
-        @JvmStatic
-        fun parseCompactBytes(packet: ByteArray, nowMs: Long): RcInputSample? {
-            if (packet.size < 16) return null
-            val axes = List(6) { idx ->
-                val off = 2 + idx * 2
-                if (off + 1 >= packet.size) 0 else {
-                    val raw = (packet[off].toInt() and 0xFF) or ((packet[off + 1].toInt() and 0xFF) shl 8)
-                    (raw - 1024).coerceIn(-1024, 1024)
+        internal fun parseDumlPacket(packet: ByteArray): DumlPacket? {
+            if (packet.size < DUML_MIN_PACKET) return null
+            if (u8(packet[0]) != DUML_SOF) return null
+            val verLen = u8(packet[1]) or (u8(packet[2]) shl 8)
+            val len = verLen and 0x03FF
+            val version = (verLen shr 10) and 0x3F
+            if (version > 1 || len < DUML_MIN_PACKET || len > DUML_MAX_PACKET) return null
+            if (packet.size < len || len < 13) return null
+            return DumlPacket(
+                raw = packet.copyOf(len),
+                cmdSet = u8(packet[9]),
+                cmdId = u8(packet[10]),
+                payload = packet.copyOfRange(11, len - 2)
+            )
+        }
+
+        private fun specialChannel(payload: ByteArray, start: Int): Int {
+            val byteOff = start / 8
+            val bitOff = start % 8
+            var value = 0
+            for (idx in 0 until 4) {
+                if (byteOff + idx < payload.size) {
+                    value = value or (u8(payload[byteOff + idx]) shl (idx * 8))
                 }
             }
-            val buttons = packet[14].toInt() and 0xFF
-            val mode = when (packet[15].toInt() and 0x03) {
-                0 -> "S"
-                1 -> "N"
-                2 -> "F"
-                else -> "?"
+            var raw = (value shr bitOff) and 0x3FF
+            val markByte = (start + 10) / 8
+            val markBit = (start + 10) % 8
+            if (markByte < payload.size) {
+                raw = raw or (((u8(payload[markByte]) shr markBit) and 1) shl 10)
             }
-            return RcInputSample.full(
-                source = "40007-compact",
-                axes = axes,
-                stop = (buttons shr 0) and 1,
-                focus = (buttons shr 1) and 1,
-                shot = (buttons shr 2) and 1,
-                rec = (buttons shr 3) and 1,
-                c1 = (buttons shr 4) and 1,
-                c2 = (buttons shr 5) and 1,
-                mode = mode,
-                timestampMs = nowMs
-            )
+            return raw - 1024
         }
 
-        private fun byteAxisToCentered(value: Long): Int =
-            ((value.toInt().coerceIn(0, 255) - 128) * 1024 / 128).coerceIn(-1024, 1024)
+        private fun modeName(bits: Int): String = when (bits) {
+            0 -> "S"
+            1 -> "N"
+            2 -> "F"
+            else -> "?"
+        }
 
-        private fun bitField(value: Long?): Int = if ((value ?: 0L) != 0L) 1 else 0
+        private fun u8(value: Byte): Int = value.toInt() and 0xFF
+    }
 
-        private fun scaleFloat(value: Float, maxAbs: Float): Int =
-            (value.coerceIn(-maxAbs, maxAbs) * 1024f / maxAbs).toInt().coerceIn(-1024, 1024)
+    data class DumlPacket(
+        val raw: ByteArray,
+        val cmdSet: Int,
+        val cmdId: Int,
+        val payload: ByteArray
+    )
+}
+
+class DumlStreamPacketSource(
+    private val input: InputStream
+) : Port40007RcReader.PacketSource {
+    private val parser = DumlStreamParser()
+    private val queue = ArrayDeque<ByteArray>()
+    private val buf = ByteArray(4096)
+
+    override fun readPacket(): ByteArray? {
+        while (queue.isEmpty()) {
+            val n = input.read(buf)
+            if (n < 0) return null
+            parser.feed(buf.copyOf(n)).forEach(queue::addLast)
+        }
+        return queue.removeFirst()
     }
 }
 
 class Tcp40007PacketSource(
-    private val host: String,
+    private val host: String = "127.0.0.1",
     private val port: Int = Port40007RcReader.PORT
 ) : Port40007RcReader.PacketSource {
     private var socket: Socket? = null
+    private var source: DumlStreamPacketSource? = null
 
     override fun readPacket(): ByteArray? {
-        val s = socket ?: Socket(host, port).also { socket = it }
-        val input = s.getInputStream()
-        val lenHi = input.read()
-        if (lenHi < 0) return null
-        val lenLo = input.read()
-        if (lenLo < 0) return null
-        val len = ((lenHi and 0xFF) shl 8) or (lenLo and 0xFF)
-        if (len <= 0 || len > 4096) return null
-        val out = ByteArray(len)
-        var off = 0
-        while (off < len) {
-            val n = input.read(out, off, len - off)
-            if (n < 0) return null
-            off += n
+        val streamSource = source ?: Socket(host, port).also { socket = it }.let {
+            DumlStreamPacketSource(it.getInputStream())
+        }.also {
+            source = it
         }
-        return out
+        val packet = streamSource.readPacket()
+        if (packet == null) {
+            closeCurrent()
+            throw SocketException("40007 tcp closed")
+        }
+        return packet
+    }
+
+    private fun closeCurrent() {
+        source = null
+        try { socket?.close() } catch (_: Exception) {}
+        socket = null
     }
 }
 
@@ -155,73 +230,31 @@ class Udp40007PacketSource(
     }
 }
 
-internal object ProtoLite {
-    fun readVarintFields(packet: ByteArray): Map<Int, Long> {
-        val out = linkedMapOf<Int, Long>()
-        var i = 0
-        while (i < packet.size) {
-            val key = readVarint(packet, i) ?: break
-            i = key.next
-            val field = (key.value ushr 3).toInt()
-            when ((key.value and 0x07).toInt()) {
-                0 -> {
-                    val value = readVarint(packet, i) ?: break
-                    i = value.next
-                    out[field] = value.value
-                }
-                1 -> i += 8
-                2 -> {
-                    val len = readVarint(packet, i) ?: break
-                    i = len.next + len.value.toInt()
-                }
-                5 -> i += 4
-                else -> break
+class DumlStreamParser {
+    private val buf = mutableListOf<Byte>()
+
+    fun feed(data: ByteArray): List<ByteArray> {
+        buf.addAll(data.toList())
+        val packets = mutableListOf<ByteArray>()
+        while (true) {
+            val sof = buf.indexOf(0x55.toByte())
+            if (sof < 0) {
+                if (buf.size > 1024) buf.subList(0, buf.size - 3).clear()
+                break
             }
-        }
-        return out
-    }
-
-    fun readFixed32Fields(packet: ByteArray): Map<Int, Float> {
-        val out = linkedMapOf<Int, Float>()
-        var i = 0
-        while (i < packet.size) {
-            val key = readVarint(packet, i) ?: break
-            i = key.next
-            val field = (key.value ushr 3).toInt()
-            when ((key.value and 0x07).toInt()) {
-                5 -> {
-                    if (i + 4 > packet.size) break
-                    out[field] = ByteBuffer.wrap(packet, i, 4).order(ByteOrder.LITTLE_ENDIAN).float
-                    i += 4
-                }
-                0 -> {
-                    val value = readVarint(packet, i) ?: break
-                    i = value.next
-                }
-                1 -> i += 8
-                2 -> {
-                    val len = readVarint(packet, i) ?: break
-                    i = len.next + len.value.toInt()
-                }
-                else -> break
+            if (sof > 0) buf.subList(0, sof).clear()
+            if (buf.size < 4) break
+            val verLen = (buf[1].toInt() and 0xFF) or ((buf[2].toInt() and 0xFF) shl 8)
+            val len = verLen and 0x03FF
+            val version = (verLen shr 10) and 0x3F
+            if (version > 1 || len < 13 || len > 1024) {
+                buf.removeAt(0)
+                continue
             }
+            if (buf.size < len) break
+            packets.add(buf.take(len).toByteArray())
+            buf.subList(0, len).clear()
         }
-        return out
-    }
-
-    private data class Varint(val value: Long, val next: Int)
-
-    private fun readVarint(packet: ByteArray, offset: Int): Varint? {
-        var result = 0L
-        var shift = 0
-        var i = offset
-        while (i < packet.size && shift < 64) {
-            val b = packet[i].toInt() and 0xFF
-            result = result or ((b and 0x7F).toLong() shl shift)
-            i++
-            if ((b and 0x80) == 0) return Varint(result, i)
-            shift += 7
-        }
-        return null
+        return packets
     }
 }
