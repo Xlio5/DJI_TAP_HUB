@@ -74,3 +74,11 @@
 3. 按键、模式、拨轮优先使用 40007。
 4. Android 侧融合结果编码为 `RCM1` 风格 RC 数据，App 页面和 V3s 输出链路都消费同一份统一 RC 状态。
 5. V3s 旧双串口解码只保留为 fallback/诊断，不再作为新方案的正常摇杆来源。
+
+## 调试脚本
+
+- `scripts/rc_getevent_channels.py`: 单独观测 getevent 高频通道和 event3 L/R 按键。
+- `scripts/rc_40007_serial_monitor.py`: 单独观测 40007/串口 DUML RC 帧。
+- `scripts/rc_full_monitor.py`: 同时读取 getevent 与 ADB 本机 40007，输出 CH1..CH6、REC/SHOT、L1..L3、R1..R3、MODE、STOP、FOCUS、RTH、C1..C3、DIAL 等完整遥控状态。
+  - 默认用法: `python scripts\rc_full_monitor.py -s 7XJCM630011XC9`
+  - 变化流: `python scripts\rc_full_monitor.py -s 7XJCM630011XC9 --changes`
