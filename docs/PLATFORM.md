@@ -48,10 +48,16 @@
 - `CONFIG_CMDLINE=""` — 不再追加第二个 `root=`，**U-Boot 全权控制启动分区**
 - `CONFIG_CMDLINE_EXTEND=y` — U-Boot 的 bootargs 在前面，内核追加在后面（空串无影响）
 - **DTB**: `sun8i-v3s-licheepi-zero-dock.dtb`
+  - `&uart0 { status = "okay"; }` — **UART0 (PB8/PB9) 固定 debug console**：内核 `console=ttyS0,115200` + inittab getty（单 getty 独占，勿在 rc 脚本重复拉）
   - `&uart1 { status = "okay"; }` — ttyS1 (PE21/PE22) → DJI-B RC @921600
   - `&uart2 { status = "okay"; }` — ttyS2 (PB0/PB1) → DJI-A RC @115200 + SBUS TX
+  - `&i2c0 { status = "okay"; }` — PB6/PB7 (TWI0) → **SC16IS752IPW** (I2C 地址 0x4d, 晶振 1.8432MHz) → `ttySC0/ttySC1` 协议输出口 (SBUS/CRSF)
   - `&spi0 { status = "okay"; }` — W25Q128 SPI NOR
   - `&emac { status = "okay"; }` — 百兆网口
+
+> **UART0 debug 踩坑记录 (2026-08-24, 固件 1.6.39/1.6.40)**：
+> 1. 双 getty 抢 ttyS0（inittab respawn + S99 `_respawn_uart0_getty`）→ 登录失效。**修复**：删 S99 getty，inittab 独占。
+> 2. `dji_rc aux_tmux_set` 按"每 CFG 管 4 引脚"算 PIO 偏移，V3s 实为 **8 引脚/CFG**，把 `0x28`(PB_CFG1=PB8-15) 当 PB_CFG1(PB4-7) 配 TMUX → **PB8/PB9 被配成 GPIO，UART0 物理断连**（`write()` 成功但字节不到线上）。**修复**：删除 0x28 操作，TMUX PB4/PB5 配置并入 PB_CFG0(0x24)。详见 `docs/SESSION_HANDOFF.md` 顶部。
 
 **重编 DTB：**
 ```bash
