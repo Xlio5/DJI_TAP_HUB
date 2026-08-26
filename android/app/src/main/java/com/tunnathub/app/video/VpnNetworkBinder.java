@@ -13,20 +13,31 @@ public final class VpnNetworkBinder {
     private VpnNetworkBinder() {}
 
     public static synchronized boolean bindProcessToVpn(Context context) {
+        Network network = findVpnNetwork(context);
+        if (network == null) {
+            Log.w(TAG, "VPN network not found");
+            return false;
+        }
         ConnectivityManager cm = (ConnectivityManager) context.getApplicationContext()
                 .getSystemService(Context.CONNECTIVITY_SERVICE);
         if (cm == null) return false;
+        boolean ok = cm.bindProcessToNetwork(network);
+        if (ok) sBindCount++;
+        Log.i(TAG, "bindProcessToVpn " + network + " ok=" + ok + " count=" + sBindCount);
+        return ok;
+    }
+
+    private static Network findVpnNetwork(Context context) {
+        ConnectivityManager cm = (ConnectivityManager) context.getApplicationContext()
+                .getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm == null) return null;
         for (Network network : cm.getAllNetworks()) {
             NetworkCapabilities caps = cm.getNetworkCapabilities(network);
             if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
-                boolean ok = cm.bindProcessToNetwork(network);
-                if (ok) sBindCount++;
-                Log.i(TAG, "bindProcessToVpn " + network + " ok=" + ok + " count=" + sBindCount);
-                return ok;
+                return network;
             }
         }
-        Log.w(TAG, "VPN network not found");
-        return false;
+        return null;
     }
 
     public static synchronized void clearProcessBinding(Context context) {

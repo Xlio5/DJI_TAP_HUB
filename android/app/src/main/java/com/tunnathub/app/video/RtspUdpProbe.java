@@ -27,13 +27,15 @@ public final class RtspUdpProbe {
 
     private static Result runInternal(String rtspUrl, int receiveSeconds, String mode, String bindAddress, boolean protectUdp) {
         long startMs = System.currentTimeMillis();
-        boolean boundToVpn = TunNatVpnService.isVpnRunningForJava();
-        Socket rtsp = new Socket();
+        // RTSP 控制面不要 bindProcessToNetwork(VPN)。
+        // 当前 DJI RC Android 上，App 默认 UID 路由访问 192.168.144.66 Web 已验证能进 tun0；
+        // 反而进程绑定 VPN Network 后，TCP 554 会卡在 connect 且 V3s 抓不到 SYN。
+        boolean boundToVpn = false;
+        Socket rtsp = null;
         DatagramSocket rtp = null;
         DatagramSocket rtcp = null;
         String session = null;
         try {
-            if (boundToVpn) TunNatVpnService.bindProcessToVpnNetwork();
             URI uri = URI.create(rtspUrl);
             String host = uri.getHost();
             int port = uri.getPort() > 0 ? uri.getPort() : 554;
@@ -47,6 +49,7 @@ public final class RtspUdpProbe {
             rtp.setSoTimeout(500);
             rtcp.setSoTimeout(200);
 
+            rtsp = new Socket();
             rtsp.connect(new InetSocketAddress(host, port), 3_000);
             rtsp.setSoTimeout(3_000);
             BufferedInputStream input = new BufferedInputStream(rtsp.getInputStream());
@@ -102,7 +105,7 @@ public final class RtspUdpProbe {
             closeQuietly(rtp);
             closeQuietly(rtcp);
             try {
-                rtsp.close();
+                if (rtsp != null) rtsp.close();
             } catch (IOException ignored) {
             }
             if (boundToVpn) TunNatVpnService.clearProcessNetworkBinding();

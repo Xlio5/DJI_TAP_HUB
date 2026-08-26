@@ -60,7 +60,6 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
 
     private static final String TAG = "UdpRtspPlayer";
     private static final boolean DEBUG_NO_SURFACE = false;    // true=纯解码不渲染(实验)
-    private static final String VPN_IP = "192.168.144.11";    // 手机局域网 IP
     private static final int MIN_CLIENT_PORT = 10000;         // V3s DNAT 10000:65535
     private static final long KEY_FRAME_PLI_INTERVAL_NS = 1_500_000_000L;
     private static final long WAIT_KEY_FRAME_TIMEOUT_NS = 10_000_000_000L;
@@ -185,7 +184,7 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
         resetReassembler();
         frameQueue.clear();
 
-        processBoundToVpn = TunNatVpnService.bindProcessToVpnNetwork();
+        processBoundToVpn = false;
 
         // 握手含网络 IO（connect/bind），放到后台线程避免 NetworkOnMainThreadException。
         // 异步成功后由 sessionThread 自己起 RTP/解码/保活线程。
@@ -279,9 +278,9 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
             }
             rtpSocket = new DatagramSocket(null);
             rtpSocket.setReuseAddress(true);
-            rtpSocket.bind(new InetSocketAddress(VPN_IP, ports[0]));
-            // 注意：不要 protectSocket。RTP 从 V3s DNAT 到 192.168.144.11 后经 tun0 回环给本机，
-            // socket 必须留在 VPN 网络内才能收到；protect 会让它绕过 VPN 收不到。
+            rtpSocket.bind(new InetSocketAddress(ports[0]));
+            // 注意：不要 protectSocket。RTP 从 V3s DNAT 到 10.0.0.2 后经 tun0 回环给本机，
+            // socket 必须留在 VPN 网络内才能收到；绑定通配地址与 RtspUdpProbe 成功路径一致。
             rtcpSocket = new DatagramSocket(null);
             rtcpSocket.setReuseAddress(true);
             // RTCP 发送 socket 绑通配地址而非 192.168.144.11：绑具体 VPN 地址 + VpnService 时，
@@ -347,10 +346,10 @@ public final class UdpRtspPlayer implements RtspPlayerSession {
             try {
                 s1 = new DatagramSocket(null);
                 s1.setReuseAddress(true);
-                s1.bind(new InetSocketAddress(VPN_IP, port));
+                s1.bind(new InetSocketAddress(port));
                 s2 = new DatagramSocket(null);
                 s2.setReuseAddress(true);
-                s2.bind(new InetSocketAddress(VPN_IP, port + 1));
+                s2.bind(new InetSocketAddress(port + 1));
                 s1.close();
                 s2.close();
                 return new int[] {port, port + 1};
