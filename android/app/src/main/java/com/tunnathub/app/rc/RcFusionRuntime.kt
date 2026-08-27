@@ -14,7 +14,7 @@ class RcFusionRuntime(
     private val port40007ReaderFactory: ((RcInputSample) -> Unit) -> Port40007RcReader,
     private val transport: RcMsgTransport,
     private val nowMs: () -> Long = { System.currentTimeMillis() },
-    private val publishIntervalMs: Long = 20L,
+    private val publishIntervalMs: Long = 10L,
     private val onError: (String, Throwable) -> Unit = { _, _ -> }
 ) : AutoCloseable {
     @Volatile private var latestGetevent: RcInputSample? = null
