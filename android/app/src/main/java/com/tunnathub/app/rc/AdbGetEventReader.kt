@@ -82,10 +82,11 @@ class AdbGetEventReader(
             }
             if (pkt.cmd != "CNXN") return@withContext
 
-            // 3. OPEN exec 服务 (raw 传输, 等同电脑 `adb exec-out`)
+            // 3. OPEN shell 服务 (pty 行缓冲: getevent 每行即时 flush, 无 4KB 攒批延迟;
+            //    exec: 是 raw 管道, getevent stdout 全缓冲攒 4KB 才发 → 摇杆反馈明显延迟)
             writePacket(output, "OPEN", 1, 0,
-                "exec:getevent -lt /dev/input/event4".toByteArray())
-            // adbd 回 OKAY, 之后 WRTE 数据流
+                "shell:getevent -lt /dev/input/event4".toByteArray())
+            // adbd 回 OKAY, 之后 WRTE 数据流 (pty \n→\r\n, parseLine 已 trimEnd('\r'))
 
             // 3. 读 WRTE 流, 按行解析 getevent 事件
             val lineBuf = StringBuilder()
