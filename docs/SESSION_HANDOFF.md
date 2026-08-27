@@ -1,14 +1,17 @@
 # TUN_NAT_HUB 项目交接文档
 
-> 更新日期: 2026-08-24
+> 更新日期: 2026-08-27
 > 用途: 复制到新会话继续工作
 > 基于完整会话整理, 冲突处以最后一次确认为准
 
 ---
 
-## 🔥 最新状态（2026-08-26）
+## 🔥 最新状态（2026-08-27）
 
-- **当前固件 F1.6.48**（`backup/rootfs_v1648.squashfs` = `backup/rootfs.squashfs`，md5 `eac6d6d8`，**3.80MB <4MB OTA**）+ App **v1.6.44**
+- **当前固件 F1.6.48**（`backup/rootfs_v1648.squashfs` = `backup/rootfs.squashfs`，md5 `eac6d6d8`，**3.80MB <4MB OTA**）+ App **v1.6.46**（getevent 高频摇杆）
+  - **App 1.6.46**：**adb 认证读本机 getevent** 高频摇杆（`AdbGetEventReader`：24B adb 包 + `assets/adbkey` PKCS8 RSA 认证 + `exec:getevent` 读 `/dev/input/event4`；adbd shell 权限有 input 组，普通 App 无权限走 adbd 中转）。另修**显示跳动**（`RcFusionEngine.PORT40007_FRESH_MS` 500→3000ms，40007 实测 0.4Hz 帧间回 0）。真机已验证：App 认证 adbd + getevent 进程读 event4 + 融合发 RCM1 到 V3s；**摇杆数据待摇杆实测**
+  - **getevent 方案背景**：DJI RC 无 root、App 无 input 组、40007 只有 0.4Hz（摇杆不推送）、MSDK 需 DJI 开发者；最终走 **adb 本机 adbd 通道**（`adb tcpip 5555` + assets/adbkey 认证）
+  - App 1.6.45：融合功能接入（RcFusionEngine/GetEventRcReader/Port40007RcReader/RcMsgTransport）
   - 1.6.48：**web_server 改动态链接**，rootfs 体积 4.21→3.80MB（OTA 限制 4MB 内；静态版 web_server 达 1MB，动态版仅 ~86KB，依赖 rootfs 已有 libstdc++.so.6）
   - 1.6.47：**merge codex/adb-getevent-rc-fusion** — dji_rc 接收 App RCM1 getevent/40007 融合遥控输入（`g_app_rc`，appFresh 优先，否则 UART 921600 优先）
   - 1.6.46：RC 921600 输入优先事件驱动输出（`b855de7`，`rc_source_select.h/cpp`）
