@@ -841,8 +841,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             try {
                 val socket = java.net.DatagramSocket()
                 TunNatVpnService.bindSocketToVpn(socket)
-                val transport = RcMsgTransport(socket, onLocalData = { data ->
-                    applyRcData(data, "RC-FUSION")
+                val transport = RcMsgTransport(socket, onLocalData = { _ ->
+                    // 显示源统一为 V3s 回传 (RC): App 融合 (adb getevent + 40007) 只发 V3s,
+                    // 不覆盖显示, 避免 RC-FUSION / RC 双源交替导致遥控页通道条闪动
                 })
                 runtime = RcFusionRuntime(
                     geteventReaderFactory = { onSample ->

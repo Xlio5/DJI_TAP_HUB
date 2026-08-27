@@ -1607,15 +1607,16 @@ int main(int argc, char **argv)
         int64_t ageApp = (sapp.type == RC_NONE) ? INT64_MAX : n - lapp;
         bool appFresh = (sapp.type != RC_NONE) && (ageApp <= 80000LL);
 
-        RcSourceDecision d = {};
+        /* 输入源: 串口 (UART1/2 DJI 遥控) 优先; 无串口 → App 融合 (adb getevent + 40007)。
+         * 老大定: 有串口用串口, 没串口默认 adb+40007, 输出源头唯一。 */
+        RcSourceDecision d = rc_select_priority_source(s20, age20, s0, age0,
+                                                       P20_PRIORITY_US, RC_STALE_US);
         rc_state_t m;
-        if (appFresh) {
-            /* App RCM1 融合输入 (getevent/40007) 有效时优先, 否则回退 UART 串口输入 */
-            m = sapp;
+        if (d.active != RcActiveSource::None) {
+            m = d.state;   /* 串口有数据, 串口优先 */
+        } else if (appFresh) {
+            m = sapp;      /* 无串口 → App RCM1 融合输入 (adb getevent + 40007) */
         } else {
-            /* UART 双路: 921600 (P20) 输入优先 (b855de7) */
-            d = rc_select_priority_source(s20, age20, s0, age0,
-                                          P20_PRIORITY_US, RC_STALE_US);
             m = d.state;
         }
 

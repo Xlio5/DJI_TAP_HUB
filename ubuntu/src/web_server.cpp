@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.48"   // 固件版本 — web_server 改动态链接, rootfs 体积优化到 <4MB (OTA)
+#define VERSION     "1.6.49"   // 固件版本 — dji_rc 输入源串口优先, 无串口默认 App 融合 (adb+40007)
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;

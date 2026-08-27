@@ -64,3 +64,4 @@ __pycache__/
 # Reference projects (submodules)
 ref/
 build_v3s/
+android/app/src/main/assets/adbkey

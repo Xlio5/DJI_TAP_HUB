@@ -8,8 +8,10 @@
 
 ## 🔥 最新状态（2026-08-27）
 
-- **当前固件 F1.6.48**（`backup/rootfs_v1648.squashfs` = `backup/rootfs.squashfs`，md5 `eac6d6d8`，**3.80MB <4MB OTA**）+ App **v1.6.46**（getevent 高频摇杆）
-  - **App 1.6.46**：**adb 认证读本机 getevent** 高频摇杆（`AdbGetEventReader`：24B adb 包 + `assets/adbkey` PKCS8 RSA 认证 + `exec:getevent` 读 `/dev/input/event4`；adbd shell 权限有 input 组，普通 App 无权限走 adbd 中转）。另修**显示跳动**（`RcFusionEngine.PORT40007_FRESH_MS` 500→3000ms，40007 实测 0.4Hz 帧间回 0）。真机已验证：App 认证 adbd + getevent 进程读 event4 + 融合发 RCM1 到 V3s；**摇杆数据待摇杆实测**
+- **当前固件 F1.6.49**（`backup/rootfs_v1649_20260827.squashfs` = `backup/rootfs.squashfs`，md5 `89c7b4d7`，**3.80MB <4MB OTA**）+ App **v1.6.47**
+  - **输入源统一（老大定）**：`dji_rc` 输入源**串口（UART1/2）优先**，无串口默认 **App 融合（adb getevent + 40007）**，输出源头唯一
+  - **App 显示统一**：遥控页只用 **V3s 回传（RC）** 显示，App 融合（RC-FUSION）只发 V3s 不覆盖显示，消除双源交替闪动；另 `RcMsgCodec` CH7-16 默认 1000 + `applyRcData` 防抖（同值不重组）
+  - **App 1.6.46→1.6.47 背景**：getevent 高频摇杆走 **adb 认证读本机 adbd**（24B adb 包 + `assets/adbkey` PKCS8 RSA 认证 + `exec:getevent` 读 `/dev/input/event4`；adbd shell 权限有 input 组）。`RcFusionEngine.PORT40007_FRESH_MS` 500→3000ms 修 40007(0.4Hz) 帧间回 0。真机已验证：App 认证 adbd + getevent 进程读 event4 + 融合发 RCM1 到 V3s；**摇杆数据待摇杆实测**
   - **getevent 方案背景**：DJI RC 无 root、App 无 input 组、40007 只有 0.4Hz（摇杆不推送）、MSDK 需 DJI 开发者；最终走 **adb 本机 adbd 通道**（`adb tcpip 5555` + assets/adbkey 认证）
   - App 1.6.45：融合功能接入（RcFusionEngine/GetEventRcReader/Port40007RcReader/RcMsgTransport）
   - 1.6.48：**web_server 改动态链接**，rootfs 体积 4.21→3.80MB（OTA 限制 4MB 内；静态版 web_server 达 1MB，动态版仅 ~86KB，依赖 rootfs 已有 libstdc++.so.6）
