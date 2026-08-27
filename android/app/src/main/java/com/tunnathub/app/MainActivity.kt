@@ -640,6 +640,16 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
 
     fun applyRcData(data: RcMsg.Data, type: String) {
         rcConnected = true
+        // 防抖: RC-FUSION(本地融合) 与 RC(V3s回传) 双源交替更新, 相同数据跳过
+        // 避免无意义重组导致遥控页通道条高频闪动 (值静止时不重组)
+        if (data.chs == rcChs && data.rawChs == rcRawChs && data.mode == rcMode &&
+            data.btn == rcBtn && data.stop == rcStop && data.focus == rcFocus &&
+            data.shot == rcShot && data.rec == rcRec && data.rth == rcRth &&
+            data.c1 == rcC1 && data.c2 == rcC2 && data.c3 == rcC3 && data.dial == rcDial &&
+            data.up == rcUp && data.down == rcDown && data.left == rcLeft &&
+            data.right == rcRight && data.aircraft == rcAircraft && data.back == rcBack) {
+            return
+        }
         rcChs = data.chs
         rcRawChs = data.rawChs
         rcMode = data.mode

@@ -18,7 +18,8 @@ object RcMsgCodec {
         port40007Fresh: Boolean
     ): ByteArray {
         val raw = sample.axes.normalizedAxes()
-        val channels = List(16) { idx -> if (idx < raw.size) rawToUs(raw[idx]) else 1500 }
+        // ch7-16 扩展通道默认 1000 (与 V3s 回传一致; 1500 会导致双源交替时通道条闪动)
+        val channels = List(16) { idx -> if (idx < raw.size) rawToUs(raw[idx]) else 1000 }
         val buf = ByteBuffer.allocate(RcMsg.LENGTH).order(ByteOrder.LITTLE_ENDIAN)
         buf.putInt(RcMsg.MAGIC)
         buf.putShort(1)
