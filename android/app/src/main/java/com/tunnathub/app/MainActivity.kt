@@ -813,7 +813,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         sock.receive(pkt)
                         val data = RcMsg.parse(pkt.data.copyOf(pkt.length))
                         if (data != null) {
-                            applyRcData(data, "RC")
+                            // V3s 回传仅确认链路, 不再覆盖显示
+                            // (显示源 = App 融合 RC-FUSION 一跳即时, 避免两跳 UDP 回传延迟/丢帧卡顿)
+                            rcConnected = true
                         }
                     } catch (_: java.net.SocketTimeoutException) {
                         // 空闲超时, 继续等
@@ -841,9 +843,11 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             try {
                 val socket = java.net.DatagramSocket()
                 TunNatVpnService.bindSocketToVpn(socket)
-                val transport = RcMsgTransport(socket, onLocalData = { _ ->
-                    // 显示源统一为 V3s 回传 (RC): App 融合 (adb getevent + 40007) 只发 V3s,
-                    // 不覆盖显示, 避免 RC-FUSION / RC 双源交替导致遥控页通道条闪动
+                val transport = RcMsgTransport(socket, onLocalData = { data ->
+                    // 显示用 App 融合 (RC-FUSION): 一跳即时 (adb getevent + 40007),
+                    // 避免 V3s 回传两跳 UDP 延迟/丢帧导致摇杆显示卡顿。
+                    // V3s 回传 (RC) 不再覆盖显示 (单一显示源, 无闪动)。
+                    applyRcData(data, "RC-FUSION")
                 })
                 runtime = RcFusionRuntime(
                     geteventReaderFactory = { onSample ->
