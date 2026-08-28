@@ -53,11 +53,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.tunnathub.app.BuildConfig
-import com.tunnathub.app.rc.AdbGetEventReader
-import com.tunnathub.app.rc.Port40007RcReader
-import com.tunnathub.app.rc.RcFusionRuntime
-import com.tunnathub.app.rc.RcMsgTransport
-import com.tunnathub.app.rc.Tcp40007PacketSource
 import com.tunnathub.app.service.TunNatVpnService
 import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
@@ -560,6 +555,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     // 响应式订阅 VPN 运行状态: isRunningState 变化时触发重组,
     // 使下方 LaunchedEffect(vpnRunning) 在 VPN 启动后真正执行
     val vpnRunning by TunNatVpnService.isRunningState
+    val serviceFusedRcData by TunNatVpnService.fusedRcDataState
     var selectedTab by remember { mutableStateOf(Tab.VIDEO) }
 
     fun fmtSize(bytes: Long): String = when {
@@ -662,6 +658,10 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         rcLeft = data.left; rcRight = data.right
         rcAircraft = data.aircraft; rcBack = data.back
         rcType = type
+    }
+
+    LaunchedEffect(serviceFusedRcData) {
+        serviceFusedRcData?.let { applyRcData(it, "RC-FUSION") }
     }
 
     // ── 摄像头列表 ──
@@ -831,45 +831,6 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 rcConnected = false
             } finally {
                 // 不关闭 socket: 它是 protectPort 持有的锚定 socket, 由 VPN 服务管理
-            }
-        }
-    }
-
-    // ── Android 侧 RC 融合输入: getevent/40007 是输入更新, 这里按 20ms 定时发布完整状态 ──
-    LaunchedEffect(vpnRunning) {
-        if (!vpnRunning) return@LaunchedEffect
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            var runtime: RcFusionRuntime? = null
-            try {
-                val socket = java.net.DatagramSocket()
-                TunNatVpnService.bindSocketToVpn(socket)
-                val transport = RcMsgTransport(socket, onLocalData = { data ->
-                    // 显示用 App 融合 (RC-FUSION): 一跳即时 (adb getevent + 40007),
-                    // 避免 V3s 回传两跳 UDP 延迟/丢帧导致摇杆显示卡顿。
-                    // V3s 回传 (RC) 不再覆盖显示 (单一显示源, 无闪动)。
-                    applyRcData(data, "RC-FUSION")
-                })
-                runtime = RcFusionRuntime(
-                    geteventReaderFactory = { onSample ->
-                        // 通过 adb 连本机 adbd (shell 权限 + adbkey 认证) 读 getevent 高频摇杆
-                        com.tunnathub.app.rc.AdbGetEventReader(context = ctx, onSample = onSample)
-                    },
-                    port40007ReaderFactory = { onSample ->
-                        Port40007RcReader(Tcp40007PacketSource(), onSample)
-                    },
-                    transport = transport,
-                    onError = { source, error ->
-                        AppLog.w("RcFusion", "$source 输入停止: ${error.message}")
-                    }
-                )
-                runtime.start()
-                while (vpnRunning) kotlinx.coroutines.delay(1000)
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                AppLog.e("RcFusion", "融合输入启动失败: ${e.message}")
-            } finally {
-                runtime?.close()
             }
         }
     }

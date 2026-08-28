@@ -32,6 +32,12 @@ import android.util.Log
 import androidx.compose.runtime.mutableStateOf
 import com.tunnathub.app.MainActivity
 import com.tunnathub.app.R
+import com.tunnathub.app.RcMsg
+import com.tunnathub.app.rc.AdbGetEventReader
+import com.tunnathub.app.rc.Port40007RcReader
+import com.tunnathub.app.rc.RcFusionRuntime
+import com.tunnathub.app.rc.RcMsgTransport
+import com.tunnathub.app.rc.Tcp40007PacketSource
 import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
 import com.tunnathub.app.video.VpnNetworkBinder
@@ -55,6 +61,9 @@ class TunNatVpnService : VpnService() {
 
         /** 是否正在重连 USB */
         val isReconnectingState = mutableStateOf(false)
+
+        /** 服务侧融合 RC 最新数据：Activity 仅观察显示, 采集/发布不依赖 Activity 生命周期。 */
+        val fusedRcDataState = mutableStateOf<RcMsg.Data?>(null)
 
         /**
          * 强制重建 VPN 标志 (MainActivity 网段变更/手动重连时设置)。
@@ -231,6 +240,8 @@ class TunNatVpnService : VpnService() {
         private const val TUN_PREFIX = 24
         private const val TUN_MTU = 1400
         private const val RECONNECT_DELAY = 1500L  // USB 断开后重连间隔
+        private const val SERVICE_KEEPALIVE_INTERVAL_MS = 15_000L
+        private const val USB_WATCHDOG_INTERVAL_MS = 2_000L
 
         // LAN 网段可从 SharedPreferences 覆盖 (高级设置)
         private const val PREFS_NAME = "tun_nat_hub"
@@ -253,6 +264,11 @@ class TunNatVpnService : VpnService() {
     // 无 @Volatile 可能读到已取消的旧 scope → 重连静默失败
     @Volatile private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     @Volatile private var reconnectScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val keepAliveThreadsRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var serviceKeepAliveThread: Thread? = null
+    @Volatile private var usbWatchdogThread: Thread? = null
+    @Volatile private var rcFusionJob: Job? = null
+    @Volatile private var rcFusionRuntime: RcFusionRuntime? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -297,6 +313,7 @@ class TunNatVpnService : VpnService() {
 
         // 前台服务
         startForeground(NOTIFICATION_ID, buildNotification("正在启动..."))
+        startKeepAliveThreads()
 
         // 建立 TUN 接口
         try {
@@ -337,6 +354,7 @@ class TunNatVpnService : VpnService() {
 
         // 注册 USB 拔出广播: 收到 DETACHED → 触发重连 (不停止服务)
         registerUsbDetachReceiver()
+        startRcFusionRuntime()
 
         // 首次连接
         scope.launch { doReconnect() }
@@ -377,6 +395,8 @@ class TunNatVpnService : VpnService() {
 
     override fun onDestroy() {
         Log.i(TAG, "VpnService 销毁")
+        stopKeepAliveThreads()
+        stopRcFusionRuntime()
         scope.cancel()
         reconnectScope.cancel()
         unregisterReconnectReceiver()
@@ -468,9 +488,135 @@ class TunNatVpnService : VpnService() {
     }
 
     /**
+     * 双线程保活:
+     * 1) 服务心跳线程: 周期性刷新前台通知, 避免长时间无 UI 交互时状态沉默。
+     * 2) USB 巡检线程: 发现服务仍在但 USB bridge 未连接时, 兜底唤醒重连流程。
+     */
+    private fun startKeepAliveThreads() {
+        if (!keepAliveThreadsRunning.compareAndSet(false, true)) return
+
+        serviceKeepAliveThread = Thread({
+            AppLog.i(TAG, "服务保活线程启动")
+            while (keepAliveThreadsRunning.get()) {
+                try {
+                    val status = when {
+                        isRunning -> "已连接 (保活中)"
+                        isReconnectingState.value -> "USB 重连中..."
+                        isStarted -> "等待 USB 连接..."
+                        else -> "已停止"
+                    }
+                    updateNotification(status)
+                    Thread.sleep(SERVICE_KEEPALIVE_INTERVAL_MS)
+                } catch (e: InterruptedException) {
+                    break
+                } catch (e: Exception) {
+                    Log.w(TAG, "服务保活线程异常: ${e.message}")
+                    try { Thread.sleep(SERVICE_KEEPALIVE_INTERVAL_MS) } catch (_: InterruptedException) { break }
+                }
+            }
+            AppLog.i(TAG, "服务保活线程退出")
+        }, "TunNatHub-ServiceKeepAlive").apply {
+            isDaemon = true
+            start()
+        }
+
+        usbWatchdogThread = Thread({
+            AppLog.i(TAG, "USB 巡检线程启动")
+            while (keepAliveThreadsRunning.get()) {
+                try {
+                    if (isStarted) {
+                        val bridge = usbBridge
+                        val shouldKickReconnect = bridge == null || !bridge.isConnected
+                        if (shouldKickReconnect && !reconnecting.get()) {
+                            AppLog.w(TAG, "USB 巡检发现链路未连接, 触发重连")
+                            reconnectScope.launch { doReconnect() }
+                        }
+                    }
+                    Thread.sleep(USB_WATCHDOG_INTERVAL_MS)
+                } catch (e: InterruptedException) {
+                    break
+                } catch (e: Exception) {
+                    Log.w(TAG, "USB 巡检线程异常: ${e.message}")
+                    try { Thread.sleep(USB_WATCHDOG_INTERVAL_MS) } catch (_: InterruptedException) { break }
+                }
+            }
+            AppLog.i(TAG, "USB 巡检线程退出")
+        }, "TunNatHub-UsbWatchdog").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun stopKeepAliveThreads() {
+        keepAliveThreadsRunning.set(false)
+        serviceKeepAliveThread?.interrupt()
+        usbWatchdogThread?.interrupt()
+        serviceKeepAliveThread = null
+        usbWatchdogThread = null
+    }
+
+    /**
+     * Android 侧 RC 融合输入放在 VpnService 内运行。
+     * 这样用户划掉 Activity 后, adb getevent + 40007 仍由前台 VPN 服务持续采集,
+     * 并按固定周期发布 RCM1 给 V3s 输出链路。
+     */
+    private fun startRcFusionRuntime() {
+        if (rcFusionJob != null) return
+        rcFusionJob = scope.launch {
+            while (isStarted && isActive) {
+                var socket: DatagramSocket? = null
+                try {
+                    socket = DatagramSocket()
+                    if (!bindSocketToVpn(socket)) {
+                        socket.close()
+                        throw IllegalStateException("RC 融合 UDP socket 绑定 VPN 网络失败")
+                    }
+                    val transport = RcMsgTransport(socket, onLocalData = { data ->
+                        fusedRcDataState.value = data
+                    })
+                    val runtime = RcFusionRuntime(
+                        geteventReaderFactory = { onSample ->
+                            AdbGetEventReader(context = applicationContext, onSample = onSample)
+                        },
+                        port40007ReaderFactory = { onSample ->
+                            Port40007RcReader(Tcp40007PacketSource(), onSample)
+                        },
+                        transport = transport,
+                        onError = { source, error ->
+                            AppLog.w("RcFusion", "$source 输入停止: ${error.message}")
+                        }
+                    )
+                    rcFusionRuntime = runtime
+                    runtime.start()
+                    AppLog.i("RcFusion", "服务侧 RC 融合输入已启动")
+                    while (isStarted && isActive) delay(1000L)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    AppLog.e("RcFusion", "服务侧 RC 融合启动失败: ${e.message}")
+                    socket?.close()
+                    delay(1000L)
+                } finally {
+                    rcFusionRuntime?.close()
+                    rcFusionRuntime = null
+                }
+            }
+        }
+    }
+
+    private fun stopRcFusionRuntime() {
+        rcFusionJob?.cancel()
+        rcFusionJob = null
+        rcFusionRuntime?.close()
+        rcFusionRuntime = null
+    }
+
+    /**
      * 停止 VPN
      */
     private fun stopVpn() {
+        stopKeepAliveThreads()
+        stopRcFusionRuntime()
         isStarted = false
         isStartedForUi = false
         isRunning = false

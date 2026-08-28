@@ -35,10 +35,13 @@ class BootReceiver : BroadcastReceiver() {
                     device.vendorId == UsbBridge.USB_VID &&
                     device.productId == UsbBridge.USB_PID) {
                     // 修复: DJI RC 会周期性重枚举 → ATTACHED 频繁触发。
-                    // 不应停止再重启 VPN (会打断运行), 也不应重复 startVpnService
-                    // (会触发 onStartCommand 的 isStarted 残留强制重启)。
-                    // 由 TunNatVpnService 自身的重连机制处理即可。
-                    Log.i(TAG, "TUN_NAT_HUB USB 插入 (由 VPN 服务重连机制处理)")
+                    // 服务已启动时由内部重连机制处理；服务未启动时兜底拉起前台 VPN 服务。
+                    if (TunNatVpnService.isStartedForUi) {
+                        Log.i(TAG, "TUN_NAT_HUB USB 插入 (由 VPN 服务重连机制处理)")
+                    } else {
+                        Log.i(TAG, "TUN_NAT_HUB USB 插入，启动 VPN 服务")
+                        startVpnService(context)
+                    }
                 }
             }
             UsbManager.ACTION_USB_DEVICE_DETACHED -> {

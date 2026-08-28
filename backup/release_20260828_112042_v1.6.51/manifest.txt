@@ -1,0 +1,10 @@
+release: release_20260828_112042_v1.6.51
+version: 1.6.51
+timestamp: 20260828_112042
+branch: codex/sc16-remote-test
+source_commit: a85b964
+artifact: tun_nat_hub_android_v1.6.51_20260828_112042.apk
+size_bytes: 31823352
+sha256: 94B16B06DB544763490D5FD7486156F0B9110B1258465FEE4236E203D9F5FEC9
+purpose: Android debug APK with TunNatVpnService dual-thread keepalive, USB watchdog, and service-side adb getevent/40007 RC fusion input.
+readback: SHA256 verified after copy.
