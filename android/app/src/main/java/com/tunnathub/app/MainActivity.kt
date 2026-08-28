@@ -18,6 +18,7 @@ import android.os.Looper
 import android.util.Log
 import android.view.SurfaceView
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -64,6 +65,7 @@ import kotlinx.coroutines.*
 import org.easydarwin.video.BenchmarkStats
 import org.easydarwin.video.LowLatencyRtspPlayer
 import org.easydarwin.video.RtspPlayerSession
+import rikka.shizuku.Shizuku
 
 /** Activity 与 Compose 共享的播放器引用，用于 onDestroy 时释放 */
 private val playerHolder = java.util.concurrent.atomic.AtomicReference<RtspPlayerSession?>(null)
@@ -312,6 +314,7 @@ class MainActivity : ComponentActivity() {
         private const val USB_PERM_ACTION = "com.tunnathub.app.USB_PERM"
         // V3s 同线供电, 开机需 10-15s → 最多轮询 30 次 (每 2s = 60s)
         private const val USB_POLL_MAX = 30
+        private const val SHIZUKU_PERMISSION_REQUEST_CODE = 20260829
     }
     private var usbDevice: UsbDevice? = null
     private var connectionState = "idle"
@@ -323,6 +326,16 @@ class MainActivity : ComponentActivity() {
                 connectionState = "connecting"
                 requestVpn()
             }
+        }
+    }
+
+    /** Shizuku 授权结果回调: 授权成功后重建 RC 融合, 让 getevent reader 从 adb 回退切到 Shizuku。 */
+    private val shizukuPermissionListener = Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
+        if (requestCode == SHIZUKU_PERMISSION_REQUEST_CODE &&
+            grantResult == android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            AppLog.i(TAG, "Shizuku 授权成功, 重建 RC 融合切换 getevent reader")
+            TunNatVpnService.requestRcFusionRestart()
         }
     }
 
@@ -338,6 +351,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         registerReceiver(usbReceiver, IntentFilter(USB_PERM_ACTION), Context.RECEIVER_NOT_EXPORTED)
+        try { Shizuku.addRequestPermissionResultListener(shizukuPermissionListener) } catch (_: Exception) {}
+        ensureShizukuPermission()
         usbDevice = findUsbDevice()
         if (usbDevice != null) connectionState = "found"
 
@@ -428,6 +443,23 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         playerHolder.getAndSet(null)?.stop()
         try { unregisterReceiver(usbReceiver) } catch (_: Exception) {}
+        try { Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener) } catch (_: Exception) {}
+    }
+
+    /**
+     * Shizuku 集成: 以 shell 身份执行 getevent 读高频摇杆 (替代 adbd 中转)。
+     * 未连接 → Toast 提示, getevent 走 adb 回退; 已连接未授权 → 弹授权窗;
+     * 已授权 → 服务重建融合时 geteventReaderFactory 自动切 Shizuku。
+     */
+    private fun ensureShizukuPermission() {
+        if (!Shizuku.pingBinder()) {
+            Toast.makeText(this, "Shizuku 未连接, getevent 走 adb 回退", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (Shizuku.checkSelfPermission() != 0) {
+            Toast.makeText(this, "需要 Shizuku 权限以读取高频摇杆", Toast.LENGTH_SHORT).show()
+            try { Shizuku.requestPermission(SHIZUKU_PERMISSION_REQUEST_CODE) } catch (_: Exception) {}
+        }
     }
 
     private fun startAuthFlow() {

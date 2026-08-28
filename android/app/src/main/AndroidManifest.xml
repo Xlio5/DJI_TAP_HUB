@@ -19,6 +19,9 @@
     <!-- 设备启动自启（可选） -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Shizuku: 申请 API v23+ 权限 (以 shell 身份执行 getevent) -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
     <application
         android:allowBackup="true"
         android:label="@string/app_name"
@@ -80,6 +83,19 @@
                 <action android:name="com.tunnathub.app.RTSP_UDP_PROBE" />
             </intent-filter>
         </receiver>
+
+        <!-- Shizuku 客户端 (App 进程启动时自动绑定 Shizuku 服务) -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <meta-data
+            android:name="moe.shizuku.client.V3_SUPPORT"
+            android:value="true" />
 
     </application>
 

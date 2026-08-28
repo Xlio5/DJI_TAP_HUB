@@ -12,8 +12,8 @@ android {
         applicationId = "com.tunnathub.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 96
-        versionName = "1.6.57"
+        versionCode = 97
+        versionName = "1.6.58"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -89,5 +89,10 @@ dependencies {
 
     // Lua 引擎 (ELRS Lua 参数脚本)
     implementation("org.luaj:luaj-jse:3.0.1")
+
+    // Shizuku — 以 shell 身份执行 getevent 读高频摇杆 (替代 adbd 中转)
+    // 用 13.1.0: newProcess 在该版本仍 public (13.1.1+ 起转 private), 与参考 App (rc_20260413) 一致
+    implementation("dev.rikka.shizuku:api:13.1.0")
+    implementation("dev.rikka.shizuku:provider:13.1.0")
 
 }

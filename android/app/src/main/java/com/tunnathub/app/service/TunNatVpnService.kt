@@ -38,11 +38,13 @@ import com.tunnathub.app.rc.Port40007RcReader
 import com.tunnathub.app.rc.RcFusionRuntime
 import com.tunnathub.app.rc.RcMsgTransport
 import com.tunnathub.app.rc.RcSourceStats
+import com.tunnathub.app.rc.ShizukuGetEventReader
 import com.tunnathub.app.rc.Tcp40007PacketSource
 import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
 import com.tunnathub.app.video.VpnNetworkBinder
 import kotlinx.coroutines.*
+import rikka.shizuku.Shizuku
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.util.concurrent.ConcurrentHashMap
@@ -68,6 +70,14 @@ class TunNatVpnService : VpnService() {
 
         /** 服务侧 RC 双源实时到达速率 (getevent / 40007)，供遥控页分别显示。 */
         val fusedRcSourceStatsState = mutableStateOf(RcSourceStats())
+
+        /** Shizuku 授权成功后置位, 监视循环检测后重建 RC 融合 → getevent reader 切到 Shizuku。 */
+        @Volatile var rcFusionRestartRequested = false
+
+        @JvmStatic
+        fun requestRcFusionRestart() {
+            rcFusionRestartRequested = true
+        }
 
         /**
          * 强制重建 VPN 标志 (MainActivity 网段变更/手动重连时设置)。
@@ -580,7 +590,19 @@ class TunNatVpnService : VpnService() {
                     })
                     val runtime = RcFusionRuntime(
                         geteventReaderFactory = { onSample ->
-                            AdbGetEventReader(context = applicationContext, onSample = onSample)
+                            // getevent 高频源优先 Shizuku (shell 身份直读 /dev/input/event4), 未连接/未授权回退 adb 中转。
+                            val shizukuOk = try {
+                                Shizuku.pingBinder() && Shizuku.checkSelfPermission() == 0
+                            } catch (_: Exception) {
+                                false
+                            }
+                            if (shizukuOk) {
+                                AppLog.i("RcFusion", "getevent reader: Shizuku")
+                                ShizukuGetEventReader(onSample)
+                            } else {
+                                AppLog.i("RcFusion", "getevent reader: adb(回退)")
+                                AdbGetEventReader(context = applicationContext, onSample = onSample)
+                            }
                         },
                         port40007ReaderFactory = { onSample ->
                             Port40007RcReader(Tcp40007PacketSource(), onSample)
@@ -596,7 +618,14 @@ class TunNatVpnService : VpnService() {
                     AppLog.i("RcFusion", "服务侧 RC 融合输入已启动")
                     // 内层监视循环: runtime 内部 publish 连续失败自判死亡 (isHealthy=false) → 跳出重建整个融合。
                     // 修复: 之前 publish 协程异常会静默终止, 外层检测不到 → 摇杆停在最后值, 只能重启服务恢复。
-                    while (isStarted && isActive && runtime.isHealthy) delay(1000L)
+                    while (isStarted && isActive && runtime.isHealthy) {
+                        // Shizuku 授权成功后重建: getevent reader 从 adb 回退切到 Shizuku
+                        if (rcFusionRestartRequested) {
+                            rcFusionRestartRequested = false
+                            break
+                        }
+                        delay(1000L)
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
