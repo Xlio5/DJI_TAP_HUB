@@ -1,14 +1,15 @@
 # TUN_NAT_HUB 项目交接文档
 
-> 更新日期: 2026-08-28
+> 更新日期: 2026-08-29
 > 用途: 复制到新会话继续工作
 > 基于完整会话整理, 冲突处以最后一次确认为准
 
 ---
 
-## 🔥 最新状态（2026-08-28）
+## 🔥 最新状态（2026-08-29）
 
-- **当前固件 F1.6.49**（`backup/rootfs_v1649_20260827.squashfs` = `backup/rootfs.squashfs`，md5 `89c7b4d7`，**3.80MB <4MB OTA**，待部署）+ App **v1.6.54**（getevent 高频摇杆链路 + 服务侧双线程保活 + 摇杆映射修复，真机已装）
+- **当前固件 F1.6.49**（`backup/rootfs_v1649_20260827.squashfs` = `backup/rootfs.squashfs`，md5 `89c7b4d7`，**3.80MB <4MB OTA**，待部署）+ App **v1.6.57**（getevent 高频摇杆链路 + 服务侧双线程保活 + 摇杆映射修复 + 遥控页双源速率显示）
+  - **遥控页显示 getevent / 40007 双源到达速率（App 1.6.57, 2026-08-29）**：`RcFusionRuntime` 按 reader 到达间隔分别统计 getevent / 40007 Hz（指数平滑 + 断流老化归零：getevent 2s、40007 4s 覆盖 ~2.5s 低频帧间隔），经 `fusedRcSourceStatsState` 暴露；遥控页 header 显示 `getevent XHz · 40007 YHz`（≥1Hz 整数、0.05..1Hz 一位小数、无数据 —Hz）。40007 实测 0.4Hz 摇杆不推送时显示 0.4Hz，一眼区分"getevent 停、40007 兜底"
   - **摇杆映射修复（App 1.6.53→1.6.54）**：
     - **根因（实测数据）**：DJI 摇杆 event4 轴定义 min/max=±32768，**物理满行程 ±32768**（抓取实测 max 32767/min -32768），**移动时帧率 60Hz**（主峰 13-16ms）—— getevent 源不慢！
     - **Bug 1**：`AdbGetEventReader.toIntOrNull(16)` 对负向值 `0xffffxxxx`（>Int.MAX_VALUE）返回 **null** → **负向摇杆事件全丢**（摇杆只响应正方向，回中/负向失效，推动时一半事件消失像"频率低"）
@@ -421,6 +422,12 @@ PB = bank 1 → bank offset 0x24
 - `docs/ota_ab_slot_issue.md`：OTA 问题记录
 
 ## 十五、固件产物 md5
+
+### App 1.6.57（遥控页显示 getevent / 40007 双源到达速率）— 2026-08-29 编译
+
+| 文件 | md5 |
+|---|---|
+| app-debug.apk（App 1.6.57 / versionCode 96）| `B702003B60BFED7F8E3347B5D3831BBB`（31.8MB）|
 
 ### v1.6.29（做法 B: 砍 10.0.0.x, 手机 = 144.11, App 1.6.35）— ✅ 已 OTA 固化 (2026-08-16)
 
