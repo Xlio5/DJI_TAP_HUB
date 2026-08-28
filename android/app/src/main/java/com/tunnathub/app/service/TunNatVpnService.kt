@@ -37,6 +37,7 @@ import com.tunnathub.app.rc.AdbGetEventReader
 import com.tunnathub.app.rc.Port40007RcReader
 import com.tunnathub.app.rc.RcFusionRuntime
 import com.tunnathub.app.rc.RcMsgTransport
+import com.tunnathub.app.rc.RcSourceStats
 import com.tunnathub.app.rc.Tcp40007PacketSource
 import com.tunnathub.app.usb.UsbBridge
 import com.tunnathub.app.util.AppLog
@@ -64,6 +65,9 @@ class TunNatVpnService : VpnService() {
 
         /** 服务侧融合 RC 最新数据：Activity 仅观察显示, 采集/发布不依赖 Activity 生命周期。 */
         val fusedRcDataState = mutableStateOf<RcMsg.Data?>(null)
+
+        /** 服务侧 RC 双源实时到达速率 (getevent / 40007)，供遥控页分别显示。 */
+        val fusedRcSourceStatsState = mutableStateOf(RcSourceStats())
 
         /**
          * 强制重建 VPN 标志 (MainActivity 网段变更/手动重连时设置)。
@@ -584,7 +588,8 @@ class TunNatVpnService : VpnService() {
                         transport = transport,
                         onError = { source, error ->
                             AppLog.w("RcFusion", "$source 输入停止: ${error.message}")
-                        }
+                        },
+                        onSourceStats = { fusedRcSourceStatsState.value = it }
                     )
                     rcFusionRuntime = runtime
                     runtime.start()
