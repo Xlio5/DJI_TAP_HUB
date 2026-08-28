@@ -68,4 +68,5 @@ object RcMsgCodec {
             'S', 'N', 'F' -> mode.first().code.toByte()
             else -> '?'.code.toByte()
         }
+
 }

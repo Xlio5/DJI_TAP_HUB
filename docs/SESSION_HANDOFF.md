@@ -8,7 +8,12 @@
 
 ## 🔥 最新状态（2026-08-28）
 
-- **当前固件 F1.6.49**（`backup/rootfs_v1649_20260827.squashfs` = `backup/rootfs.squashfs`，md5 `89c7b4d7`，**3.80MB <4MB OTA**，待部署）+ App **v1.6.52**（getevent 高频摇杆链路 + 服务侧双线程保活，真机已装）
+- **当前固件 F1.6.49**（`backup/rootfs_v1649_20260827.squashfs` = `backup/rootfs.squashfs`，md5 `89c7b4d7`，**3.80MB <4MB OTA**，待部署）+ App **v1.6.54**（getevent 高频摇杆链路 + 服务侧双线程保活 + 摇杆映射修复，真机已装）
+  - **摇杆映射修复（App 1.6.53→1.6.54）**：
+    - **根因（实测数据）**：DJI 摇杆 event4 轴定义 min/max=±32768，**物理满行程 ±32768**（抓取实测 max 32767/min -32768），**移动时帧率 60Hz**（主峰 13-16ms）—— getevent 源不慢！
+    - **Bug 1**：`AdbGetEventReader.toIntOrNull(16)` 对负向值 `0xffffxxxx`（>Int.MAX_VALUE）返回 **null** → **负向摇杆事件全丢**（摇杆只响应正方向，回中/负向失效，推动时一半事件消失像"频率低"）
+    - **Bug 2**：getevent ±32768 未 ÷32 缩放到协议 ±1024（40007 同源），660 被当 1024 范围用 → chs 虚高（660→1822），满杆只到 1822
+    - **修复**：`toLongOrNull(16)?.toInt()` 正确解析 32 位有符号 + **÷32 缩放**到 ±1024；`rawToUs` 恢复 ±1024 基准。满杆→2000、中心→1500、负向满→1000（模拟验证通过）
   - **服务侧双线程保活（App 1.6.51）**：**RC 融合（adb getevent + 40007）从 MainActivity 迁入 TunNatVpnService**，划掉 Activity 后前台服务持续采集并发布 RCM1 到 V3s；新增服务心跳线程（15s 刷新通知）+ **USB 巡检线程（2s 轮询兜底唤醒 doReconnect）**；BootReceiver ATTACHED 时服务未启动则兜底拉起前台服务；`fusedRcDataState` 供 UI 只读观察（值防抖不闪动）
   - **RC 融合 publish 自愈（App 1.6.52）**：修复 **publish 协程异常静默死亡**（`RcMsgTransport.publish` 的 `socket.send` 抛异常会终止 publish 协程，外层检测不到 → 摇杆停在最后值只能重启服务）。改：publish 协程 try-catch 短重试，连续失败 20 次（≈400ms）判定内部死亡置 `isHealthy=false`，外层监视循环检测后**重建整个融合（含新 socket）**
   - **输入源统一（老大定）**：`dji_rc` 输入源**串口（UART1/2）优先**，无串口默认 **App 融合（adb getevent + 40007）**，输出源头唯一（固件 1.6.49）
