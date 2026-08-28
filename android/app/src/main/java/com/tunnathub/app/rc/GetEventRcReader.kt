@@ -132,8 +132,8 @@ class GetEventRcReader(
 
         @JvmStatic
         fun normalizeAxis(code: String, raw: Int): Int = when (code) {
-            "ABS_Z", "ABS_RZ" -> ((raw.coerceIn(0, 255) - 127) * 1024 / 128).coerceIn(-1024, 1024)
-            else -> (raw.coerceIn(-32768, 32767) * 1024 / 32768).coerceIn(-1024, 1024)
+            "ABS_Z", "ABS_RZ" -> ((raw.coerceIn(0, 255) - 127) * 660 / 128).coerceIn(-660, 660)
+            else -> (raw.coerceIn(-32768, 32767) * 660 / 32768).coerceIn(-660, 660)
         }
 
         private fun parseEventValue(text: String): Int? {

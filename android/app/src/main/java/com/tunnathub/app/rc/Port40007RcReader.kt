@@ -45,7 +45,7 @@ class Port40007RcReader(
             val axes = MutableList(6) { idx ->
                 val off = 5 + idx * 2
                 val raw = u8(payload[off]) or (u8(payload[off + 1]) shl 8)
-                (raw - 1024).coerceIn(-1024, 1024)
+                (raw - 1024).coerceIn(-660, 660)
             }
             // 实机已确认 RC/0xAE 的 CH5/CH6 需要对调才对应物理控件。
             val tmp = axes[4]
@@ -88,7 +88,7 @@ class Port40007RcReader(
         fun parseSpecial02(payload: ByteArray, nowMs: Long): RcInputSample? {
             if (payload.size < 13) return null
             val axes = listOf(8, 19, 30, 41, 52, 63).map { start ->
-                specialChannel(payload, start).coerceIn(-1024, 1024)
+                specialChannel(payload, start).coerceIn(-660, 660)
             }
             val p10 = u8(payload[10])
             val p12 = u8(payload[12])

@@ -122,9 +122,9 @@ class AdbGetEventReader(
             // toLongOrNull 避免负值 (0xffffxxxx > Int.MAX_VALUE) 时 toIntOrNull(16) 返回 null → 事件被丢弃
             // (之前负向摇杆事件全丢 → 摇杆只响应正方向, 回中/负向失效, 推动时一半事件消失像"频率低")。
             val v32 = m.groupValues[2].toLongOrNull(16)?.toInt() ?: return
-            // getevent 轴满行程 ±32768, 协议轴语义 ±1024 (与 40007 同源, RcInputSample.axes 统一范围)。
-            // 必须 ÷32 缩放: 否则 660 被当满量程用 → chs 虚高 (660→1822, 满杆却只到 1822 而非 2000)。
-            val v = v32 / 32
+            // getevent 轴满行程 ±32768, 协议轴语义 ±660 (与固件 chmap ±660 同源)。
+            // 缩放 ×660/32768: 满杆 32768 → 660 → rawToUs(660)=2000。
+            val v = v32 * 660 / 32768
             axes[idx] = v
             onSample(sample())
             return

@@ -43,7 +43,7 @@ object RcMsgCodec {
 
     @JvmStatic
     fun rawToUs(value: Int): Int =
-        (1500 + value.coerceIn(-1024, 1024) * 500 / 1024).coerceIn(1000, 2000)
+        (1500 + value.coerceIn(-660, 660) * 500 / 660).coerceIn(1000, 2000)
 
     @JvmStatic
     fun buttonBits(sample: RcInputSample): Int =

@@ -1,6 +1,6 @@
 package com.tunnathub.app.rc
 
-/** Android 侧统一 RC 输入样本。axes 为 6 路中位归零值，范围约 -1024..1024。 */
+/** Android 侧统一 RC 输入样本。axes 为 6 路中位归零值，范围约 -660..660（与固件 chmap ±660 同源）。 */
 data class RcInputSample(
     val source: String,
     val axes: List<Int>,
@@ -121,4 +121,4 @@ data class RcInputSample(
 }
 
 internal fun List<Int>.normalizedAxes(): List<Int> =
-    List(6) { idx -> (getOrNull(idx) ?: 0).coerceIn(-1024, 1024) }
+    List(6) { idx -> (getOrNull(idx) ?: 0).coerceIn(-660, 660) }

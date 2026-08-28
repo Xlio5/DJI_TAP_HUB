@@ -633,6 +633,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var rcLeft by remember { mutableStateOf(0) }; var rcRight by remember { mutableStateOf(0) }
     var rcAircraft by remember { mutableStateOf(0) }; var rcBack by remember { mutableStateOf(0) }
     var rcType by remember { mutableStateOf("") }
+    var rcFreq by remember { mutableStateOf(0f) }          // 摇杆输入实时频率 Hz
+    var rcFreqLastAt by remember { mutableStateOf(0L) }    // 上次统计时间戳
 
     fun applyRcData(data: RcMsg.Data, type: String) {
         rcConnected = true
@@ -646,6 +648,16 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             data.right == rcRight && data.aircraft == rcAircraft && data.back == rcBack) {
             return
         }
+        // 摇杆输入实时频率: 值变化间隔取倒数, 指数平滑 (0.7 旧 + 0.3 新) 抗抖动
+        val nowFreqMs = System.currentTimeMillis()
+        if (rcFreqLastAt > 0L) {
+            val dt = nowFreqMs - rcFreqLastAt
+            if (dt in 1..2000) {
+                val inst = 1000f / dt
+                rcFreq = if (rcFreq <= 0f) inst else rcFreq * 0.7f + inst * 0.3f
+            }
+        }
+        rcFreqLastAt = nowFreqMs
         rcChs = data.chs
         rcRawChs = data.rawChs
         rcMode = data.mode
@@ -1681,7 +1693,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column {
                     Text("RC 遥控", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
-                    Text(if (rcConnected) "dji_rc online ${rcType}" else "等待 dji_rc 数据", fontSize = 11.sp, color = if (rcConnected) Color(0xFF22C55E) else Color(0xFF64748B))
+                    Text(if (rcConnected) "dji_rc online ${rcType}  ${if (rcFreq > 0.5f) "%.0fHz".format(rcFreq) else "—Hz"}" else "等待 dji_rc 数据", fontSize = 11.sp, color = if (rcConnected) Color(0xFF22C55E) else Color(0xFF64748B))
                 }
                 ModeSwitch(rcMode)
             }
