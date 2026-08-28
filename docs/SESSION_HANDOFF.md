@@ -1,14 +1,16 @@
 # TUN_NAT_HUB 项目交接文档
 
-> 更新日期: 2026-08-27
+> 更新日期: 2026-08-28
 > 用途: 复制到新会话继续工作
 > 基于完整会话整理, 冲突处以最后一次确认为准
 
 ---
 
-## 🔥 最新状态（2026-08-27）
+## 🔥 最新状态（2026-08-28）
 
-- **当前固件 F1.6.49**（`backup/rootfs_v1649_20260827.squashfs` = `backup/rootfs.squashfs`，md5 `89c7b4d7`，**3.80MB <4MB OTA**，待部署）+ App **v1.6.50**（getevent 高频摇杆链路，真机已通）
+- **当前固件 F1.6.49**（`backup/rootfs_v1649_20260827.squashfs` = `backup/rootfs.squashfs`，md5 `89c7b4d7`，**3.80MB <4MB OTA**，待部署）+ App **v1.6.52**（getevent 高频摇杆链路 + 服务侧双线程保活，真机已装）
+  - **服务侧双线程保活（App 1.6.51）**：**RC 融合（adb getevent + 40007）从 MainActivity 迁入 TunNatVpnService**，划掉 Activity 后前台服务持续采集并发布 RCM1 到 V3s；新增服务心跳线程（15s 刷新通知）+ **USB 巡检线程（2s 轮询兜底唤醒 doReconnect）**；BootReceiver ATTACHED 时服务未启动则兜底拉起前台服务；`fusedRcDataState` 供 UI 只读观察（值防抖不闪动）
+  - **RC 融合 publish 自愈（App 1.6.52）**：修复 **publish 协程异常静默死亡**（`RcMsgTransport.publish` 的 `socket.send` 抛异常会终止 publish 协程，外层检测不到 → 摇杆停在最后值只能重启服务）。改：publish 协程 try-catch 短重试，连续失败 20 次（≈400ms）判定内部死亡置 `isHealthy=false`，外层监视循环检测后**重建整个融合（含新 socket）**
   - **输入源统一（老大定）**：`dji_rc` 输入源**串口（UART1/2）优先**，无串口默认 **App 融合（adb getevent + 40007）**，输出源头唯一（固件 1.6.49）
   - **getevent 摇杆方案（App 1.6.46→1.6.50）**：**adb 认证读本机 adbd**（24B adb 包 + `assets/adbkey` PKCS8 RSA 认证 + `shell:getevent` 读 `/dev/input/event4`；adbd shell 权限有 input 组，普通 App 无权限走 adbd 中转）。真机已验证：App 认证 adbd + getevent 进程读 event4 + 融合发 RCM1 到 V3s
   - **反馈优化链**：

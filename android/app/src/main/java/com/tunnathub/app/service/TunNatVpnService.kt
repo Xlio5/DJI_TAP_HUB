@@ -589,7 +589,9 @@ class TunNatVpnService : VpnService() {
                     rcFusionRuntime = runtime
                     runtime.start()
                     AppLog.i("RcFusion", "服务侧 RC 融合输入已启动")
-                    while (isStarted && isActive) delay(1000L)
+                    // 内层监视循环: runtime 内部 publish 连续失败自判死亡 (isHealthy=false) → 跳出重建整个融合。
+                    // 修复: 之前 publish 协程异常会静默终止, 外层检测不到 → 摇杆停在最后值, 只能重启服务恢复。
+                    while (isStarted && isActive && runtime.isHealthy) delay(1000L)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
