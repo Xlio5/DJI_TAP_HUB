@@ -51,6 +51,12 @@
 5. 产物 md5 表（如 SESSION_HANDOFF 第十五节）须随每次编译更新，标明对应的版本号
 6. 版本号递增原则：修复 bug → patch（1.4.5→1.4.6），加功能 → minor（1.4→1.5），大改 → major
 
+### 8. backup 目录只保留最近 3 个版本
+**backup/ 目录只保留最近 3 个主线版本 + sc16 硬件线的固件/App 发布产物，按版本号判定（勿用修改时间，git checkout 会重置 mtime）。**
+- **保留**：主线最新 3 个版本的 `rootfs_*.squashfs`/`spi_image_*.bin`、sc16 硬件线（1.6.30-sc16/1.6.31-sc16clk）、最新项目 `*.apk`
+- **工具/基础设施文件永久保留**：`busybox_static`、`flash_write`、`*.cpio.gz`、`*.tar.gz`、`upgrade.sh`、`configs/`、`rebuild_full.log` 等无版本概念的文件
+- **每次发布新版本后**，清理掉更早的版本产物，保持主线 ≤3 个版本；清理后 git 提交记录
+
 ---
 
 ## 项目结构
