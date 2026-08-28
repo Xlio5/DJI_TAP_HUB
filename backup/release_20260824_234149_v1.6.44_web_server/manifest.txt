@@ -1,9 +1,0 @@
-artifact=web_server
-version=1.6.44
-timestamp=20260824_234149
-branch=codex/sc16-remote-test
-commit=d85deec4141e9915245dc3878e9c5cff6c0c1855
-file=web_server_v1.6.44_20260824_234149
-size=128032
-sha256=4d73376dd9c44f1e77440c78c17dba4696fa57ec56ebdf585d4a8c357e741b7f
-purpose=V3s web_server RTSP UDP DNAT target fix, target 10.0.0.2

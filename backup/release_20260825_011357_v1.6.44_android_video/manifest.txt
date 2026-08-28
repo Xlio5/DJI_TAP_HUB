@@ -1,9 +1,0 @@
-artifact=android-debug-apk
-version=1.6.44
-timestamp=20260825_011357
-branch=codex/sc16-remote-test
-commit=24385a0790ec2eedd1d2e9cc0d8d9c47e72d40fd
-file=tun_nat_hub_app_v1.6.44_20260825_011357.apk
-size=31754628
-sha256=e25ed87d498641081fae38f4bae2888a36b8286d62054b28142bd260f50c44c4
-purpose=App UDP_SELF default and RTP wildcard socket video playback fix

@@ -1,4 +1,0 @@
-9e31b4c40fad9280d7b973f24b71b4ea0d3f71feae1ba05a613c70e8de0fc02b  /mnt/c/my_project/TUN_NAT_HUB/backup/release_20260825_125547_v1.6.45/rootfs_v1.6.45_20260825_125547.squashfs
-c7b7d0849621b1b59474e4e5dccd881b0f1a299df76c389eeec378b915ca6c4a  /mnt/c/my_project/TUN_NAT_HUB/backup/release_20260825_125547_v1.6.45/spi_image_v1.6.45_20260825_125547.bin
-9e31b4c40fad9280d7b973f24b71b4ea0d3f71feae1ba05a613c70e8de0fc02b  /mnt/c/my_project/TUN_NAT_HUB/backup/rootfs.squashfs
-c7b7d0849621b1b59474e4e5dccd881b0f1a299df76c389eeec378b915ca6c4a  /mnt/c/my_project/TUN_NAT_HUB/backup/spi_image.bin
