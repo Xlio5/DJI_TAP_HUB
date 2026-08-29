@@ -519,6 +519,13 @@ static uint32_t button_bits(const rc_state_t &st)
     if (st.right)    b |= 1u << 12;
     if (st.aircraft) b |= 1u << 13;
     if (st.back)     b |= 1u << 14;
+    /* L1~R3 (bit 15-20): App 融合 getevent KEY_F1..F6, 供 SRC_LR 6 档互斥自锁 */
+    if (st.l1)       b |= 1u << 15;
+    if (st.l2)       b |= 1u << 16;
+    if (st.l3)       b |= 1u << 17;
+    if (st.r1)       b |= 1u << 18;
+    if (st.r2)       b |= 1u << 19;
+    if (st.r3)       b |= 1u << 20;
     return b;
 }
 
@@ -545,6 +552,12 @@ static bool rcmsg_to_state(const RcMsg &msg, rc_state_t *out)
     out->right    = (b >> 12) & 1u;
     out->aircraft = (b >> 13) & 1u;
     out->back     = (b >> 14) & 1u;
+    out->l1       = (b >> 15) & 1u;
+    out->l2       = (b >> 16) & 1u;
+    out->l3       = (b >> 17) & 1u;
+    out->r1       = (b >> 18) & 1u;
+    out->r2       = (b >> 19) & 1u;
+    out->r3       = (b >> 20) & 1u;
     out->mode = (msg.mode == 'S' || msg.mode == 'N' || msg.mode == 'F') ? (char)msg.mode : '?';
     out->dial = msg.dial;
     return true;
@@ -964,6 +977,22 @@ static void update_long_press(const rc_state_t &st)
     }
 }
 
+/* L1~R3 互斥自锁推进: 任一按键按下沿 (0→1) → 切到对应档位 (直接选中, 互斥覆盖),
+ * 松开保持 (自锁), 下次按其他键自动切档。档位存 g_lr_pos, src_value(SRC_LR) 输出其值。
+ * 仅 App 融合 (RCM1) 有 l1..r3, 串口/DUML 路径这些字段恒 0, 不会误触发。 */
+static void update_lr_latch(const rc_state_t &st)
+{
+    static uint8_t prev[6] = {};
+    const uint8_t now[6] = { st.l1, st.l2, st.l3, st.r1, st.r2, st.r3 };
+    for (int i = 0; i < 6; i++) {
+        if (now[i] && !prev[i]) {   /* 按下沿: 切档 (互斥单选) */
+            g_lr_pos = i;
+            break;
+        }
+    }
+    memcpy(prev, now, sizeof(prev));
+}
+
 static void build_output_channels(const rc_state_t &st, uint16_t ch[CH_COUNT], bool advance_latch)
 {
     uint8_t mapSnap[CH_COUNT];
@@ -975,6 +1004,7 @@ static void build_output_channels(const rc_state_t &st, uint16_t ch[CH_COUNT], b
         if (g_ch_map_valid.load(std::memory_order_acquire)) std::memcpy(mapSnap, g_ch_map, CH_COUNT);
         std::memcpy(lockSnap, g_ch_lock, CH_COUNT);
         update_long_press(st);                       // 更新长按确认状态 (g_mtx 内, 读 g_cfg)
+        if (advance_latch) update_lr_latch(st);      // 主循环推进 L1~R3 互斥自锁档位
         rc_map_build(&st, mapSnap, ch);              // 用原始 st: 复合源读原始字段, 独立源 src_value 内部检查确认
     }
     apply_channel_locks(st, ch, mapSnap, lockSnap, advance_latch);

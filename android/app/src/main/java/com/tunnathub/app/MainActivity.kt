@@ -132,6 +132,15 @@ private val SRC_CFG_GROUPS: List<Pair<String, List<SrcCfgRow>>> = buildList {
         SrcCfgRow("dir_4", "R", def = 1800),
         SrcCfgRow("dir_5", "BTN", def = 2000),
     ))
+    // L1-R3 六档 (互斥自锁)
+    add("L1-R3 六档" to listOf(
+        SrcCfgRow("lr_0", "L1", def = 1000),
+        SrcCfgRow("lr_1", "L2", def = 1200),
+        SrcCfgRow("lr_2", "L3", def = 1400),
+        SrcCfgRow("lr_3", "R1", def = 1600),
+        SrcCfgRow("lr_4", "R2", def = 1800),
+        SrcCfgRow("lr_5", "R3", def = 2000),
+    ))
 }
 
 private const val CHANNEL_COUNT = 16
@@ -202,6 +211,7 @@ private fun sourceKeys(source: String): SourceKeys = when {
     source == "shot" -> SourceKeys("shot_lo", "shot_hi", "shot_mid", "")
     source == "c12" -> SourceKeys("c12_0", "c12_3", "", "")
     source == "dir" -> SourceKeys("dir_0", "dir_5", "", "")
+    source == "lr" -> SourceKeys("lr_0", "lr_5", "", "")
     source in setOf("rec", "rth", "stop", "focus", "c1", "c2", "c3", "aircraft", "back", "btn", "up", "down", "left", "right") ->
         SourceKeys("${source}_off", "${source}_on", "", "")
     else -> SourceKeys()
@@ -238,6 +248,7 @@ private fun sourceDisplayLabel(source: String): String = when (source) {
     "shot" -> "快门"
     "c12" -> "C1/C2"
     "dir" -> "方向键"
+    "lr" -> "L1-R3 六档"
     else -> source
 }
 
@@ -1542,7 +1553,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             @Composable
             fun SourcePickerDialog(channelIndex: Int, current: String, sources: List<String>, onPick: (String) -> Unit, onDismiss: () -> Unit) {
                 val known = if (sources.isEmpty()) {
-                    listOf("ch1", "ch2", "ch3", "ch4", "ch5", "ch6", "dial", "mode", "rec", "rth", "stop", "focus", "c1", "c2", "c3", "aircraft", "back", "btn", "up", "down", "left", "right", "shot", "c12", "dir", "none")
+                    listOf("ch1", "ch2", "ch3", "ch4", "ch5", "ch6", "dial", "mode", "rec", "rth", "stop", "focus", "c1", "c2", "c3", "aircraft", "back", "btn", "up", "down", "left", "right", "shot", "c12", "dir", "lr", "none")
                 } else {
                     sources + "none"
                 }

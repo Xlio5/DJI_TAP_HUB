@@ -41,6 +41,9 @@ typedef struct {
     uint8_t   aircraft, back;
     uint8_t   c1, c2, c3;
     uint8_t   dial;
+
+    /* App 融合 (RCM1) 扩展: L1~R3 按键 (getevent KEY_F1..F6), 供 SRC_LR 6 档互斥自锁 */
+    uint8_t   l1, l2, l3, r1, r2, r3;
 } rc_state_t;
 
 bool decode_rc_ae(const uint8_t *pl, int pl_len, rc_state_t *st);

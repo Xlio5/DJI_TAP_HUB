@@ -43,6 +43,7 @@ typedef enum {
     SRC_BTN, SRC_UP, SRC_DOWN, SRC_LEFT, SRC_RIGHT,
     SRC_C12,        /* C1+C2 混合 4档 */
     SRC_DIR,        /* 方向键+BTN 混合 6档 */
+    SRC_LR,         /* L1~R3 互斥单选 6档 (自锁) */
     SRC_COUNT
 } rc_src_t;
 
@@ -82,7 +83,7 @@ void rc_map_apply_preset(rc_map_preset_t p, uint8_t map[CH_COUNT]);
  *   C12 4档 / DIR 6档: 每档位值
  * 表驱动存 85 个 uint16 (rc_cfg_names 给出 JSON key), web_server/dji_rc/App 共享。 */
 
-#define RC_CFG_NUM 85   /* 源配置参数总数 */
+#define RC_CFG_NUM 91   /* 源配置参数总数 */
 
 /* 源配置参数索引 (顺序与 rc_cfg_names/默认值表一致, 勿乱序) */
 enum {
@@ -118,7 +119,9 @@ enum {
     CFG_C12_0, CFG_C12_1, CFG_C12_2, CFG_C12_3,
     /* DIR 六档 (无/UP/DN/L/R/BTN) */
     CFG_DIR_0, CFG_DIR_1, CFG_DIR_2, CFG_DIR_3, CFG_DIR_4, CFG_DIR_5,
-    CFG_COUNT   /* = RC_CFG_NUM = 85 */
+    /* LR 六档 (L1/L2/L3/R1/R2/R3 互斥自锁) */
+    CFG_LR_0, CFG_LR_1, CFG_LR_2, CFG_LR_3, CFG_LR_4, CFG_LR_5,
+    CFG_COUNT   /* = RC_CFG_NUM = 91 */
 };
 
 typedef struct {
@@ -139,6 +142,9 @@ void rc_map_set_cfg(const rc_src_cfg_t *cfg);
 
 /* 该源是否配置长按触发 (0=单点, 1=长按≥500ms 才触发)。dji_rc 调用方须持 g_mtx。 */
 bool rc_cfg_lp(rc_src_t s);
+
+/* LR 6 档互斥自锁当前档位 (0-5), dji_rc 主循环按 L1~R3 按下沿推进。 */
+extern int g_lr_pos;
 
 /* 长按确认状态: dji_rc 计时确认后置 true (src_value 对独立按键源检查),
  * 仅影响独立按键源, 复合源 (C12/SHOT/DIR) 读原始字段不受影响。 */

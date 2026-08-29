@@ -61,7 +61,14 @@ object RcMsgCodec {
             ((sample.left and 1) shl 11) or
             ((sample.right and 1) shl 12) or
             ((sample.aircraft and 1) shl 13) or
-            ((sample.back and 1) shl 14)
+            ((sample.back and 1) shl 14) or
+            // L1~R3 (bit 15-20): getevent KEY_F1..F6 原始按键状态 → 固件 SRC_LR 6 档互斥自锁
+            ((sample.l1 and 1) shl 15) or
+            ((sample.l2 and 1) shl 16) or
+            ((sample.l3 and 1) shl 17) or
+            ((sample.r1 and 1) shl 18) or
+            ((sample.r2 and 1) shl 19) or
+            ((sample.r3 and 1) shl 20)
 
     private fun modeByte(mode: String): Byte =
         when (mode.firstOrNull()) {

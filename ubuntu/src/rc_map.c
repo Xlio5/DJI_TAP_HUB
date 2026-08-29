@@ -11,7 +11,7 @@ static const char *kSrcNames[SRC_COUNT] = {
     "dial",
     "aircraft", "back",
     "btn", "up", "down", "left", "right",
-    "c12", "dir",
+    "c12", "dir", "lr",
 };
 
 const char *rc_src_name(rc_src_t s) {
@@ -107,6 +107,8 @@ const char *rc_cfg_names[CFG_COUNT] = {
     "c12_0", "c12_1", "c12_2", "c12_3",
     /* DIR */
     "dir_0", "dir_1", "dir_2", "dir_3", "dir_4", "dir_5",
+    /* LR (L1~R3 互斥自锁 6 档) */
+    "lr_0", "lr_1", "lr_2", "lr_3", "lr_4", "lr_5",
 };
 
 void rc_cfg_defaults(rc_src_cfg_t *cfg)
@@ -129,12 +131,17 @@ void rc_cfg_defaults(rc_src_cfg_t *cfg)
         1000,1333,1667,2000,
         /* dir 无/UP/DN/L/R/BTN */
         1000,1200,1400,1600,1800,2000,
+        /* lr L1/L2/L3/R1/R2/R3 (互斥自锁, APM 1000~2000 均分 6 档) */
+        1000,1200,1400,1600,1800,2000,
     };
     memcpy(cfg->v, defs, sizeof(defs));
 }
 
 static rc_src_cfg_t g_cfg;
 static bool g_cfg_init = false;
+
+/* LR 6 档互斥自锁当前档位 (0-5), dji_rc 主循环按下沿推进 (见 update_lr_latch)。 */
+int g_lr_pos = 0;
 
 /* 长按确认状态 (dji_rc 计时确认后置 true, 松开置 false)。仅影响独立按键源。 */
 static bool g_lp_confirmed[SRC_COUNT] = {};
@@ -322,6 +329,12 @@ static uint16_t src_value(const rc_state_t *st, rc_src_t s) {
             const uint16_t *f = &c->v[CFG_DIR_0];
             return st->btn ? f[5] : st->up ? f[1] : st->down ? f[2] :
                    st->left ? f[3] : st->right ? f[4] : f[0];
+        }
+        case SRC_LR: {
+            /* 6 档互斥自锁: 档位由 dji_rc update_lr_latch 按 L1~R3 按下沿推进 */
+            if (g_lr_pos < 0) g_lr_pos = 0;
+            if (g_lr_pos > 5) g_lr_pos = 5;
+            return c->v[CFG_LR_0 + g_lr_pos];
         }
         default: return 1000;
     }
