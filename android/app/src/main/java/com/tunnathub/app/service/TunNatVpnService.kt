@@ -590,13 +590,15 @@ class TunNatVpnService : VpnService() {
                     })
                     val runtime = RcFusionRuntime(
                         geteventReaderFactory = { onSample ->
-                            // getevent 高频源优先 Shizuku (shell 身份直读 /dev/input/event4), 未连接/未授权回退 adb 中转。
-                            val shizukuOk = try {
-                                Shizuku.pingBinder() && Shizuku.checkSelfPermission() == 0
+                            // getevent 高频源: Shizuku App 装着 → 始终用 Shizuku reader (内部自检未就绪重试,
+                            // 等绑定/授权就绪自动恢复); 未装 Shizuku → adb 回退 (通常读不到, 仅尝试)。
+                            val shizukuInstalled = try {
+                                applicationContext.packageManager
+                                    .getPackageInfo("moe.shizuku.privileged.api", 0) != null
                             } catch (_: Exception) {
                                 false
                             }
-                            if (shizukuOk) {
+                            if (shizukuInstalled) {
                                 AppLog.i("RcFusion", "getevent reader: Shizuku")
                                 ShizukuGetEventReader(onSample)
                             } else {

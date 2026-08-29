@@ -46,11 +46,11 @@ class RcFusionRuntime(
                     try {
                         geteventReaderFactory { noteGetevent(it) }.run()
                     } catch (t: Throwable) {
-                        if (isActive) {
-                            onError("getevent", t)
-                            delay(1000L)
-                        }
+                        if (isActive) onError("getevent", t)
                     }
+                    // reader 返回后稍候重试: Shizuku 未就绪 (绑定未建立/未授权) 或 adb 断开都不空转,
+                    // 等待 Shizuku 绑定/授权就绪后自动恢复高频 getevent (不用重启服务)。
+                    if (isActive) delay(300L)
                 }
             }
             launch {
@@ -58,11 +58,10 @@ class RcFusionRuntime(
                     try {
                         port40007ReaderFactory { note40007(it) }.runBlocking()
                     } catch (t: Throwable) {
-                        if (isActive) {
-                            onError("40007", t)
-                            delay(1000L)
-                        }
+                        if (isActive) onError("40007", t)
                     }
+                    // 40007 服务端约 4s 主动断开 TCP → 快速重连压缩数据空窗
+                    if (isActive) delay(300L)
                 }
             }
             launch publish@{
