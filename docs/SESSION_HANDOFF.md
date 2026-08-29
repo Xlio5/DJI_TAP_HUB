@@ -8,7 +8,15 @@
 
 ## 🔥 最新状态（2026-08-29）
 
-- **当前固件 F1.6.49**（`backup/rootfs_v1649_20260827.squashfs` = `backup/rootfs.squashfs`，md5 `89c7b4d7`，**3.80MB <4MB OTA**，待部署）+ App **v1.6.57**（getevent 高频摇杆链路 + 服务侧双线程保活 + 摇杆映射修复 + 遥控页双源速率显示）
+- **当前固件 F1.6.53**（`backup/rootfs_v1653.squashfs`，md5 `400fd87b`，**3.80MB <4MB**，已部署）+ App **v1.6.62**（Shizuku 高频 getevent + **L1~R3 六档互斥自锁** + 双源速率显示）
+  - **L1~R3 = APM 6档互斥自锁（App 1.6.62 / 固件 1.6.53, 2026-08-29）**：
+    - 需求（老大）：L1~L3 R1~R3 做 **APM 单点自锁的 6 档互斥单选**开关，值参考 APM 官网（1000~2000）
+    - App：getevent `KEY_F1..F6`→L1..R3（**按键在 event3 gpio-keys，不在 event4 摇杆** → `ShizukuGetEventReader` 改读**所有 input 设备**，摇杆 ABS 轴仍只认 event4 防触摸屏干扰）；RCM1 buttons **bit 15-20** 编码
+    - 固件：`rc_state_t` 加 l1..r3；`SRC_LR` 复合源（6 档互斥自锁）；`update_lr_latch` 按下沿切档（互斥覆盖 + 松开保持）；**主循环加 `advance_output_latches`**（App 融合路径之前不推进 latch → lr_pos 恒 0，此为根因）
+    - 遥控页把任意 CH 源配成 `lr` 输出 6 档（默认 1000/1200/1400/1600/1800/2000，src_cfg 可配）
+    - **真机验证（sendevent 注入 event3）**：L1→0/1000 L2→1/1200 L3→2/1400 R1→3/1600 R2→4/1800 R3→5/2000，自锁（松开保持）+ 互斥（切档覆盖）均正常
+  - **Shizuku 集成（App 1.6.58）**：参考 `rc_20260413171213.apk`（app参考/ 目录）集成 `rikka.shizuku` **13.1.0**（newProcess 仍 public，13.1.1+ 转 private）；Manifest 声明 `ShizukuProvider`(authority `com.tunnathub.app.shizuku`) + `API_V23` 权限 + `V3_SUPPORT` + **`<queries>` 包可见性**（否则 getPackageInfo 查不到 Shizuku）；`ShizukuGetEventReader` 以 shell 身份跑 `getevent -lt`（真机 getevent 从 adb 的 —Hz → **64Hz**）
+  - **Shizuku 自愈 + 40007 快速重连（App 1.6.60）**：修复 App 重启首次融合时 Shizuku 绑定未建立 → 永久回退 adb 的 bug（Shizuku App 装着即用 Shizuku reader，内部自检未就绪重试）；reader 返回后 300ms 重试防空转；40007 服务端约 **4s 主动断 TCP** → 快速重连压缩空窗
   - **遥控页显示 getevent / 40007 双源到达速率（App 1.6.57, 2026-08-29）**：`RcFusionRuntime` 按 reader 到达间隔分别统计 getevent / 40007 Hz（指数平滑 + 断流老化归零：getevent 2s、40007 4s 覆盖 ~2.5s 低频帧间隔），经 `fusedRcSourceStatsState` 暴露；遥控页 header 显示 `getevent XHz · 40007 YHz`（≥1Hz 整数、0.05..1Hz 一位小数、无数据 —Hz）。40007 实测 0.4Hz 摇杆不推送时显示 0.4Hz，一眼区分"getevent 停、40007 兜底"
   - **摇杆映射修复（App 1.6.53→1.6.54）**：
     - **根因（实测数据）**：DJI 摇杆 event4 轴定义 min/max=±32768，**物理满行程 ±32768**（抓取实测 max 32767/min -32768），**移动时帧率 60Hz**（主峰 13-16ms）—— getevent 源不慢！
@@ -422,6 +430,15 @@ PB = bank 1 → bank offset 0x24
 - `docs/ota_ab_slot_issue.md`：OTA 问题记录
 
 ## 十五、固件产物 md5
+
+### 固件 1.6.53（主循环 latch 修复, L1~R3 互斥自锁生效）+ App 1.6.62 — 2026-08-29 部署
+
+| 文件 | md5 |
+|---|---|
+| **rootfs_v1653.squashfs**（固件 1.6.53, SRC_LR 6档互斥自锁 + 主循环 latch 推进）| `400fd87b0a49430d53fb2c288db44817`（3.80MB, 已 OTA 部署）|
+| app-debug.apk（App 1.6.62 / versionCode 101, Shizuku getevent 读所有设备 + L1~R3 编码）| `C31F7519D08A9ACE41186B27B15EECFF`（31.8MB）|
+
+> **部署经验**：OTA 经 RC↔V3s VPN 隧道传 3.8MB **不稳定**（curl 常 exit 56/超时 → V3s 变砖，双槽回退可救）。**最稳方式：电脑直连 V3s（172.20.10.3:8080）curl OTA**。
 
 ### App 1.6.57（遥控页显示 getevent / 40007 双源到达速率）— 2026-08-29 编译
 
