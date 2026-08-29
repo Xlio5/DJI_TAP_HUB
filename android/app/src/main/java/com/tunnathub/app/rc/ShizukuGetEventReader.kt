@@ -27,7 +27,9 @@ class ShizukuGetEventReader(
     override suspend fun run() = withContext(Dispatchers.IO) {
         if (!Shizuku.pingBinder() || Shizuku.checkSelfPermission() != 0) return@withContext
         val process = try {
-            Shizuku.newProcess(arrayOf("getevent", "-lt", eventDevice), null, null)
+            // 读所有 input 设备 (对齐参考 App): L1~R3 按键 (KEY_F1..F6) 不在 event4 (摇杆),
+            // 在 gpio-keys 等其他设备; 摇杆 ABS 轴仍只认 event4, 避免触摸屏 (fts_ts) ABS_X/Y 干扰。
+            Shizuku.newProcess(arrayOf("getevent", "-lt"), null, null)
         } catch (_: Exception) {
             return@withContext
         } ?: return@withContext
@@ -38,8 +40,9 @@ class ShizukuGetEventReader(
                 val iterator = lines.iterator()
                 while (isActive && iterator.hasNext()) {
                     val line = iterator.next()
+                    val isEvent4 = line.contains("/dev/input/event4:")
                     val axis = GetEventRcReader.parseAxisLine(line)
-                    if (axis != null) {
+                    if (axis != null && isEvent4) {
                         val idx = GetEventRcReader.DEFAULT_AXIS_MAP[axis.code] ?: continue
                         axes[idx] = GetEventRcReader.normalizeAxis(axis.code, axis.value)
                         onSample(sample(axes, keys))

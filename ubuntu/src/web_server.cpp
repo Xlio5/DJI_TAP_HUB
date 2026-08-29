@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.50"   // 固件版本 — 新增 SRC_LR (L1~R3 6档互斥自锁); dji_rc 输入源串口优先, 无串口默认 App 融合 (Shizuku getevent + 40007)
+#define VERSION     "1.6.53"   // 固件版本 — 主循环推进 latch (L1~R3 互斥自锁生效), 移除 rx_buttons 诊断
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;

@@ -854,6 +854,7 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
         "\"mode\":\"%c\",\"btn\":%d,\"stop\":%d,\"focus\":%d,\"shot\":%d,\"rec\":%d,"
         "\"rth\":%d,\"c1\":%d,\"c2\":%d,\"c3\":%d,\"dial\":%d,"
         "\"up\":%d,\"down\":%d,\"left\":%d,\"right\":%d,\"aircraft\":%d,\"back\":%d,"
+        "\"l1\":%d,\"l2\":%d,\"l3\":%d,\"r1\":%d,\"r2\":%d,\"r3\":%d,\"lr_pos\":%d,"
         "\"good1\":%u,\"good2\":%u,\"rx1\":%u,\"rx2\":%u,"
         "\"good1_hz\":%.1f,\"good2_hz\":%.1f,\"rx1_bps\":%.1f,\"rx2_bps\":%.1f,\"out_hz\":%.1f,"
         "\"tx_hz\":%.1f,\"tx_ok\":%u,\"tx_err\":%u,\"active_src\":\"%s\","
@@ -866,6 +867,7 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
         st.mode, st.btn, st.stop, st.focus, st.shot, st.rec,
         st.rth, st.c1, st.c2, st.c3, st.dial,
         st.up, st.down, st.left, st.right, st.aircraft, st.back,
+        st.l1, st.l2, st.l3, st.r1, st.r2, st.r3, g_lr_pos,
         g1, g2, rx1, rx2,
         good1_hz, good2_hz, rx1_bps, rx2_bps, out_hz,
         tx_hz, tx_ok, tx_err, active_src ? active_src : "none",
@@ -1651,6 +1653,9 @@ int main(int argc, char **argv)
         }
 
         if (m.type != RC_NONE) {
+            // 推进 latch (L1~R3 互斥自锁 + 通道锁): 串口路径由 handle_pkt 推进, App 融合路径无事件驱动,
+            // 必须由主循环定时推进, 否则 update_lr_latch 永不执行 → lr_pos 恒 0。
+            advance_output_latches(m);
             // 状态文件 (供 web_server /api/rc)
             const char *activeSrc = appFresh ? "android_rcm1" : rc_active_source_name(d.active);
             write_state_file(m, activeSrc, g20, g0, rx20, rx0,
