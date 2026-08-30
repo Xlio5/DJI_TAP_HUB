@@ -1,5 +1,6 @@
 package com.tunnathub.app.rc
 
+import com.tunnathub.app.util.AppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
@@ -27,12 +28,18 @@ class ShizukuGetEventReader(
     override suspend fun run() = withContext(Dispatchers.IO) {
         if (!Shizuku.pingBinder() || Shizuku.checkSelfPermission() != 0) return@withContext
         val process = try {
-            // 读所有 input 设备 (对齐参考 App): L1~R3 按键 (KEY_F1..F6) 不在 event4 (摇杆),
-            // 在 gpio-keys 等其他设备; 摇杆 ABS 轴仍只认 event4, 避免触摸屏 (fts_ts) ABS_X/Y 干扰。
+            // 读所有 input 设备 (getevent 只接受单 device 参数, 多设备参数会报错退出):
+            // L1~R3 按键 (KEY_F1..F6) 在 event3, 摇杆 ABS 在 event4;
+            // 解析时摇杆轴仅认 event4 (isEvent4), 按键从任何设备收 (BTN_TOUCH 等不映射无影响)。
             Shizuku.newProcess(arrayOf("getevent", "-lt"), null, null)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            AppLog.w("ShizukuReader", "getevent newProcess 失败: $e")
             return@withContext
-        } ?: return@withContext
+        } ?: run {
+            AppLog.w("ShizukuReader", "getevent newProcess 返回 null")
+            return@withContext
+        }
+        AppLog.i("ShizukuReader", "getevent 已启动")
         val axes = MutableList(6) { 0 }
         val keys = mutableMapOf<String, Int>()
         try {
@@ -54,8 +61,10 @@ class ShizukuGetEventReader(
                     onSample(sample(axes, keys))
                 }
             }
-        } catch (_: Exception) {
+            AppLog.i("ShizukuReader", "getevent 流结束 (进程退出)")
+        } catch (e: Exception) {
             // getevent 进程退出 / Shizuku 断开: 上层捕获后 delay 重试
+            AppLog.w("ShizukuReader", "getevent 读取异常: $e")
         } finally {
             try { process.destroy() } catch (_: Exception) {}
         }
