@@ -44,12 +44,14 @@ object RcFusionEngine {
             right = keys?.right ?: 0,
             aircraft = keys?.aircraft ?: 0,
             back = keys?.back ?: 0,
-            l1 = geKeys?.l1 ?: 0,
-            l2 = geKeys?.l2 ?: 0,
-            l3 = geKeys?.l3 ?: 0,
-            r1 = geKeys?.r1 ?: 0,
-            r2 = geKeys?.r2 ?: 0,
-            r3 = geKeys?.r3 ?: 0,
+            // L1~R3 是按键状态 (getevent keys 锁存: 按住保持, 松开才清)。
+            // 不能用 geKeys (依赖 80ms fresh): getevent KEY 边沿触发, 按住期间无事件 → 80ms 后 geKeys=null → 按键被清 0。
+            l1 = getevent?.l1 ?: 0,
+            l2 = getevent?.l2 ?: 0,
+            l3 = getevent?.l3 ?: 0,
+            r1 = getevent?.r1 ?: 0,
+            r2 = getevent?.r2 ?: 0,
+            r3 = getevent?.r3 ?: 0,
             dial = keys?.dial ?: 0,
             mode = keys?.mode ?: "?",
             timestampMs = nowMs
