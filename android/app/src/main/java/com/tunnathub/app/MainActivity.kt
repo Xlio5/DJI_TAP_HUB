@@ -680,6 +680,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var rcUp by remember { mutableStateOf(0) }; var rcDown by remember { mutableStateOf(0) }
     var rcLeft by remember { mutableStateOf(0) }; var rcRight by remember { mutableStateOf(0) }
     var rcAircraft by remember { mutableStateOf(0) }; var rcBack by remember { mutableStateOf(0) }
+    var rcL1 by remember { mutableStateOf(0) }; var rcL2 by remember { mutableStateOf(0) }
+    var rcL3 by remember { mutableStateOf(0) }; var rcR1 by remember { mutableStateOf(0) }
+    var rcR2 by remember { mutableStateOf(0) }; var rcR3 by remember { mutableStateOf(0) }
     var rcType by remember { mutableStateOf("") }
 
     fun applyRcData(data: RcMsg.Data, type: String) {
@@ -691,10 +694,13 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             data.shot == rcShot && data.rec == rcRec && data.rth == rcRth &&
             data.c1 == rcC1 && data.c2 == rcC2 && data.c3 == rcC3 && data.dial == rcDial &&
             data.up == rcUp && data.down == rcDown && data.left == rcLeft &&
-            data.right == rcRight && data.aircraft == rcAircraft && data.back == rcBack) {
+            data.right == rcRight && data.aircraft == rcAircraft && data.back == rcBack &&
+            data.l1 == rcL1 && data.l2 == rcL2 && data.l3 == rcL3 &&
+            data.r1 == rcR1 && data.r2 == rcR2 && data.r3 == rcR3) {
             return
         }
-        rcChs = data.chs
+        // CH1-6 摇杆用本地融合即时; CH7-16 由固件回传 (按键/模式/拨轮映射) 更新, 本地融合不覆盖
+        rcChs = data.chs.take(6) + rcChs.drop(6)
         rcRawChs = data.rawChs
         rcMode = data.mode
         rcBtn = data.btn; rcStop = data.stop
@@ -705,6 +711,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         rcUp = data.up; rcDown = data.down
         rcLeft = data.left; rcRight = data.right
         rcAircraft = data.aircraft; rcBack = data.back
+        rcL1 = data.l1; rcL2 = data.l2; rcL3 = data.l3
+        rcR1 = data.r1; rcR2 = data.r2; rcR3 = data.r3
         rcType = type
     }
 
@@ -861,9 +869,12 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         sock.receive(pkt)
                         val data = RcMsg.parse(pkt.data.copyOf(pkt.length))
                         if (data != null) {
-                            // V3s 回传仅确认链路, 不再覆盖显示
-                            // (显示源 = App 融合 RC-FUSION 一跳即时, 避免两跳 UDP 回传延迟/丢帧卡顿)
+                            // V3s 回传含按键映射后的实际 CH 输出 (CH7-16: rec→CH8, mode→CH7, dial→CH12 等, 固件 src_value 映射)。
+                            // 只更新 CH7-16 (按键/模式/拨轮映射), 摇杆 CH1-6 仍用本地融合即时 (避免回传延迟/丢帧卡顿)。
                             rcConnected = true
+                            if (rcChs.size == 16 && data.chs.size == 16) {
+                                rcChs = rcChs.take(6) + data.chs.drop(6)
+                            }
                         }
                     } catch (_: java.net.SocketTimeoutException) {
                         // 空闲超时, 继续等
@@ -1362,6 +1373,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 "C1" to rcC1, "C2" to rcC2, "C3" to rcC3, "REC" to rcRec,
                 "RTH" to rcRth, "STOP" to rcStop, "BACK" to rcBack, "FOCUS" to rcFocus,
                 "SHOT" to rcShot, "DIAL" to rcDial, "BTN" to rcBtn, "AIR" to rcAircraft,
+                "L1" to rcL1, "L2" to rcL2, "L3" to rcL3,
+                "R1" to rcR1, "R2" to rcR2, "R3" to rcR3,
             )
             items.chunked(4).forEach { row ->
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {

@@ -23,7 +23,10 @@ object RcMsg {
         val btn: Int, val stop: Int, val focus: Int, val shot: Int, val rec: Int,
         val rth: Int, val c1: Int, val c2: Int, val c3: Int, val dial: Int,
         val up: Int, val down: Int, val left: Int, val right: Int,
-        val aircraft: Int, val back: Int
+        val aircraft: Int, val back: Int,
+        // L1~R3 原始按键 (RCM1 buttons bit 15-20, getevent KEY_F1..F6)
+        val l1: Int = 0, val l2: Int = 0, val l3: Int = 0,
+        val r1: Int = 0, val r2: Int = 0, val r3: Int = 0
     )
 
     /**
@@ -54,7 +57,9 @@ object RcMsg {
             btn = bit(0), stop = bit(1), focus = bit(2), shot = bit(3), rec = bit(4),
             rth = bit(5), c1 = bit(6), c2 = bit(7), c3 = bit(8), dial = dial,
             up = bit(9), down = bit(10), left = bit(11), right = bit(12),
-            aircraft = bit(13), back = bit(14)
+            aircraft = bit(13), back = bit(14),
+            l1 = bit(15), l2 = bit(16), l3 = bit(17),
+            r1 = bit(18), r2 = bit(19), r3 = bit(20)
         )
     }
 }
