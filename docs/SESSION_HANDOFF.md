@@ -8,7 +8,8 @@
 
 ## 🔥 最新状态（2026-08-29）
 
-- **当前固件 F1.6.53**（`backup/rootfs_v1653.squashfs`，md5 `400fd87b`，**3.80MB <4MB**，已部署）+ App **v1.6.62**（Shizuku 高频 getevent + **L1~R3 六档互斥自锁** + 双源速率显示）
+- **当前固件 F1.6.53**（`backup/rootfs_v1653.squashfs`，md5 `400fd87b`，**3.80MB <4MB**，已部署）+ App **v1.6.63**（Shizuku 高频 getevent + **L1~R3 六档互斥自锁** + **40007 按键融合到 CH** + 双源速率显示）
+  - **40007 按键融合到 CH（App 1.6.63, 2026-08-30）**：修复 `RcFusionEngine.fuse` 的 REC/SHOT 被 getevent 0 覆盖（`geKeys?.rec ?: keys?.rec` 中 getevent 活跃时 rec=0 非 null，`?:` 不回退 → 40007 的 REC 失效）。改 **OR 合并** `(geKeys?.x ?: 0) or (keys?.x ?: 0)`；`PORT40007_FRESH_MS` 3000→**5000ms**（覆盖 40007 服务端 ~4s 断 TCP 周期）；`ShizukuGetEventReader` 改回 `getevent` 读所有设备（**getevent 只接受单 device 参数，多参数报错退出 → reader 反复重建**）。**真机验证**：按摇杆 REC 键 → 固件 rec=1、ch8（rec 源）=2000
   - **L1~R3 = APM 6档互斥自锁（App 1.6.62 / 固件 1.6.53, 2026-08-29）**：
     - 需求（老大）：L1~L3 R1~R3 做 **APM 单点自锁的 6 档互斥单选**开关，值参考 APM 官网（1000~2000）
     - App：getevent `KEY_F1..F6`→L1..R3（**按键在 event3 gpio-keys，不在 event4 摇杆** → `ShizukuGetEventReader` 改读**所有 input 设备**，摇杆 ABS 轴仍只认 event4 防触摸屏干扰）；RCM1 buttons **bit 15-20** 编码
@@ -431,12 +432,12 @@ PB = bank 1 → bank offset 0x24
 
 ## 十五、固件产物 md5
 
-### 固件 1.6.53（主循环 latch 修复, L1~R3 互斥自锁生效）+ App 1.6.62 — 2026-08-29 部署
+### 固件 1.6.53（主循环 latch 修复）+ App 1.6.63 — 2026-08-30
 
 | 文件 | md5 |
 |---|---|
 | **rootfs_v1653.squashfs**（固件 1.6.53, SRC_LR 6档互斥自锁 + 主循环 latch 推进）| `400fd87b0a49430d53fb2c288db44817`（3.80MB, 已 OTA 部署）|
-| app-debug.apk（App 1.6.62 / versionCode 101, Shizuku getevent 读所有设备 + L1~R3 编码）| `C31F7519D08A9ACE41186B27B15EECFF`（31.8MB）|
+| app-debug.apk（App 1.6.63 / versionCode 102, 40007 按键融合到 CH + getevent 读所有设备修复）| `BFD1AA172C910FA5ABA44ADE8629E005`（31.8MB）|
 
 > **部署经验**：OTA 经 RC↔V3s VPN 隧道传 3.8MB **不稳定**（curl 常 exit 56/超时 → V3s 变砖，双槽回退可救）。**最稳方式：电脑直连 V3s（172.20.10.3:8080）curl OTA**。
 
