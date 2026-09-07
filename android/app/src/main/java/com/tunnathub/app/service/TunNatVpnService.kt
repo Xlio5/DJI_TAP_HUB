@@ -32,6 +32,7 @@ import android.util.Log
 import androidx.compose.runtime.mutableStateOf
 import com.tunnathub.app.MainActivity
 import com.tunnathub.app.R
+import com.tunnathub.app.RcInputMode
 import com.tunnathub.app.RcMsg
 import com.tunnathub.app.rc.AdbGetEventReader
 import com.tunnathub.app.rc.Port40007RcReader
@@ -580,6 +581,18 @@ class TunNatVpnService : VpnService() {
             while (isStarted && isActive) {
                 var socket: DatagramSocket? = null
                 try {
+                    if (RcInputMode.fromPreferences(applicationContext) == RcInputMode.V3S_RCMSG) {
+                        fusedRcDataState.value = null
+                        fusedRcSourceStatsState.value = RcSourceStats()
+                        AppLog.i("RcFusion", "RC 输入源=V3s串口回传, 暂停 Android 融合采集")
+                        while (isStarted && isActive &&
+                            RcInputMode.fromPreferences(applicationContext) == RcInputMode.V3S_RCMSG
+                        ) {
+                            rcFusionRestartRequested = false
+                            delay(1000L)
+                        }
+                        continue
+                    }
                     socket = DatagramSocket()
                     if (!bindSocketToVpn(socket)) {
                         socket.close()
@@ -624,6 +637,9 @@ class TunNatVpnService : VpnService() {
                         // Shizuku 授权成功后重建: getevent reader 从 adb 回退切到 Shizuku
                         if (rcFusionRestartRequested) {
                             rcFusionRestartRequested = false
+                            break
+                        }
+                        if (RcInputMode.fromPreferences(applicationContext) == RcInputMode.V3S_RCMSG) {
                             break
                         }
                         delay(1000L)

@@ -363,7 +363,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         registerReceiver(usbReceiver, IntentFilter(USB_PERM_ACTION), Context.RECEIVER_NOT_EXPORTED)
         try { Shizuku.addRequestPermissionResultListener(shizukuPermissionListener) } catch (_: Exception) {}
-        ensureShizukuPermission()
+        if (RcInputMode.fromPreferences(this) == RcInputMode.ANDROID_FUSION) {
+            ensureShizukuPermission()
+        }
         usbDevice = findUsbDevice()
         if (usbDevice != null) connectionState = "found"
 
@@ -462,7 +464,7 @@ class MainActivity : ComponentActivity() {
      * 未连接 → Toast 提示, getevent 走 adb 回退; 已连接未授权 → 弹授权窗;
      * 已授权 → 服务重建融合时 geteventReaderFactory 自动切 Shizuku。
      */
-    private fun ensureShizukuPermission() {
+    fun ensureShizukuPermission() {
         if (!Shizuku.pingBinder()) {
             Toast.makeText(this, "Shizuku 未连接, getevent 走 adb 回退", Toast.LENGTH_SHORT).show()
             return
@@ -604,6 +606,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     val vpnRunning by TunNatVpnService.isRunningState
     val serviceFusedRcData by TunNatVpnService.fusedRcDataState
     val serviceRcSourceStats by TunNatVpnService.fusedRcSourceStatsState
+    var rcInputMode by remember { mutableStateOf(RcInputMode.fromPreferences(ctx)) }
     var selectedTab by remember { mutableStateOf(Tab.VIDEO) }
 
     fun fmtSize(bytes: Long): String = when {
@@ -699,8 +702,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             data.r1 == rcR1 && data.r2 == rcR2 && data.r3 == rcR3) {
             return
         }
-        // CH1-6 摇杆用本地融合即时; CH7-16 由固件回传 (按键/模式/拨轮映射) 更新, 本地融合不覆盖
-        rcChs = data.chs.take(6) + rcChs.drop(6)
+        rcChs = rcChannelsForIncomingData(rcChs, data.chs, rcInputMode, type)
         rcRawChs = data.rawChs
         rcMode = data.mode
         rcBtn = data.btn; rcStop = data.stop
@@ -716,8 +718,10 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         rcType = type
     }
 
-    LaunchedEffect(serviceFusedRcData) {
-        serviceFusedRcData?.let { applyRcData(it, "RC-FUSION") }
+    LaunchedEffect(serviceFusedRcData, rcInputMode) {
+        if (rcInputMode == RcInputMode.ANDROID_FUSION) {
+            serviceFusedRcData?.let { applyRcData(it, "RC-FUSION") }
+        }
     }
 
     // ── 摄像头列表 ──
@@ -850,7 +854,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     }
 
     // ── RC 遥控器数据: 直接收 UDP rcmsg (不经 HTTP) ──
-    LaunchedEffect(vpnRunning) {
+    LaunchedEffect(vpnRunning, rcInputMode) {
         if (!vpnRunning) return@LaunchedEffect
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
@@ -870,10 +874,12 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         val data = RcMsg.parse(pkt.data.copyOf(pkt.length))
                         if (data != null) {
                             // V3s 回传含按键映射后的实际 CH 输出 (CH7-16: rec→CH8, mode→CH7, dial→CH12 等, 固件 src_value 映射)。
-                            // 只更新 CH7-16 (按键/模式/拨轮映射), 摇杆 CH1-6 仍用本地融合即时 (避免回传延迟/丢帧卡顿)。
-                            rcConnected = true
-                            if (rcChs.size == 16 && data.chs.size == 16) {
-                                rcChs = rcChs.take(6) + data.chs.drop(6)
+                            if (rcInputMode == RcInputMode.V3S_RCMSG) {
+                                applyRcData(data, "V3S-RCMSG")
+                            } else {
+                                // 安卓融合模式只更新 CH7-16, 摇杆 CH1-6 仍用本地融合即时。
+                                rcConnected = true
+                                rcChs = rcChannelsForIncomingData(rcChs, data.chs, rcInputMode, "V3S-RCMSG")
                             }
                         }
                     } catch (_: java.net.SocketTimeoutException) {
@@ -2015,6 +2021,44 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("局域网直连 (LAN 身份)")
                                 Text("手机 = $savedLanSubnet 网段的 .11 (如 192.168.144.11),\nV3s = .66。局域网设备直接访问手机任意端口,\n无需端口转发 / 网段配置。", fontSize = 10.sp, color = Color(0xFF64748B), lineHeight = 15.sp)
+
+                                // ── RC 输入链路: 当前安卓融合 vs 旧链路 V3s rcmsg ──
+                                Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
+                                SectionHdr("RC 输入链路")
+                                Text(
+                                    if (rcInputMode == RcInputMode.V3S_RCMSG)
+                                        "串口 → V3s → rcmsg → App，不启动 ADB/getevent/40007 采集。"
+                                    else
+                                        "Android 本地融合 getevent + 40007，CH1-6 即时，本地发布给 V3s。",
+                                    fontSize = 9.sp,
+                                    color = Color(0xFF64748B)
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    listOf(RcInputMode.ANDROID_FUSION, RcInputMode.V3S_RCMSG).forEach { mode ->
+                                        Surface(
+                                            color = if (rcInputMode == mode) Color(0xFF0EA5E9) else Color(0xFF1E293B),
+                                            shape = RoundedCornerShape(6.dp),
+                                            onClick = {
+                                                rcInputMode = mode
+                                                prefs.edit().putString(RcInputMode.PREF_KEY, mode.prefValue).apply()
+                                                TunNatVpnService.requestRcFusionRestart()
+                                                if (mode == RcInputMode.ANDROID_FUSION) {
+                                                    (ctx as? MainActivity)?.ensureShizukuPermission()
+                                                }
+                                                AppLog.i("RcInput", "输入链路切换: ${mode.prefValue}")
+                                            }
+                                        ) {
+                                            Text(
+                                                mode.label,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (rcInputMode == mode) Color.Black else Color(0xFF64748B),
+                                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                                            )
+                                        }
+                                    }
+                                }
 
                                 // ── RC 输出 (SBUS/CRSF @UART0) ──
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))

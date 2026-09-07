@@ -1,0 +1,44 @@
+package com.tunnathub.app
+
+import android.content.Context
+
+private const val RC_CHANNEL_COUNT = 16
+
+/** App 侧 RC 输入源选择。 */
+enum class RcInputMode(val prefValue: String, val label: String) {
+    ANDROID_FUSION("android_fusion", "安卓融合"),
+    V3S_RCMSG("v3s_rcmsg", "V3s串口回传");
+
+    companion object {
+        const val PREFS_NAME = "tun_nat_hub"
+        const val PREF_KEY = "rc_input_mode"
+
+        fun fromPref(value: String?): RcInputMode =
+            values().firstOrNull { it.prefValue == value } ?: ANDROID_FUSION
+
+        fun fromPreferences(context: Context): RcInputMode =
+            fromPref(context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(PREF_KEY, null))
+    }
+}
+
+fun rcChannelsForIncomingData(
+    current: List<Int>,
+    incoming: List<Int>,
+    inputMode: RcInputMode,
+    source: String
+): List<Int> {
+    if (incoming.size != RC_CHANNEL_COUNT || current.size != RC_CHANNEL_COUNT) return incoming
+    return when {
+        inputMode == RcInputMode.V3S_RCMSG && source == "V3S-RCMSG" -> incoming
+        source == "RC-FUSION" -> incoming.take(6) + current.drop(6)
+        source == "V3S-RCMSG" -> current.take(6) + incoming.drop(6)
+        else -> incoming
+    }
+}
+
+fun rcChannelsForIncomingDataForTest(
+    current: List<Int>,
+    incoming: List<Int>,
+    inputMode: RcInputMode,
+    source: String
+): List<Int> = rcChannelsForIncomingData(current, incoming, inputMode, source)
