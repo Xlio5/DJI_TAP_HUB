@@ -21,14 +21,29 @@ _run_bounded_log() {
     ) &
 }
 
+_sc16_i2c_ready() {
+    [ -d /sys/bus/i2c/devices/0-004d ] && [ -c /dev/ttySC0 ]
+}
+
+_release_uart0_for_protocol() {
+    _ts "SC16 not detected: release UART0 getty for SBUS/CRSF output"
+    if [ -w /etc/inittab ]; then
+        sed -i 's/^ttyS0::respawn/#ttyS0::respawn/' /etc/inittab 2>/dev/null || true
+        kill -HUP 1 2>/dev/null || true
+    fi
+    fuser -k /dev/ttyS0 2>/dev/null || true
+    killall getty 2>/dev/null || true
+    stty -F /dev/ttyS0 raw -echo 2>/dev/null || true
+}
+
 case "$1" in
   start)
     _ts "Starting TUN_NAT_HUB v1.4.4..."
 
     mkdir -p /tmp /var/log
     mount -t tmpfs -o size=8m tmpfs /var/log 2>/dev/null || true
-    # UART0 debug getty 由 inittab 的 ttyS0::respawn 托管 (Buildroot GENERIC_SERIAL),
-    # 不再在 S99 里重复拉 getty, 避免双 getty 抢 ttyS0 导致登录失效。
+    # 默认 UART0 debug getty 由 inittab 的 ttyS0::respawn 托管 (Buildroot GENERIC_SERIAL)。
+    # 若 SC16 不存在, UART0 改作协议输出口, 此时必须释放 getty 对 ttyS0 的占用。
 
     # 0.5 A/B OTA auto-fallback check (SPL also has NOR-based fallback for kernel panic)
     # SPI ctl block @ 0xFC000 (6 bytes):
@@ -67,14 +82,24 @@ case "$1" in
     /usr/local/bin/web_server > /var/log/web_server.log 2>&1 &
     _ts "web_server: started"
 
-    # DJI RC serial decoder (UART1/2 input -> SBUS/CRSF output on SC16IS752)
-    # UART0 is fixed as debug console. Protocol output uses /dev/ttySC0.
+    # DJI RC serial decoder:
+    #   SC16 present  -> SBUS/CRSF output on AUX (/dev/ttySC0)
+    #   SC16 missing  -> SBUS/CRSF fallback output on UART0 (/dev/ttyS0)
     if [ -c /dev/ttyS1 ] || [ -c /dev/ttyS2 ]; then
-        # crsf-bridge mode: SC16IS752 CRSF frames <-> UDP 65532 (App Lua engine)
+        RC_OUT_DEV="/dev/ttySC0"
+        if _sc16_i2c_ready; then
+            _ts "SC16 detected on i2c0 addr 0x4d; dji_rc output: $RC_OUT_DEV"
+        else
+            RC_OUT_DEV="/dev/ttyS0"
+            _release_uart0_for_protocol
+            _ts "SC16 not detected; dji_rc fallback output: $RC_OUT_DEV"
+        fi
+
+        # crsf-bridge mode: protocol output CRSF frames <-> UDP 65532 (App Lua engine)
         # 波特率: SPI flash 配置优先 (ELRS/MLRS 兼容, 默认 400000, DLF 精确输出)
-        _run_bounded_log /tmp/dji_rc.log /usr/local/bin/dji_rc --interval 20 --out-dev /dev/ttySC0 --out-baud 400000 --crsf-telem 1 --rcmsg-host 10.0.0.2 --rcmsg-port 65530 --crsf-bridge --crsfbr-host 10.0.0.2 --crsfbr-port 65532
+        _run_bounded_log /tmp/dji_rc.log /usr/local/bin/dji_rc --interval 20 --out-dev "$RC_OUT_DEV" --out-baud 400000 --crsf-telem 1 --rcmsg-host 10.0.0.2 --rcmsg-port 65530 --crsf-bridge --crsfbr-host 10.0.0.2 --crsfbr-port 65532
         ln -sf /tmp/dji_rc.log /var/log/dji_rc.log 2>/dev/null || true
-        _ts "dji_rc: started (crsf-bridge)"
+        _ts "dji_rc: started (crsf-bridge, out=$RC_OUT_DEV)"
     fi
 
     /usr/local/bin/setup_v3s.sh

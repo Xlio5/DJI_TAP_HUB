@@ -130,6 +130,10 @@ static int uart_open_out(const char *dev, int baud, bool even2);   /* forward */
 static void aux_tmux_set(int normal_rx_en, int tx_bus_en, int crsf_rx_en, int sbus_tx_en);  /* forward: TMUX1511 (定义在文件中部) */
 static const char *g_out_dev = "/dev/ttySC0";  /* 协议输出口, tx_recover 重开用 */
 
+static bool out_dev_is_sc16(const char *dev) {
+    return dev != nullptr && std::strstr(dev, "/dev/ttySC") != nullptr;
+}
+
 /* 扩展 UART 硬件卡死自动恢复: 写连续失败 N 次 → 重开输出口。 */
 static void tx_recover(void) {
     bool even2 = (g_out_mode.load() == 's') && g_sbus_std;
@@ -1564,12 +1568,19 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "[dji_rc] 所有串口打开失败,退出\n");
         return 1;
     }
-    // UART0 固定作为 debug console；dji_rc 只使用 SC16IS752 协议输出口。
-    std::printf("[dji_rc] UART0 fixed debug console; protocol output on %s\n", out_dev);
+    g_out_dev = out_dev;
+    bool out_uses_sc16 = out_dev_is_sc16(out_dev);
+    std::printf("[dji_rc] protocol output on %s (%s)\n",
+                out_dev, out_uses_sc16 ? "SC16/AUX" : "UART0 fallback");
     std::fflush(stdout);
 
-    // TMUX1511 模式: 协议输出前先配 PB2-PB5 (SC16IS752 共享总线开关)
-    aux_tmux_apply();
+    // TMUX1511 只服务 SC16IS752 共享总线; UART0 fallback 不碰 PB2-PB5。
+    if (out_uses_sc16) {
+        aux_tmux_apply();
+    } else {
+        std::printf("[dji_rc] TMUX skipped for UART0 fallback output\n");
+        std::fflush(stdout);
+    }
 
     // 协议输出: SBUS 标准=100k 8E2, SBUS 非标=115200 8N1, CRSF=115200/400000 8N1
     bool out_even2 = (out_mode == 's') && g_sbus_std;
@@ -1710,8 +1721,10 @@ int main(int argc, char **argv)
                 g_out_mode.store(cm); g_out_baud.store(cb); g_sbus_std = cs;   // C1: atomic store
                 /* bridge (ELRS Lua 桥) 随 SPI mode 启停: crsf→启用, sbus→停用 */
                 g_crsf_bridge = (cm == 'c');
-                /* TMUX1511 模式随输出模式切换 (SBUS / CRSF 半双工) */
-                aux_tmux_apply();
+                /* TMUX1511 模式随输出模式切换 (SBUS / CRSF 半双工), 仅 SC16 输出需要。 */
+                if (out_uses_sc16) {
+                    aux_tmux_apply();
+                }
 
                 /* 先安全停掉旧回传线程 (CRSF->任何 或 任何->CRSF 切换) */
                 if (t3.joinable()) {

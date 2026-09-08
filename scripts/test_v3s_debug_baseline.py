@@ -19,14 +19,12 @@ def test_uart0_getty_is_owned_by_inittab():
     assert "/sbin/getty" not in text
 
 
-def test_dji_rc_never_kills_uart0_debug_console():
+def test_dji_rc_never_manages_uart0_getty():
     text = read(DJI_RC)
     assert "pb6_grounded" not in text
     assert "pb6_auto_switch" not in text
-    assert "debug_uart0_open" not in text
     assert "fuser -k /dev/ttyS0" not in text
     assert "killall getty" not in text
-    assert '"/dev/ttyS0"' not in text
 
 
 def test_web_default_output_device_is_sc16_not_uart0():
@@ -38,6 +36,25 @@ def test_dji_rc_log_is_bounded_in_init_script():
     text = read(S99)
     assert "_run_bounded_log /tmp/dji_rc.log" in text
     assert "> /var/log/dji_rc.log 2>&1 &" not in text
+
+
+def test_s99_selects_rc_output_by_sc16_i2c_probe():
+    text = read(S99)
+    assert "_sc16_i2c_ready()" in text
+    assert "/sys/bus/i2c/devices/0-004d" in text
+    assert "[ -c /dev/ttySC0 ]" in text
+    assert 'RC_OUT_DEV="/dev/ttySC0"' in text
+    assert 'RC_OUT_DEV="/dev/ttyS0"' in text
+    assert '--out-dev "$RC_OUT_DEV"' in text
+
+
+def test_s99_releases_uart0_only_when_sc16_missing():
+    text = read(S99)
+    fallback_pos = text.find('RC_OUT_DEV="/dev/ttyS0"')
+    release_pos = text.find("_release_uart0_for_protocol", fallback_pos)
+    assert fallback_pos >= 0
+    assert release_pos > fallback_pos
+    assert "fuser -k /dev/ttyS0" in text
 
 
 def test_rc_state_has_tmp_runtime_fallback_and_rates():
@@ -68,6 +85,18 @@ def test_crsf_tx_does_not_reapply_tmux_every_frame():
     assert "aux_tmux_set" not in body
 
 
+def test_dji_rc_applies_aux_tmux_only_for_sc16_output():
+    text = read(DJI_RC)
+    assert "out_dev_is_sc16" in text
+    assert "g_out_dev = out_dev" in text
+    assert "out_uses_sc16" in text
+    start = text.index("protocol output on")
+    end = text.index("int newFd = uart_open_out", start)
+    body = text[start:end]
+    assert "if (out_uses_sc16)" in body
+    assert "aux_tmux_apply();" in body
+
+
 def test_web_exposes_debug_status_for_uart0_getty():
     text = read(WEB_SERVER)
     assert 'p == "/api/debug/status"' in text
@@ -91,12 +120,15 @@ def test_aux_tmux_never_touches_pb_cfg1_uart0():
 if __name__ == "__main__":
     tests = [
         test_uart0_getty_is_owned_by_inittab,
-        test_dji_rc_never_kills_uart0_debug_console,
+        test_dji_rc_never_manages_uart0_getty,
         test_web_default_output_device_is_sc16_not_uart0,
         test_dji_rc_log_is_bounded_in_init_script,
+        test_s99_selects_rc_output_by_sc16_i2c_probe,
+        test_s99_releases_uart0_only_when_sc16_missing,
         test_rc_state_has_tmp_runtime_fallback_and_rates,
         test_web_api_reads_tmp_state_before_varlog,
         test_crsf_tx_does_not_reapply_tmux_every_frame,
+        test_dji_rc_applies_aux_tmux_only_for_sc16_output,
         test_web_exposes_debug_status_for_uart0_getty,
         test_aux_tmux_never_touches_pb_cfg1_uart0,
     ]
