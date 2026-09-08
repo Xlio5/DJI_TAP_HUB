@@ -42,3 +42,32 @@ fun rcChannelsForIncomingDataForTest(
     inputMode: RcInputMode,
     source: String
 ): List<Int> = rcChannelsForIncomingData(current, incoming, inputMode, source)
+
+fun rcTopStatusText(
+    connected: Boolean,
+    inputMode: RcInputMode,
+    rcType: String,
+    geteventHz: Float,
+    p40007Hz: Float,
+    v3sRcMsgHz: Float
+): String {
+    if (!connected) return "等待 dji_rc 数据"
+    return when (inputMode) {
+        RcInputMode.V3S_RCMSG ->
+            "dji_rc online $rcType  v3s rcmsg ${formatRcHz(v3sRcMsgHz)}"
+        RcInputMode.ANDROID_FUSION ->
+            "dji_rc online $rcType  getevent ${formatRcHz(geteventHz)} · 40007 ${formatRcHz(p40007Hz)}"
+    }
+}
+
+private fun formatRcHz(hz: Float): String =
+    if (hz > 0.05f) if (hz >= 1f) "%.0fHz".format(hz) else "%.1fHz".format(hz) else "—Hz"
+
+fun rcTopStatusTextForTest(
+    connected: Boolean,
+    inputMode: RcInputMode,
+    rcType: String,
+    geteventHz: Float,
+    p40007Hz: Float,
+    v3sRcMsgHz: Float
+): String = rcTopStatusText(connected, inputMode, rcType, geteventHz, p40007Hz, v3sRcMsgHz)

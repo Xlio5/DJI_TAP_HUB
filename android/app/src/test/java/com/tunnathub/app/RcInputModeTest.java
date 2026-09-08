@@ -8,6 +8,32 @@ public final class RcInputModeTest {
         parsesSavedModeWithAndroidFusionAsDefault();
         appliesV3sRcmsgAsFullRcInputWhenSelected();
         keepsAndroidFusionSplitChannelsWhenSelected();
+        formatsTopStatusForV3sRcmsgMode();
+        formatsTopStatusForAndroidFusionMode();
+    }
+
+    private static void formatsTopStatusForV3sRcmsgMode() {
+        String text = RcInputModeKt.rcTopStatusTextForTest(
+            true,
+            RcInputMode.V3S_RCMSG,
+            "V3S-RCMSG",
+            0.0f,
+            0.0f,
+            12.4f
+        );
+        assertEquals("dji_rc online V3S-RCMSG  v3s rcmsg 12Hz", text, "v3s top status");
+    }
+
+    private static void formatsTopStatusForAndroidFusionMode() {
+        String text = RcInputModeKt.rcTopStatusTextForTest(
+            true,
+            RcInputMode.ANDROID_FUSION,
+            "RC-FUSION",
+            64.0f,
+            0.4f,
+            11.0f
+        );
+        assertEquals("dji_rc online RC-FUSION  getevent 64Hz · 40007 0.4Hz", text, "android top status");
     }
 
     private static void parsesSavedModeWithAndroidFusionAsDefault() {

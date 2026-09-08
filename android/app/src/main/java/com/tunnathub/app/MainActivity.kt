@@ -70,10 +70,6 @@ import rikka.shizuku.Shizuku
 /** Activity 与 Compose 共享的播放器引用，用于 onDestroy 时释放 */
 private val playerHolder = java.util.concurrent.atomic.AtomicReference<RtspPlayerSession?>(null)
 
-/** RC 输入源速率显示: ≥1Hz 整数, 0.05..1Hz 一位小数, 无数据 —Hz */
-private fun fmtRcHz(hz: Float): String =
-    if (hz > 0.05f) if (hz >= 1f) "%.0fHz".format(hz) else "%.1fHz".format(hz) else "—Hz"
-
 // ── 输入源数值配置 (与 V3s rc_map rc_cfg_names 对齐) ──
 private data class SrcCfgRow(val key: String, val label: String, val rev: Boolean = false, val def: Int = 1500)
 
@@ -687,6 +683,23 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var rcL3 by remember { mutableStateOf(0) }; var rcR1 by remember { mutableStateOf(0) }
     var rcR2 by remember { mutableStateOf(0) }; var rcR3 by remember { mutableStateOf(0) }
     var rcType by remember { mutableStateOf("") }
+    var v3sRcMsgCount by remember { mutableIntStateOf(0) }
+    var v3sRcMsgHz by remember { mutableStateOf(0f) }
+
+    LaunchedEffect(vpnRunning) {
+        var lastCount = v3sRcMsgCount
+        var lastAt = System.currentTimeMillis()
+        while (vpnRunning) {
+            delay(1000L)
+            val now = System.currentTimeMillis()
+            val dtMs = (now - lastAt).coerceAtLeast(1L)
+            val count = v3sRcMsgCount
+            v3sRcMsgHz = ((count - lastCount).coerceAtLeast(0) * 1000f) / dtMs
+            lastCount = count
+            lastAt = now
+        }
+        v3sRcMsgHz = 0f
+    }
 
     fun applyRcData(data: RcMsg.Data, type: String) {
         rcConnected = true
@@ -873,6 +886,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         sock.receive(pkt)
                         val data = RcMsg.parse(pkt.data.copyOf(pkt.length))
                         if (data != null) {
+                            v3sRcMsgCount++
                             // V3s 回传含按键映射后的实际 CH 输出 (CH7-16: rec→CH8, mode→CH7, dial→CH12 等, 固件 src_value 映射)。
                             if (rcInputMode == RcInputMode.V3S_RCMSG) {
                                 applyRcData(data, "V3S-RCMSG")
@@ -1749,11 +1763,14 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 Column {
                     Text("RC 遥控", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
                     Text(
-                        if (rcConnected) {
-                            val geHz = serviceRcSourceStats.geteventHz
-                            val p4Hz = serviceRcSourceStats.p40007Hz
-                            "dji_rc online ${rcType}  getevent ${fmtRcHz(geHz)} · 40007 ${fmtRcHz(p4Hz)}"
-                        } else "等待 dji_rc 数据",
+                        rcTopStatusText(
+                            rcConnected,
+                            rcInputMode,
+                            rcType,
+                            serviceRcSourceStats.geteventHz,
+                            serviceRcSourceStats.p40007Hz,
+                            v3sRcMsgHz
+                        ),
                         fontSize = 11.sp, color = if (rcConnected) Color(0xFF22C55E) else Color(0xFF64748B)
                     )
                 }
