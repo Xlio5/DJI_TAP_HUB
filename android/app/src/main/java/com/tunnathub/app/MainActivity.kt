@@ -685,6 +685,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var rcType by remember { mutableStateOf("") }
     var v3sRcMsgCount by remember { mutableIntStateOf(0) }
     var v3sRcMsgHz by remember { mutableStateOf(0f) }
+    val currentRcInputMode by rememberUpdatedState(rcInputMode)
 
     LaunchedEffect(vpnRunning) {
         var lastCount = v3sRcMsgCount
@@ -867,7 +868,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     }
 
     // ── RC 遥控器数据: 直接收 UDP rcmsg (不经 HTTP) ──
-    LaunchedEffect(vpnRunning, rcInputMode) {
+    LaunchedEffect(vpnRunning) {
         if (!vpnRunning) return@LaunchedEffect
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
@@ -878,22 +879,22 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                     rcConnected = false
                     return@withContext
                 }
-                sock.soTimeout = 2000   // 避免 VPN 断开时永久阻塞
+                sock.soTimeout = 100    // 让取消/重建时快速退出, 避免旧接收循环抢 65530 包
                 val buf = ByteArray(256)
                 val pkt = java.net.DatagramPacket(buf, buf.size)
-                while (vpnRunning) {
+                while (vpnRunning && currentCoroutineContext().isActive) {
                     try {
                         sock.receive(pkt)
                         val data = RcMsg.parse(pkt.data.copyOf(pkt.length))
                         if (data != null) {
                             v3sRcMsgCount++
                             // V3s 回传含按键映射后的实际 CH 输出 (CH7-16: rec→CH8, mode→CH7, dial→CH12 等, 固件 src_value 映射)。
-                            if (rcInputMode == RcInputMode.V3S_RCMSG) {
+                            if (currentRcInputMode == RcInputMode.V3S_RCMSG) {
                                 applyRcData(data, "V3S-RCMSG")
                             } else {
                                 // 安卓融合模式只更新 CH7-16, 摇杆 CH1-6 仍用本地融合即时。
                                 rcConnected = true
-                                rcChs = rcChannelsForIncomingData(rcChs, data.chs, rcInputMode, "V3S-RCMSG")
+                                rcChs = rcChannelsForIncomingData(rcChs, data.chs, currentRcInputMode, "V3S-RCMSG")
                             }
                         }
                     } catch (_: java.net.SocketTimeoutException) {
