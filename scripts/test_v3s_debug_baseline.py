@@ -12,18 +12,23 @@ def read(path: Path) -> str:
 
 
 def test_uart0_getty_is_conditionally_owned_by_s99():
-    # SC16 存在时 UART0 才作为 debug getty；SC16 缺失 fallback 时 ttyS0 给 SBUS/CRSF。
+    # S99 早期先启动 UART0 救援 getty；网络 setup 成功后，SC16 缺失 fallback 时再把 ttyS0 给 SBUS/CRSF。
     # 因 BusyBox init 的 respawn 在 S99 后生效，rootfs 构建必须禁用 inittab ttyS0 respawn。
     text = read(S99)
     assert "_respawn_uart0_getty" not in text
     assert "_start_uart0_getty" in text
     assert "/sbin/getty" in text
+    start_pos = text.find("_start_uart0_getty", text.find("mount -t tmpfs"))
+    setup_pos = text.find("/usr/local/bin/setup_v3s.sh")
     sc16_pos = text.find("if _sc16_i2c_ready; then")
-    getty_pos = text.find("_start_uart0_getty", sc16_pos)
     fallback_pos = text.find('RC_OUT_DEV="/dev/ttyS0"')
-    assert sc16_pos >= 0
-    assert getty_pos > sc16_pos
-    assert fallback_pos > getty_pos
+    release_pos = text.find("_release_uart0_for_protocol", fallback_pos)
+    assert start_pos >= 0
+    assert setup_pos > start_pos
+    assert sc16_pos > setup_pos
+    assert fallback_pos > sc16_pos
+    assert release_pos > fallback_pos
+    assert "keeping UART0 rescue getty active" in text
 
 
 def test_dji_rc_never_manages_uart0_getty():

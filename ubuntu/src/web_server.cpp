@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.55"   // 固件版本 — SC16 缺失时 UART0 独占 SBUS/CRSF fallback 输出
+#define VERSION     "1.6.56"   // 固件版本 — UART0 fallback 前保留启动救援登录
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;

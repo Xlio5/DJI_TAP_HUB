@@ -46,7 +46,8 @@ case "$1" in
     mkdir -p /tmp /var/log
     mount -t tmpfs -o size=8m tmpfs /var/log 2>/dev/null || true
     # rootfs 构建已禁用 inittab 的 ttyS0::respawn，避免 fallback 后 init 再抢 UART0。
-    # SC16 存在时 S99 启动 UART0 debug getty；SC16 缺失时 ttyS0 交给协议输出。
+    # S99 启动早期先保留 UART0 救援登录；网络 setup 成功后，SC16 缺失时再释放 ttyS0 给协议输出。
+    _start_uart0_getty
 
     # 0.5 A/B OTA auto-fallback check (SPL also has NOR-based fallback for kernel panic)
     # SPI ctl block @ 0xFC000 (6 bytes):
@@ -85,6 +86,14 @@ case "$1" in
     /usr/local/bin/web_server > /var/log/web_server.log 2>&1 &
     _ts "web_server: started"
 
+    SETUP_OK=0
+    if /usr/local/bin/setup_v3s.sh > /var/log/setup_v3s.log 2>&1; then
+        SETUP_OK=1
+        _ts "setup_v3s: ok"
+    else
+        _ts "ERROR: setup_v3s failed; keeping UART0 rescue getty active"
+    fi
+
     # DJI RC serial decoder:
     #   SC16 present  -> SBUS/CRSF output on AUX (/dev/ttySC0)
     #   SC16 missing  -> SBUS/CRSF fallback output on UART0 (/dev/ttyS0)
@@ -98,7 +107,7 @@ case "$1" in
         _ts "SC16 not detected; dji_rc fallback output: $RC_OUT_DEV"
     fi
 
-    if [ -c /dev/ttyS1 ] || [ -c /dev/ttyS2 ]; then
+    if [ "$SETUP_OK" = "1" ] && { [ -c /dev/ttyS1 ] || [ -c /dev/ttyS2 ]; }; then
 
         # crsf-bridge mode: protocol output CRSF frames <-> UDP 65532 (App Lua engine)
         # 波特率: SPI flash 配置优先 (ELRS/MLRS 兼容, 默认 400000, DLF 精确输出)
@@ -107,16 +116,16 @@ case "$1" in
         _ts "dji_rc: started (crsf-bridge, out=$RC_OUT_DEV)"
     fi
 
-    /usr/local/bin/setup_v3s.sh
-
     [ -c /dev/ttyGS0 ] && chmod 666 /dev/ttyGS0
 
     # Mark boot confirmed stable (ctl[1]=0xFF, ctl[2]=0x00)
-    if [ "$CFM" != "255" ] 2>/dev/null || [ "$RTY" -gt 0 ] 2>/dev/null; then
+    if [ "$SETUP_OK" = "1" ] && { [ "$CFM" != "255" ] 2>/dev/null || [ "$RTY" -gt 0 ] 2>/dev/null; }; then
         printf '\377' | dd of=/dev/mtdblock0 bs=1 count=1 seek=1032193 2>/dev/null
         printf '\000' | dd of=/dev/mtdblock0 bs=1 count=1 seek=1032194 2>/dev/null
         sync
         _ts "Boot confirmed stable"
+    elif [ "$SETUP_OK" != "1" ]; then
+        _ts "Boot not confirmed: setup_v3s failed"
     fi
 
     _ts "TUN_NAT_HUB ready"
