@@ -11,12 +11,19 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_uart0_getty_is_owned_by_inittab():
-    # UART0 debug getty 由 Buildroot inittab 的 ttyS0::respawn 托管 (GENERIC_SERIAL),
-    # S99 不得重复拉 getty。此测试防双 getty 回归 (双 getty 抢 ttyS0 会打死 debug 登录)。
+def test_uart0_getty_is_conditionally_owned_by_s99():
+    # SC16 存在时 UART0 才作为 debug getty；SC16 缺失 fallback 时 ttyS0 给 SBUS/CRSF。
+    # 因 BusyBox init 的 respawn 在 S99 后生效，rootfs 构建必须禁用 inittab ttyS0 respawn。
     text = read(S99)
     assert "_respawn_uart0_getty" not in text
-    assert "/sbin/getty" not in text
+    assert "_start_uart0_getty" in text
+    assert "/sbin/getty" in text
+    sc16_pos = text.find("if _sc16_i2c_ready; then")
+    getty_pos = text.find("_start_uart0_getty", sc16_pos)
+    fallback_pos = text.find('RC_OUT_DEV="/dev/ttyS0"')
+    assert sc16_pos >= 0
+    assert getty_pos > sc16_pos
+    assert fallback_pos > getty_pos
 
 
 def test_dji_rc_never_manages_uart0_getty():
@@ -55,6 +62,13 @@ def test_s99_releases_uart0_only_when_sc16_missing():
     assert fallback_pos >= 0
     assert release_pos > fallback_pos
     assert "fuser -k /dev/ttyS0" in text
+
+
+def test_rootfs_build_disables_inittab_uart0_respawn():
+    text = read(ROOT / "scripts" / "build_rootfs_only_current.sh")
+    assert "Disable inittab UART0 getty" in text
+    assert "ttyS0::respawn" in text
+    assert "grep -c '^ttyS0::respawn'" in text
 
 
 def test_rc_state_has_tmp_runtime_fallback_and_rates():
@@ -119,12 +133,13 @@ def test_aux_tmux_never_touches_pb_cfg1_uart0():
 
 if __name__ == "__main__":
     tests = [
-        test_uart0_getty_is_owned_by_inittab,
+        test_uart0_getty_is_conditionally_owned_by_s99,
         test_dji_rc_never_manages_uart0_getty,
         test_web_default_output_device_is_sc16_not_uart0,
         test_dji_rc_log_is_bounded_in_init_script,
         test_s99_selects_rc_output_by_sc16_i2c_probe,
         test_s99_releases_uart0_only_when_sc16_missing,
+        test_rootfs_build_disables_inittab_uart0_respawn,
         test_rc_state_has_tmp_runtime_fallback_and_rates,
         test_web_api_reads_tmp_state_before_varlog,
         test_crsf_tx_does_not_reapply_tmux_every_frame,

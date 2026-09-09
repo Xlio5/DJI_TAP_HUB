@@ -25,12 +25,15 @@ _sc16_i2c_ready() {
     [ -d /sys/bus/i2c/devices/0-004d ] && [ -c /dev/ttySC0 ]
 }
 
+_start_uart0_getty() {
+    if ! ps w 2>/dev/null | grep '[g]etty.*ttyS0' >/dev/null 2>&1; then
+        /sbin/getty -L ttyS0 115200 vt100 &
+        _ts "UART0 debug getty started on ttyS0"
+    fi
+}
+
 _release_uart0_for_protocol() {
     _ts "SC16 not detected: release UART0 getty for SBUS/CRSF output"
-    if [ -w /etc/inittab ]; then
-        sed -i 's/^ttyS0::respawn/#ttyS0::respawn/' /etc/inittab 2>/dev/null || true
-        kill -HUP 1 2>/dev/null || true
-    fi
     fuser -k /dev/ttyS0 2>/dev/null || true
     killall getty 2>/dev/null || true
     stty -F /dev/ttyS0 raw -echo 2>/dev/null || true
@@ -42,8 +45,8 @@ case "$1" in
 
     mkdir -p /tmp /var/log
     mount -t tmpfs -o size=8m tmpfs /var/log 2>/dev/null || true
-    # 默认 UART0 debug getty 由 inittab 的 ttyS0::respawn 托管 (Buildroot GENERIC_SERIAL)。
-    # 若 SC16 不存在, UART0 改作协议输出口, 此时必须释放 getty 对 ttyS0 的占用。
+    # rootfs 构建已禁用 inittab 的 ttyS0::respawn，避免 fallback 后 init 再抢 UART0。
+    # SC16 存在时 S99 启动 UART0 debug getty；SC16 缺失时 ttyS0 交给协议输出。
 
     # 0.5 A/B OTA auto-fallback check (SPL also has NOR-based fallback for kernel panic)
     # SPI ctl block @ 0xFC000 (6 bytes):
@@ -85,15 +88,17 @@ case "$1" in
     # DJI RC serial decoder:
     #   SC16 present  -> SBUS/CRSF output on AUX (/dev/ttySC0)
     #   SC16 missing  -> SBUS/CRSF fallback output on UART0 (/dev/ttyS0)
+    RC_OUT_DEV="/dev/ttySC0"
+    if _sc16_i2c_ready; then
+        _ts "SC16 detected on i2c0 addr 0x4d; dji_rc output: $RC_OUT_DEV"
+        _start_uart0_getty
+    else
+        RC_OUT_DEV="/dev/ttyS0"
+        _release_uart0_for_protocol
+        _ts "SC16 not detected; dji_rc fallback output: $RC_OUT_DEV"
+    fi
+
     if [ -c /dev/ttyS1 ] || [ -c /dev/ttyS2 ]; then
-        RC_OUT_DEV="/dev/ttySC0"
-        if _sc16_i2c_ready; then
-            _ts "SC16 detected on i2c0 addr 0x4d; dji_rc output: $RC_OUT_DEV"
-        else
-            RC_OUT_DEV="/dev/ttyS0"
-            _release_uart0_for_protocol
-            _ts "SC16 not detected; dji_rc fallback output: $RC_OUT_DEV"
-        fi
 
         # crsf-bridge mode: protocol output CRSF frames <-> UDP 65532 (App Lua engine)
         # 波特率: SPI flash 配置优先 (ELRS/MLRS 兼容, 默认 400000, DLF 精确输出)

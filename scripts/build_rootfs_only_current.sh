@@ -21,6 +21,18 @@ cp "$PROJECT/ubuntu/scripts/S99tun_nat_hub" "$TGT/etc/init.d/"
 cp "$PROJECT/ubuntu/scripts/setup_v3s.sh" "$TGT/usr/local/bin/setup_v3s.sh"
 chmod +x "$TGT/etc/init.d/S99tun_nat_hub" "$TGT/usr/local/bin/setup_v3s.sh"
 
+echo "=== Disable inittab UART0 getty respawn ==="
+if [ -f "$TGT/etc/inittab" ]; then
+  sed -i 's|^ttyS0::respawn|#ttyS0::respawn|' "$TGT/etc/inittab"
+  if grep -q '^ttyS0::respawn' "$TGT/etc/inittab"; then
+    echo "ERROR: active ttyS0::respawn remains in rootfs target" >&2
+    exit 1
+  fi
+  echo "active ttyS0 respawn lines: $(grep -c '^ttyS0::respawn' "$TGT/etc/inittab")"
+else
+  echo "WARN: $TGT/etc/inittab not found"
+fi
+
 echo "=== Compile web_server ==="
 # 注意: web_server 的 apiRcOutput 依赖 rc_map (rc_map_default/rc_src_name)。
 # rc_map.c 必须用 gcc 编译成 .o (C 链接), 否则 g++ 会按 C++ mangle 符号, 与
@@ -73,6 +85,7 @@ unsquashfs -q -d /tmp/tun_nat_hub_rootfs_check "$ROOTFS"
 test -x /tmp/tun_nat_hub_rootfs_check/usr/local/bin/web_server
 test -x /tmp/tun_nat_hub_rootfs_check/usr/local/bin/dji_rc
 grep -n -- '--rcmsg-host\|--rcmsg-port\|--interval' /tmp/tun_nat_hub_rootfs_check/etc/init.d/S99tun_nat_hub
+test "$(grep -c '^ttyS0::respawn' /tmp/tun_nat_hub_rootfs_check/etc/inittab)" = "0"
 strings /tmp/tun_nat_hub_rootfs_check/usr/local/bin/dji_rc | grep -E 'RCM1|rcmsg-host|rcmsg-port|65530' | head -20
 
 echo "DONE: $ROOTFS"
