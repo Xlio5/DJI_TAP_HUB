@@ -604,6 +604,14 @@ static void send_rcmsg(int fd, const sockaddr_in &dst, const rc_state_t &st,
     }
 }
 
+static const char *rc_fused_source_name(bool p20_fresh, bool p0_fresh, RcActiveSource active)
+{
+    if (p20_fresh && p0_fresh) return "921600+115200";
+    if (p20_fresh) return "921600";
+    if (p0_fresh) return "115200";
+    return rc_active_source_name(active);
+}
+
 // ── 处理一个DUML包 → 更新端口状态 ──────────────────────────────
 
 static void output_from_input_event(DjiPort *p);  // forward: 定义在输出区域
@@ -1109,14 +1117,18 @@ static void output_from_input_event(DjiPort *p)
     if (p == &g_p20 && d.active != RcActiveSource::P20_921600) return;
     if (p == &g_p0 && d.active != RcActiveSource::P0_115200) return;
 
+    rc_state_t merged;
+    rc_merge(&s20, age20, &s0, age0, RC_STALE_US, &merged);
+    if (merged.type == RC_NONE) return;
+
     /* CRSF 模式: 同时输出摇杆帧 + Lua 桥 (老大要求 crsf 既能输出摇杆又能配 Lua)。
      * bridge 下行线程写 UART0 与 out_send 用 g_out_write_mtx 互斥, 防帧交错。 */
-    advance_output_latches(d.state);
+    advance_output_latches(merged);
     if (rcFd >= 0) {
         uint32_t seq = g_rcmsg_seq.fetch_add(1, std::memory_order_relaxed) + 1;
-        send_rcmsg(rcFd, g_rcmsg_dst, d.state, true, seq, n);
+        send_rcmsg(rcFd, g_rcmsg_dst, merged, true, seq, n);
     }
-    if (outFd >= 0) out_send(d.state);   // write() outside mutex
+    if (outFd >= 0) out_send(merged);   // write() outside mutex
 }
 
 // ── CRSF 回传接收线程: 读 UART0 上行帧 (GPS/BATT/ATT/VARIO/LINK) ──
@@ -1662,15 +1674,19 @@ int main(int argc, char **argv)
         int64_t age0  = (s0.type  == RC_NONE) ? INT64_MAX : n - l0;
         int64_t ageApp = (sapp.type == RC_NONE) ? INT64_MAX : n - lapp;
         bool appFresh = (sapp.type != RC_NONE) && (ageApp <= 80000LL);
+        bool p20Fresh = (s20.type != RC_NONE) && (age20 <= RC_STALE_US);
+        bool p0Fresh = (s0.type != RC_NONE) && (age0 <= RC_STALE_US);
 
         /* 输入源: 串口 (UART1/2 DJI 遥控) 优先; 无串口 → App 融合 (adb getevent + 40007)。
          * 老大定: 有串口用串口, 没串口默认 adb+40007, 输出源头唯一。 */
         RcSourceDecision d = rc_select_priority_source(s20, age20, s0, age0,
                                                        P20_PRIORITY_US, RC_STALE_US);
         bool serialActive = (d.active != RcActiveSource::None);
+        rc_state_t merged;
+        rc_merge(&s20, age20, &s0, age0, RC_STALE_US, &merged);
         rc_state_t m;
         if (serialActive) {
-            m = d.state;   /* 串口有数据, 串口优先 */
+            m = merged;   /* 串口有数据, 按 active 节拍使用 921600+115200 完整融合态 */
         } else if (appFresh) {
             m = sapp;      /* 无串口 → App RCM1 融合输入 (adb getevent + 40007) */
         } else {
@@ -1683,7 +1699,8 @@ int main(int argc, char **argv)
                 advance_output_latches(m);
             }
             // 状态文件 (供 web_server /api/rc)
-            const char *activeSrc = serialActive ? rc_active_source_name(d.active) : "android_rcm1";
+            const char *activeSrc = "android_rcm1";
+            if (serialActive) activeSrc = rc_fused_source_name(p20Fresh, p0Fresh, d.active);
             write_state_file(m, activeSrc, g20, g0, rx20, rx0,
                              appGood, appRx, ageApp, appFresh, now_us());
             if (!serialActive && appFresh) {

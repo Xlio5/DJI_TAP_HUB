@@ -73,6 +73,9 @@ def test_serial_rcmsg_is_driven_by_input_event_not_main_loop():
     assert "g_rcmsg_fd.load" in event_body
     assert "send_rcmsg(rcFd, g_rcmsg_dst" in event_body
     assert "g_rcmsg_seq.fetch_add" in event_body
+    assert "rc_merge(&s20, age20, &s0, age0, RC_STALE_US, &merged)" in event_body
+    assert "send_rcmsg(rcFd, g_rcmsg_dst, merged" in event_body
+    assert "out_send(merged)" in event_body
 
     loop_start = text.index("while (!g_stop.load")
     loop_end = text.index("// CRSF 回传", loop_start)
@@ -80,7 +83,9 @@ def test_serial_rcmsg_is_driven_by_input_event_not_main_loop():
     serial_select_pos = loop_body.index("d.active != RcActiveSource::None")
     serial_branch = loop_body[serial_select_pos:loop_body.index("} else if (appFresh)", serial_select_pos)]
     assert "send_rcmsg(rcmsg_fd" not in serial_branch
+    assert "rc_merge(&s20, age20, &s0, age0, RC_STALE_US, &merged)" in loop_body
     assert "if (!serialActive && appFresh)" in loop_body
+    assert 'activeSrc = rc_fused_source_name' in loop_body
 
 
 def test_s99_selects_rc_output_by_sc16_i2c_probe():

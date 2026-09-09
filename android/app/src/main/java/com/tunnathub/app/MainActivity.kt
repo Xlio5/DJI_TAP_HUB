@@ -614,6 +614,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         Regex("\"$key\":\\s*\"([^\"]+)\"").find(src)?.groupValues?.get(1)
     fun jsonLong(src: String, key: String): Long? =
         Regex("\"$key\":\\s*(\\d+)").find(src)?.groupValues?.get(1)?.toLongOrNull()
+    fun jsonFloat(src: String, key: String): Float? =
+        Regex("\"$key\":\\s*(-?\\d+(?:\\.\\d+)?)").find(src)?.groupValues?.get(1)?.toFloatOrNull()
     fun jsonInt(src: String, key: String, fallback: Int = 0): Int =
         Regex("\"$key\":\\s*(-?\\d+)").find(src)?.groupValues?.get(1)?.toIntOrNull() ?: fallback
     fun calcMbps(tx: Long, rx: Long, prevTx: Long, prevRx: Long, dtMs: Long): String {
@@ -685,6 +687,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var rcType by remember { mutableStateOf("") }
     var v3sRcMsgCount by remember { mutableIntStateOf(0) }
     var v3sRcMsgHz by remember { mutableStateOf(0f) }
+    var v3sGood1Hz by remember { mutableStateOf(0f) }
+    var v3sGood2Hz by remember { mutableStateOf(0f) }
     val currentRcInputMode by rememberUpdatedState(rcInputMode)
 
     LaunchedEffect(vpnRunning) {
@@ -814,10 +818,19 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                             .apply { connectTimeout = 1500; readTimeout = 1500 }
                             .getInputStream().bufferedReader().readText()
                     } catch (_: Exception) { "" }
+                    val rcText = try {
+                        java.net.URL("http://192.168.144.66:8080/api/rc").openConnection()
+                            .apply { connectTimeout = 1500; readTimeout = 1500 }
+                            .getInputStream().bufferedReader().readText()
+                    } catch (_: Exception) { "" }
                     hbDaemon = text.contains("\"daemon\":true")
                     hbTty = text.contains("\"tty_ready\":true")
                     hbTun = text.contains("\"tun_up\":true")
                     jsonString(text, "version")?.let { if (it.isNotEmpty()) v3sVersion = it }
+                    if (rcText.isNotBlank()) {
+                        v3sGood1Hz = jsonFloat(rcText, "good1_hz") ?: v3sGood1Hz
+                        v3sGood2Hz = jsonFloat(rcText, "good2_hz") ?: v3sGood2Hz
+                    }
                     val tx = jsonLong(statsText, "tx_bytes") ?: jsonLong(text, "tx_bytes") ?: hbTx
                     val rx = jsonLong(statsText, "rx_bytes") ?: jsonLong(text, "rx_bytes") ?: hbRx
                     val apiBw = jsonString(text, "bandwidth_mbps") ?: jsonString(statsText, "bandwidth_mbps")
@@ -1770,6 +1783,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                             rcType,
                             serviceRcSourceStats.geteventHz,
                             serviceRcSourceStats.p40007Hz,
+                            v3sGood1Hz,
+                            v3sGood2Hz,
                             v3sRcMsgHz
                         ),
                         fontSize = 11.sp, color = if (rcConnected) Color(0xFF22C55E) else Color(0xFF64748B)

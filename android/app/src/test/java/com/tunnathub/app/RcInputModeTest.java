@@ -19,9 +19,11 @@ public final class RcInputModeTest {
             "V3S-RCMSG",
             0.0f,
             0.0f,
+            66.0f,
+            10.0f,
             12.4f
         );
-        assertEquals("dji_rc online V3S-RCMSG  v3s rcmsg 12Hz", text, "v3s top status");
+        assertEquals("dji_rc online V3S-RCMSG  921600 66Hz · 115200 10Hz · rcmsg 12Hz", text, "v3s top status");
     }
 
     private static void formatsTopStatusForAndroidFusionMode() {
@@ -31,6 +33,8 @@ public final class RcInputModeTest {
             "RC-FUSION",
             64.0f,
             0.4f,
+            0.0f,
+            0.0f,
             11.0f
         );
         assertEquals("dji_rc online RC-FUSION  getevent 64Hz · 40007 0.4Hz", text, "android top status");

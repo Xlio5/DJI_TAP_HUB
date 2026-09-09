@@ -49,12 +49,14 @@ fun rcTopStatusText(
     rcType: String,
     geteventHz: Float,
     p40007Hz: Float,
+    v3sGood1Hz: Float,
+    v3sGood2Hz: Float,
     v3sRcMsgHz: Float
 ): String {
     if (!connected) return "等待 dji_rc 数据"
     return when (inputMode) {
         RcInputMode.V3S_RCMSG ->
-            "dji_rc online $rcType  v3s rcmsg ${formatRcHz(v3sRcMsgHz)}"
+            "dji_rc online $rcType  921600 ${formatRcHz(v3sGood1Hz)} · 115200 ${formatRcHz(v3sGood2Hz)} · rcmsg ${formatRcHz(v3sRcMsgHz)}"
         RcInputMode.ANDROID_FUSION ->
             "dji_rc online $rcType  getevent ${formatRcHz(geteventHz)} · 40007 ${formatRcHz(p40007Hz)}"
     }
@@ -69,5 +71,7 @@ fun rcTopStatusTextForTest(
     rcType: String,
     geteventHz: Float,
     p40007Hz: Float,
+    v3sGood1Hz: Float,
+    v3sGood2Hz: Float,
     v3sRcMsgHz: Float
-): String = rcTopStatusText(connected, inputMode, rcType, geteventHz, p40007Hz, v3sRcMsgHz)
+): String = rcTopStatusText(connected, inputMode, rcType, geteventHz, p40007Hz, v3sGood1Hz, v3sGood2Hz, v3sRcMsgHz)
