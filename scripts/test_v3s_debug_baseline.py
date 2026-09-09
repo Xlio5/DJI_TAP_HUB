@@ -61,6 +61,28 @@ def test_dji_rc_status_stdout_is_rate_limited():
     assert print_pos > status_pos
 
 
+def test_serial_rcmsg_is_driven_by_input_event_not_main_loop():
+    text = read(DJI_RC)
+    assert "g_rcmsg_fd" in text
+    assert "g_rcmsg_seq" in text
+
+    event_start = text.index("static void output_from_input_event")
+    event_end = text.index("// ── CRSF 回传接收线程", event_start)
+    event_body = text[event_start:event_end]
+    assert "send_rcmsg(rcmsg_fd" not in event_body
+    assert "g_rcmsg_fd.load" in event_body
+    assert "send_rcmsg(rcFd, g_rcmsg_dst" in event_body
+    assert "g_rcmsg_seq.fetch_add" in event_body
+
+    loop_start = text.index("while (!g_stop.load")
+    loop_end = text.index("// CRSF 回传", loop_start)
+    loop_body = text[loop_start:loop_end]
+    serial_select_pos = loop_body.index("d.active != RcActiveSource::None")
+    serial_branch = loop_body[serial_select_pos:loop_body.index("} else if (appFresh)", serial_select_pos)]
+    assert "send_rcmsg(rcmsg_fd" not in serial_branch
+    assert "if (!serialActive && appFresh)" in loop_body
+
+
 def test_s99_selects_rc_output_by_sc16_i2c_probe():
     text = read(S99)
     assert "_sc16_i2c_ready()" in text
@@ -154,6 +176,7 @@ if __name__ == "__main__":
         test_web_default_output_device_is_sc16_not_uart0,
         test_dji_rc_log_is_bounded_in_init_script,
         test_dji_rc_status_stdout_is_rate_limited,
+        test_serial_rcmsg_is_driven_by_input_event_not_main_loop,
         test_s99_selects_rc_output_by_sc16_i2c_probe,
         test_s99_releases_uart0_only_when_sc16_missing,
         test_rootfs_build_disables_inittab_uart0_respawn,

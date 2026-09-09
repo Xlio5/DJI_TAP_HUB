@@ -329,6 +329,9 @@ static const char *crsfbr_host = "10.0.0.2";
 static constexpr uint32_t TLM_MAGIC = 0x314D4C54u;    // "TLM1", little-endian on wire
 static constexpr int TLM_PORT = 65531;
 static int g_tlm_fd = -1;
+static std::atomic<int> g_rcmsg_fd{-1};
+static sockaddr_in g_rcmsg_dst;
+static std::atomic<uint32_t> g_rcmsg_seq{0};
 
 #pragma pack(push, 1)
 struct RcMsg {
@@ -1083,7 +1086,9 @@ static void out_send(const rc_state_t &m)
 /* 输入事件驱动输出: 921600 在 50ms 窗口内优先；超时后 115200 接管。 */
 static void output_from_input_event(DjiPort *p)
 {
-    if (g_out_fd.load() < 0) return;   // C1: atomic load
+    int outFd = g_out_fd.load(std::memory_order_relaxed);
+    int rcFd = g_rcmsg_fd.load(std::memory_order_relaxed);
+    if (outFd < 0 && rcFd < 0) return;   // C1: atomic load
 
     int64_t n = now_us();
 
@@ -1107,7 +1112,11 @@ static void output_from_input_event(DjiPort *p)
     /* CRSF 模式: 同时输出摇杆帧 + Lua 桥 (老大要求 crsf 既能输出摇杆又能配 Lua)。
      * bridge 下行线程写 UART0 与 out_send 用 g_out_write_mtx 互斥, 防帧交错。 */
     advance_output_latches(d.state);
-    out_send(d.state);   // write() outside mutex
+    if (rcFd >= 0) {
+        uint32_t seq = g_rcmsg_seq.fetch_add(1, std::memory_order_relaxed) + 1;
+        send_rcmsg(rcFd, g_rcmsg_dst, d.state, true, seq, n);
+    }
+    if (outFd >= 0) out_send(d.state);   // write() outside mutex
 }
 
 // ── CRSF 回传接收线程: 读 UART0 上行帧 (GPS/BATT/ATT/VARIO/LINK) ──
@@ -1595,7 +1604,11 @@ int main(int argc, char **argv)
     }
     sockaddr_in rcmsg_dst;
     int rcmsg_fd = rcmsg_open(rcmsg_host, rcmsg_port, &rcmsg_dst);
-    uint32_t rcmsg_seq = 0;
+    if (rcmsg_fd >= 0) {
+        g_rcmsg_dst = rcmsg_dst;
+        g_rcmsg_seq.store(0, std::memory_order_relaxed);
+        g_rcmsg_fd.store(rcmsg_fd, std::memory_order_release);
+    }
 
     // 回传 UDP (CRSF 模式)
     sockaddr_in tlm_dst;
@@ -1654,8 +1667,9 @@ int main(int argc, char **argv)
          * 老大定: 有串口用串口, 没串口默认 adb+40007, 输出源头唯一。 */
         RcSourceDecision d = rc_select_priority_source(s20, age20, s0, age0,
                                                        P20_PRIORITY_US, RC_STALE_US);
+        bool serialActive = (d.active != RcActiveSource::None);
         rc_state_t m;
-        if (d.active != RcActiveSource::None) {
+        if (serialActive) {
             m = d.state;   /* 串口有数据, 串口优先 */
         } else if (appFresh) {
             m = sapp;      /* 无串口 → App RCM1 融合输入 (adb getevent + 40007) */
@@ -1664,14 +1678,18 @@ int main(int argc, char **argv)
         }
 
         if (m.type != RC_NONE) {
-            // 推进 latch (L1~R3 互斥自锁 + 通道锁): 串口路径由 handle_pkt 推进, App 融合路径无事件驱动,
-            // 必须由主循环定时推进, 否则 update_lr_latch 永不执行 → lr_pos 恒 0。
-            advance_output_latches(m);
+            if (!serialActive) {
+                // App 融合路径无串口事件驱动, 必须由主循环推进 latch 并按 interval 发送 rcmsg。
+                advance_output_latches(m);
+            }
             // 状态文件 (供 web_server /api/rc)
-            const char *activeSrc = appFresh ? "android_rcm1" : rc_active_source_name(d.active);
+            const char *activeSrc = serialActive ? rc_active_source_name(d.active) : "android_rcm1";
             write_state_file(m, activeSrc, g20, g0, rx20, rx0,
                              appGood, appRx, ageApp, appFresh, now_us());
-            send_rcmsg(rcmsg_fd, rcmsg_dst, m, true, ++rcmsg_seq, n);
+            if (!serialActive && appFresh) {
+                uint32_t seq = g_rcmsg_seq.fetch_add(1, std::memory_order_relaxed) + 1;
+                send_rcmsg(rcmsg_fd, rcmsg_dst, m, true, seq, n);
+            }
         } else if (rx20 > 0 || rx0 > 0) {
             // UART有数据但RC掉线: 写空状态防旧数据残留
             static const char no_rc[] = "{\"error\":\"no RC data\",\"rx1\":%u,\"rx2\":%u}\n";
@@ -1679,7 +1697,8 @@ int main(int argc, char **argv)
             int w = snprintf(buf, sizeof(buf), no_rc, rx20, rx0);
             write_text_atomic("/tmp/rc_state.json", buf, w);
             write_text_atomic("/var/log/rc_state.json", buf, w);
-            send_rcmsg(rcmsg_fd, rcmsg_dst, m, false, ++rcmsg_seq, n);
+            uint32_t seq = g_rcmsg_seq.fetch_add(1, std::memory_order_relaxed) + 1;
+            send_rcmsg(rcmsg_fd, rcmsg_dst, m, false, seq, n);
         }
 
         // CRSF 回传: 有回传数据时发 tlm UDP (65531) + 写状态文件
@@ -1802,6 +1821,7 @@ int main(int argc, char **argv)
     if (t_app.joinable()) t_app.join();
     if (t1.joinable()) t1.join();
     if (t2.joinable()) t2.join();
+    g_rcmsg_fd.store(-1, std::memory_order_release);
     if (rcmsg_fd >= 0) ::close(rcmsg_fd);
     if (tlm_fd >= 0) ::close(tlm_fd);
     return 0;

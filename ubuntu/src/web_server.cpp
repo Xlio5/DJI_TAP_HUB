@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.57"   // 固件版本 — dji_rc 状态日志限频避免 rcmsg 卡顿
+#define VERSION     "1.6.58"   // 固件版本 — 串口 RC 按输入帧节拍推送 rcmsg
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
