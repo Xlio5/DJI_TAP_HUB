@@ -32,6 +32,14 @@ function Sha256File([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
 }
 
+function WslSha256File([string]$Path) {
+    $line = (& wsl.exe -d $Distro -- bash -lc "sha256sum '$Path'").Trim()
+    if ($line -notmatch "^([0-9a-fA-F]{64})") {
+        throw "Cannot parse sha256sum output: $line"
+    }
+    return $Matches[1].ToUpperInvariant()
+}
+
 function Next-Version {
     $backup = Join-Path $PSScriptRoot "..\backup"
     $max = 0
@@ -157,7 +165,7 @@ function Flash-RootfsOnly {
     Wsl "sunxi-fel spiflash-write 0x710000 '$rootfsWsl'"
     Wsl "rm -f /tmp/readback_rootfs.squashfs && sunxi-fel spiflash-read 0x710000 $size /tmp/readback_rootfs.squashfs"
     $expected = Sha256File $Rootfs
-    $actual = (& wsl.exe -d $Distro -- bash -lc "sha256sum /tmp/readback_rootfs.squashfs | awk '{print `$1}'").Trim().ToUpperInvariant()
+    $actual = WslSha256File "/tmp/readback_rootfs.squashfs"
     Step "rootfs expected sha256: $expected"
     Step "rootfs readback sha256: $actual"
     if ($expected -ne $actual) { throw "Hash mismatch after rootfs readback" }
@@ -179,7 +187,7 @@ function Flash-FullSpi {
     Wsl "sunxi-fel spiflash-write 0 '$spiWsl'"
     Wsl "rm -f /tmp/readback_spi.bin && sunxi-fel spiflash-read 0 16777216 /tmp/readback_spi.bin"
     $expected = Sha256File $Spi
-    $actual = (& wsl.exe -d $Distro -- bash -lc "sha256sum /tmp/readback_spi.bin | awk '{print `$1}'").Trim().ToUpperInvariant()
+    $actual = WslSha256File "/tmp/readback_spi.bin"
     Step "spi expected sha256: $expected"
     Step "spi readback sha256: $actual"
     if ($expected -ne $actual) { throw "Hash mismatch after full SPI readback" }

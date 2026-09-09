@@ -50,6 +50,17 @@ def test_dji_rc_log_is_bounded_in_init_script():
     assert "> /var/log/dji_rc.log 2>&1 &" not in text
 
 
+def test_dji_rc_status_stdout_is_rate_limited():
+    text = read(DJI_RC)
+    assert "last_status_log_us" in text
+    assert "1000000LL" in text
+    status_pos = text.find("last_status_log_us")
+    print_pos = text.find('std::printf("[dji_rc] %s | g1=%u', status_pos)
+    loop_pos = text.rfind("while (!g_stop.load", 0, status_pos)
+    assert loop_pos >= 0
+    assert print_pos > status_pos
+
+
 def test_s99_selects_rc_output_by_sc16_i2c_probe():
     text = read(S99)
     assert "_sc16_i2c_ready()" in text
@@ -142,6 +153,7 @@ if __name__ == "__main__":
         test_dji_rc_never_manages_uart0_getty,
         test_web_default_output_device_is_sc16_not_uart0,
         test_dji_rc_log_is_bounded_in_init_script,
+        test_dji_rc_status_stdout_is_rate_limited,
         test_s99_selects_rc_output_by_sc16_i2c_probe,
         test_s99_releases_uart0_only_when_sc16_missing,
         test_rootfs_build_disables_inittab_uart0_respawn,

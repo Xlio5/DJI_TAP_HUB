@@ -1767,20 +1767,24 @@ int main(int argc, char **argv)
             }
         }
 
-        // 控制台打印
-        char line[256];
-        line[0] = '\0';
-        if (m.type == RC_NONE) {
-            snprintf(line, sizeof(line), "no-RC rx1=%u rx2=%u", rx20, rx0);
-        } else {
-            rc_state_to_kv(&m, line, sizeof(line));
-        }
-        std::printf("[dji_rc] %s | g1=%u g2=%u app=%u primary=%s rx1=%u rx2=%u app_rx=%u\n",
-                    line, g20, g0, appGood, appFresh ? "app" : "uart", rx20, rx0, appRx);
-        if (debug_uart0 && (n - g_last_debug_us) >= 5000000LL) {
-            debug_log("[dji_rc][dbg] %s g1=%u g2=%u rx1=%u rx2=%u age1=%lld age2=%lld",
-                      line, g20, g0, rx20, rx0, (long long)age20, (long long)age0);
-            g_last_debug_us = n;
+        // 控制台状态日志限频: stdout 由 S99 管道收集，50Hz 打印会反压卡住主循环。
+        static int64_t last_status_log_us = 0;
+        if (n - last_status_log_us >= 1000000LL) {
+            last_status_log_us = n;
+            char line[256];
+            line[0] = '\0';
+            if (m.type == RC_NONE) {
+                snprintf(line, sizeof(line), "no-RC rx1=%u rx2=%u", rx20, rx0);
+            } else {
+                rc_state_to_kv(&m, line, sizeof(line));
+            }
+            std::printf("[dji_rc] %s | g1=%u g2=%u app=%u primary=%s rx1=%u rx2=%u app_rx=%u\n",
+                        line, g20, g0, appGood, appFresh ? "app" : "uart", rx20, rx0, appRx);
+            if (debug_uart0 && (n - g_last_debug_us) >= 5000000LL) {
+                debug_log("[dji_rc][dbg] %s g1=%u g2=%u rx1=%u rx2=%u age1=%lld age2=%lld",
+                          line, g20, g0, rx20, rx0, (long long)age20, (long long)age0);
+                g_last_debug_us = n;
+            }
         }
     }
 

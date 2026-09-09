@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.56"   // 固件版本 — UART0 fallback 前保留启动救援登录
+#define VERSION     "1.6.57"   // 固件版本 — dji_rc 状态日志限频避免 rcmsg 卡顿
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
