@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.53"   // 固件版本 — 主循环推进 latch (L1~R3 互斥自锁生效), 移除 rx_buttons 诊断
+#define VERSION     "1.6.55"   // 固件版本 — SC16 缺失时 UART0 独占 SBUS/CRSF fallback 输出
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
