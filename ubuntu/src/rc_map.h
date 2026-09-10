@@ -5,8 +5,9 @@
  * source 定义:
  *   CH1..CH6  : 解码摇杆(直接用 us 值)
  *   MODE      : 3档 S/N/F -> 1000/1500/2000
- *   REC/RTH/STOP/FOCUS/SHOT/C1/C2/C3/AIRCRAFT/BACK/BTN/UP/DOWN/LEFT/RIGHT:
+ *   REC/RTH/STOP/C1/C2/C3/AIRCRAFT/BACK/BTN/UP/DOWN/LEFT/RIGHT:
  *               2档开关 -> 1000/2000
+ *   FOCUS/SHOT : 同一个两段式快门键，松开/半按/全按 -> 1000/1500/2000
  *   DIAL      : 0~255 -> 1000~2000 (线性)
  *   C12       : C1+C2 混合 4档 (无/C1/C2/C1+C2 = 1000/1333/1667/2000)
  *   DIR       : 方向键+BTN 混合 6档 (BTN>UP>DN>L>R>无)
@@ -78,7 +79,7 @@ void rc_map_apply_preset(rc_map_preset_t p, uint8_t map[CH_COUNT]);
 /* ── 源配置 (每输入源的输出值, 参考 EdgeTX 混控) ──
  * 每个输入源可自定义其映射到输出通道时的数值:
  *   摇杆/Dial: min/max/mid/rev (两段线性缩放)
- *   MODE/SHOT : 三档值 (S/N/F 或 松/focus/全按)
+ *   MODE/FOCUS/SHOT : 三档值 (S/N/F 或 快门松/focus半按/shot全按)
  *   2档开关   : off/on 触发值
  *   C12 4档 / DIR 6档: 每档位值
  * 表驱动存 85 个 uint16 (rc_cfg_names 给出 JSON key), web_server/dji_rc/App 共享。 */

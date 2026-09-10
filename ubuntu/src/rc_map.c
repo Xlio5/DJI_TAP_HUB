@@ -121,7 +121,7 @@ void rc_cfg_defaults(rc_src_cfg_t *cfg)
         1000,2000,0,
         /* mode S/N/F */
         1000,1500,2000,
-        /* 14 个 2档开关 off/on/lp (FOCUS 半按=1500, 其余 1000/2000; lp 默认 0=单点) */
+        /* 14 个按键 off/on/lp (FOCUS 与 SHOT 是同一个两段式快门键: 半按=1500, 全按=shot_hi; lp 默认 0=单点) */
         1000,2000,0, 1000,2000,0, 1000,2000,0, 1000,1500,0, 1000,2000,0,
         1000,2000,0, 1000,2000,0, 1000,2000,0, 1000,2000,0, 1000,2000,0,
         1000,2000,0, 1000,2000,0, 1000,2000,0, 1000,2000,0,
@@ -264,7 +264,9 @@ static uint16_t src_value(const rc_state_t *st, rc_src_t s) {
         }
         case SRC_FOCUS: {
             if (rc_cfg_lp(SRC_FOCUS) && !g_lp_confirmed[SRC_FOCUS]) return c->v[CFG_FOCUS_OFF];
-            return st->focus ? c->v[CFG_FOCUS_ON] : c->v[CFG_FOCUS_OFF];
+            /* FOCUS/SHOT 是同一个两段式快门键: 轻按 focus=1500, 全按 shot=2000。 */
+            return st->shot ? c->v[CFG_SHOT_HI] :
+                   st->focus ? c->v[CFG_FOCUS_ON] : c->v[CFG_FOCUS_OFF];
         }
         case SRC_C1: {
             if (rc_cfg_lp(SRC_C1) && !g_lp_confirmed[SRC_C1]) return c->v[CFG_C1_OFF];

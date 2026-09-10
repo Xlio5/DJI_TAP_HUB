@@ -124,6 +124,21 @@ int main(void) {
     CHECK(out[7] == 2000, "CH8=REC on -> 2000");
     CHECK(out[13] == 2000, "CH14=C1+C2 -> 2000");
 
+    uint8_t shutter_map[CH_COUNT];
+    for (int i = 0; i < CH_COUNT; i++) shutter_map[i] = SRC_NONE;
+    shutter_map[0] = SRC_FOCUS;
+    shutter_map[1] = SRC_SHOT;
+    memset(&st, 0, sizeof(st));
+    st.type = RC_AE;
+    rc_map_build(&st, shutter_map, out);
+    CHECK(out[0] == 1000 && out[1] == 1000, "快门松开: FOCUS/SHOT 都输出 1000");
+    st.focus = 1; st.shot = 0;
+    rc_map_build(&st, shutter_map, out);
+    CHECK(out[0] == 1500 && out[1] == 1500, "快门半按: FOCUS/SHOT 都输出 1500");
+    st.focus = 0; st.shot = 1;
+    rc_map_build(&st, shutter_map, out);
+    CHECK(out[0] == 2000 && out[1] == 2000, "快门全按: FOCUS/SHOT 都输出 2000");
+
     printf("\n=== 结果: %d 通过, %d 失败 ===\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

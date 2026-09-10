@@ -90,6 +90,8 @@ public final class ChannelConfigWorkbenchTest {
     private static void labelsKnownSourcesForTheWorkbench() {
         assertEquals("J1", MainActivityKt.sourceDisplayLabelForTest("ch1"), "J1 label");
         assertEquals("飞行模式", MainActivityKt.sourceDisplayLabelForTest("mode"), "mode label");
+        assertEquals("快门半按", MainActivityKt.sourceDisplayLabelForTest("focus"), "focus label");
+        assertEquals("快门两段", MainActivityKt.sourceDisplayLabelForTest("shot"), "shot label");
         assertEquals("无", MainActivityKt.sourceDisplayLabelForTest("none"), "none label");
         assertEquals("custom", MainActivityKt.sourceDisplayLabelForTest("custom"), "custom passthrough");
     }

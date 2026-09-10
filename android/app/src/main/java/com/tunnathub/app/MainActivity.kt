@@ -92,10 +92,10 @@ private val SRC_CFG_GROUPS: List<Pair<String, List<SrcCfgRow>>> = buildList {
         SrcCfgRow("mode_n", "N 档", def = 1500),
         SrcCfgRow("mode_f", "F 档", def = 2000),
     ))
-    // 2 档开关
-    add("开关 (14个)" to buildList {
+    // 按键开关；focus 是快门半按，full press 由 shot_hi 给出。
+    add("开关/按键" to buildList {
         val sw = listOf(
-            "rec" to "REC", "rth" to "RTH", "stop" to "STOP", "focus" to "FOCUS",
+            "rec" to "REC", "rth" to "RTH", "stop" to "STOP", "focus" to "快门半按",
             "c1" to "C1", "c2" to "C2", "c3" to "C3", "aircraft" to "AIRCRAFT",
             "back" to "BACK", "btn" to "BTN", "up" to "UP", "down" to "DOWN",
             "left" to "LEFT", "right" to "RIGHT",
@@ -106,11 +106,11 @@ private val SRC_CFG_GROUPS: List<Pair<String, List<SrcCfgRow>>> = buildList {
             add(SrcCfgRow("${k}_lp", "$l 长按", rev = true, def = 0))
         }
     })
-    // SHOT 快门
-    add("SHOT 快门" to listOf(
+    // 快门两段式：focus 半按，shot 全按。
+    add("快门两段式" to listOf(
         SrcCfgRow("shot_lo", "松", def = 1000),
-        SrcCfgRow("shot_mid", "半按", def = 1500),
-        SrcCfgRow("shot_hi", "全按", def = 2000),
+        SrcCfgRow("shot_mid", "半按 focus", def = 1500),
+        SrcCfgRow("shot_hi", "全按 shot", def = 2000),
     ))
     // C12 四档
     add("C12 四档" to listOf(
@@ -230,7 +230,7 @@ private fun sourceDisplayLabel(source: String): String = when (source) {
     "rec" -> "REC"
     "rth" -> "RTH"
     "stop" -> "STOP"
-    "focus" -> "FOCUS"
+    "focus" -> "快门半按"
     "c1" -> "C1"
     "c2" -> "C2"
     "c3" -> "C3"
@@ -241,7 +241,7 @@ private fun sourceDisplayLabel(source: String): String = when (source) {
     "down" -> "DOWN"
     "left" -> "LEFT"
     "right" -> "RIGHT"
-    "shot" -> "快门"
+    "shot" -> "快门两段"
     "c12" -> "C1/C2"
     "dir" -> "方向键"
     "lr" -> "L1-R3 六档"
@@ -1606,8 +1606,8 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 }
                 val groups = listOf(
                     "摇杆&旋钮" to listOf("ch1", "ch2", "ch3", "ch4", "ch5", "ch6", "dial"),
-                    "开关/按键" to listOf("rec", "rth", "stop", "focus", "c1", "c2", "c3", "aircraft", "back", "btn"),
-                    "功能键" to listOf("mode", "shot", "c12", "dir", "up", "down", "left", "right", "none")
+                    "开关/按键" to listOf("rec", "rth", "stop", "c1", "c2", "c3", "aircraft", "back", "btn"),
+                    "功能键" to listOf("mode", "focus", "shot", "c12", "dir", "up", "down", "left", "right", "none")
                 )
                 AlertDialog(
                     onDismissRequest = onDismiss,
