@@ -121,8 +121,8 @@ void rc_cfg_defaults(rc_src_cfg_t *cfg)
         1000,2000,0,
         /* mode S/N/F */
         1000,1500,2000,
-        /* 14 个按键 off/on/lp (FOCUS 与 SHOT 是同一个两段式快门键: 半按=1500, 全按=shot_hi; lp 默认 0=单点) */
-        1000,2000,0, 1000,2000,0, 1000,2000,0, 1000,1500,0, 1000,2000,0,
+        /* 14 个按键 off/on/lp (RTH 默认长按锁存; FOCUS 与 SHOT 是同一个两段式快门键: 半按=1500, 全按=shot_hi) */
+        1000,2000,0, 1000,2000,1, 1000,2000,0, 1000,1500,0, 1000,2000,0,
         1000,2000,0, 1000,2000,0, 1000,2000,0, 1000,2000,0, 1000,2000,0,
         1000,2000,0, 1000,2000,0, 1000,2000,0, 1000,2000,0,
         /* shot 松/focus/全按 */
@@ -143,8 +143,10 @@ static bool g_cfg_init = false;
 /* LR 6 档互斥自锁当前档位 (0-5), dji_rc 主循环按下沿推进 (见 update_lr_latch)。 */
 int g_lr_pos = 0;
 
-/* 长按确认状态 (dji_rc 计时确认后置 true, 松开置 false)。仅影响独立按键源。 */
+/* 长按锁存状态 (长按确认后置 true, 下一次短按释放后清 false)。仅影响独立按键源。 */
 static bool g_lp_confirmed[SRC_COUNT] = {};
+static int64_t g_lp_press_us[SRC_COUNT] = {};
+static bool g_lp_long_seen[SRC_COUNT] = {};
 
 static void ensure_cfg(void)
 {
@@ -188,12 +190,53 @@ bool rc_cfg_lp(rc_src_t s)
 
 void rc_map_lp_set(rc_src_t s, bool confirmed)
 {
-    if (s >= 0 && s < SRC_COUNT) g_lp_confirmed[s] = confirmed;
+    if (s >= 0 && s < SRC_COUNT) {
+        g_lp_confirmed[s] = confirmed;
+        g_lp_press_us[s] = 0;
+        g_lp_long_seen[s] = false;
+    }
 }
 
 bool rc_map_lp_get(rc_src_t s)
 {
     return (s >= 0 && s < SRC_COUNT) ? g_lp_confirmed[s] : false;
+}
+
+void rc_map_lp_reset_all(void)
+{
+    memset(g_lp_confirmed, 0, sizeof(g_lp_confirmed));
+    memset(g_lp_press_us, 0, sizeof(g_lp_press_us));
+    memset(g_lp_long_seen, 0, sizeof(g_lp_long_seen));
+}
+
+void rc_map_lp_update(rc_src_t s, bool pressed, int64_t now_us, int64_t threshold_us)
+{
+    if (s < 0 || s >= SRC_COUNT) return;
+    if (!rc_cfg_lp(s)) {
+        g_lp_confirmed[s] = false;
+        g_lp_press_us[s] = 0;
+        g_lp_long_seen[s] = false;
+        return;
+    }
+    if (threshold_us < 0) threshold_us = 0;
+
+    if (pressed) {
+        if (g_lp_press_us[s] == 0) {
+            g_lp_press_us[s] = now_us;
+            g_lp_long_seen[s] = false;
+        }
+        if (now_us - g_lp_press_us[s] >= threshold_us) {
+            g_lp_confirmed[s] = true;
+            g_lp_long_seen[s] = true;
+        }
+        return;
+    }
+
+    if (g_lp_press_us[s] != 0 && !g_lp_long_seen[s]) {
+        g_lp_confirmed[s] = false;
+    }
+    g_lp_press_us[s] = 0;
+    g_lp_long_seen[s] = false;
 }
 
 void rc_cfg_sanitize(rc_src_cfg_t *cfg)
@@ -248,37 +291,37 @@ static uint16_t src_value(const rc_state_t *st, rc_src_t s) {
             return (st->mode == 'S') ? f[0] : (st->mode == 'N') ? f[1] :
                    (st->mode == 'F') ? f[2] : f[1];
         }
-        /* 独立按键源: 配置长按且未确认 (g_lp_confirmed) 时返回 off 值 (短按不触发)。
+        /* 独立按键源: 配置长按锁存时, g_lp_confirmed 代表锁存输出 on; 短按释放恢复 off。
          * 复合源 (SRC_C12/SHOT/DIR) 读原始字段不受长按影响 — 见下方宏定义。 */
         case SRC_REC: {
-            if (rc_cfg_lp(SRC_REC) && !g_lp_confirmed[SRC_REC]) return c->v[CFG_REC_OFF];
-            return st->rec ? c->v[CFG_REC_ON] : c->v[CFG_REC_OFF];
+            bool active = rc_cfg_lp(SRC_REC) ? g_lp_confirmed[SRC_REC] : st->rec != 0;
+            return active ? c->v[CFG_REC_ON] : c->v[CFG_REC_OFF];
         }
         case SRC_RTH: {
-            if (rc_cfg_lp(SRC_RTH) && !g_lp_confirmed[SRC_RTH]) return c->v[CFG_RTH_OFF];
-            return st->rth ? c->v[CFG_RTH_ON] : c->v[CFG_RTH_OFF];
+            bool active = rc_cfg_lp(SRC_RTH) ? g_lp_confirmed[SRC_RTH] : st->rth != 0;
+            return active ? c->v[CFG_RTH_ON] : c->v[CFG_RTH_OFF];
         }
         case SRC_STOP: {
-            if (rc_cfg_lp(SRC_STOP) && !g_lp_confirmed[SRC_STOP]) return c->v[CFG_STOP_OFF];
-            return st->stop ? c->v[CFG_STOP_ON] : c->v[CFG_STOP_OFF];
+            bool active = rc_cfg_lp(SRC_STOP) ? g_lp_confirmed[SRC_STOP] : st->stop != 0;
+            return active ? c->v[CFG_STOP_ON] : c->v[CFG_STOP_OFF];
         }
         case SRC_FOCUS: {
-            if (rc_cfg_lp(SRC_FOCUS) && !g_lp_confirmed[SRC_FOCUS]) return c->v[CFG_FOCUS_OFF];
+            if (rc_cfg_lp(SRC_FOCUS)) return g_lp_confirmed[SRC_FOCUS] ? c->v[CFG_FOCUS_ON] : c->v[CFG_FOCUS_OFF];
             /* FOCUS/SHOT 是同一个两段式快门键: 轻按 focus=1500, 全按 shot=2000。 */
             return st->shot ? c->v[CFG_SHOT_HI] :
                    st->focus ? c->v[CFG_FOCUS_ON] : c->v[CFG_FOCUS_OFF];
         }
         case SRC_C1: {
-            if (rc_cfg_lp(SRC_C1) && !g_lp_confirmed[SRC_C1]) return c->v[CFG_C1_OFF];
-            return st->c1 ? c->v[CFG_C1_ON] : c->v[CFG_C1_OFF];
+            bool active = rc_cfg_lp(SRC_C1) ? g_lp_confirmed[SRC_C1] : st->c1 != 0;
+            return active ? c->v[CFG_C1_ON] : c->v[CFG_C1_OFF];
         }
         case SRC_C2: {
-            if (rc_cfg_lp(SRC_C2) && !g_lp_confirmed[SRC_C2]) return c->v[CFG_C2_OFF];
-            return st->c2 ? c->v[CFG_C2_ON] : c->v[CFG_C2_OFF];
+            bool active = rc_cfg_lp(SRC_C2) ? g_lp_confirmed[SRC_C2] : st->c2 != 0;
+            return active ? c->v[CFG_C2_ON] : c->v[CFG_C2_OFF];
         }
         case SRC_C3: {
-            if (rc_cfg_lp(SRC_C3) && !g_lp_confirmed[SRC_C3]) return c->v[CFG_C3_OFF];
-            return st->c3 ? c->v[CFG_C3_ON] : c->v[CFG_C3_OFF];
+            bool active = rc_cfg_lp(SRC_C3) ? g_lp_confirmed[SRC_C3] : st->c3 != 0;
+            return active ? c->v[CFG_C3_ON] : c->v[CFG_C3_OFF];
         }
         case SRC_DIAL: {
             const uint16_t *f = &c->v[CFG_DIAL_MIN];   /* min max rev */
@@ -290,32 +333,32 @@ static uint16_t src_value(const rc_state_t *st, rc_src_t s) {
             return (uint16_t)(mn + (mx - mn) * d / 255);
         }
         case SRC_AIRCRAFT: {
-            if (rc_cfg_lp(SRC_AIRCRAFT) && !g_lp_confirmed[SRC_AIRCRAFT]) return c->v[CFG_AIRCRAFT_OFF];
-            return st->aircraft ? c->v[CFG_AIRCRAFT_ON] : c->v[CFG_AIRCRAFT_OFF];
+            bool active = rc_cfg_lp(SRC_AIRCRAFT) ? g_lp_confirmed[SRC_AIRCRAFT] : st->aircraft != 0;
+            return active ? c->v[CFG_AIRCRAFT_ON] : c->v[CFG_AIRCRAFT_OFF];
         }
         case SRC_BACK: {
-            if (rc_cfg_lp(SRC_BACK) && !g_lp_confirmed[SRC_BACK]) return c->v[CFG_BACK_OFF];
-            return st->back ? c->v[CFG_BACK_ON] : c->v[CFG_BACK_OFF];
+            bool active = rc_cfg_lp(SRC_BACK) ? g_lp_confirmed[SRC_BACK] : st->back != 0;
+            return active ? c->v[CFG_BACK_ON] : c->v[CFG_BACK_OFF];
         }
         case SRC_BTN: {
-            if (rc_cfg_lp(SRC_BTN) && !g_lp_confirmed[SRC_BTN]) return c->v[CFG_BTN_OFF];
-            return st->btn ? c->v[CFG_BTN_ON] : c->v[CFG_BTN_OFF];
+            bool active = rc_cfg_lp(SRC_BTN) ? g_lp_confirmed[SRC_BTN] : st->btn != 0;
+            return active ? c->v[CFG_BTN_ON] : c->v[CFG_BTN_OFF];
         }
         case SRC_UP: {
-            if (rc_cfg_lp(SRC_UP) && !g_lp_confirmed[SRC_UP]) return c->v[CFG_UP_OFF];
-            return st->up ? c->v[CFG_UP_ON] : c->v[CFG_UP_OFF];
+            bool active = rc_cfg_lp(SRC_UP) ? g_lp_confirmed[SRC_UP] : st->up != 0;
+            return active ? c->v[CFG_UP_ON] : c->v[CFG_UP_OFF];
         }
         case SRC_DOWN: {
-            if (rc_cfg_lp(SRC_DOWN) && !g_lp_confirmed[SRC_DOWN]) return c->v[CFG_DOWN_OFF];
-            return st->down ? c->v[CFG_DOWN_ON] : c->v[CFG_DOWN_OFF];
+            bool active = rc_cfg_lp(SRC_DOWN) ? g_lp_confirmed[SRC_DOWN] : st->down != 0;
+            return active ? c->v[CFG_DOWN_ON] : c->v[CFG_DOWN_OFF];
         }
         case SRC_LEFT: {
-            if (rc_cfg_lp(SRC_LEFT) && !g_lp_confirmed[SRC_LEFT]) return c->v[CFG_LEFT_OFF];
-            return st->left ? c->v[CFG_LEFT_ON] : c->v[CFG_LEFT_OFF];
+            bool active = rc_cfg_lp(SRC_LEFT) ? g_lp_confirmed[SRC_LEFT] : st->left != 0;
+            return active ? c->v[CFG_LEFT_ON] : c->v[CFG_LEFT_OFF];
         }
         case SRC_RIGHT: {
-            if (rc_cfg_lp(SRC_RIGHT) && !g_lp_confirmed[SRC_RIGHT]) return c->v[CFG_RIGHT_OFF];
-            return st->right ? c->v[CFG_RIGHT_ON] : c->v[CFG_RIGHT_OFF];
+            bool active = rc_cfg_lp(SRC_RIGHT) ? g_lp_confirmed[SRC_RIGHT] : st->right != 0;
+            return active ? c->v[CFG_RIGHT_ON] : c->v[CFG_RIGHT_OFF];
         }
         /* 复合源: 读原始字段, 不受长按过滤影响 (长按仅作用于独立按键源) */
         case SRC_SHOT: {

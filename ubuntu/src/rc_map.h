@@ -80,7 +80,7 @@ void rc_map_apply_preset(rc_map_preset_t p, uint8_t map[CH_COUNT]);
  * 每个输入源可自定义其映射到输出通道时的数值:
  *   摇杆/Dial: min/max/mid/rev (两段线性缩放)
  *   MODE/FOCUS/SHOT : 三档值 (S/N/F 或 快门松/focus半按/shot全按)
- *   2档开关   : off/on 触发值
+ *   2档开关   : off/on 触发值；开启 lp 后长按锁存 on，下一次短按恢复 off
  *   C12 4档 / DIR 6档: 每档位值
  * 表驱动存 85 个 uint16 (rc_cfg_names 给出 JSON key), web_server/dji_rc/App 共享。 */
 
@@ -141,16 +141,19 @@ void rc_cfg_sanitize(rc_src_cfg_t *cfg);
 /* 设置源配置; cfg==NULL 恢复默认。rc_map_build 读此配置。 */
 void rc_map_set_cfg(const rc_src_cfg_t *cfg);
 
-/* 该源是否配置长按触发 (0=单点, 1=长按≥500ms 才触发)。dji_rc 调用方须持 g_mtx。 */
+/* 该源是否配置长按锁存 (0=单点, 1=长按≥阈值锁存 on, 下一次短按恢复 off)。
+ * dji_rc 调用方须持 g_mtx。 */
 bool rc_cfg_lp(rc_src_t s);
 
 /* LR 6 档互斥自锁当前档位 (0-5), dji_rc 主循环按 L1~R3 按下沿推进。 */
 extern int g_lr_pos;
 
-/* 长按确认状态: dji_rc 计时确认后置 true (src_value 对独立按键源检查),
- * 仅影响独立按键源, 复合源 (C12/SHOT/DIR) 读原始字段不受影响。 */
+/* 长按锁存状态: dji_rc 计时确认后置 true, 短按释放后清 false。
+ * src_value 对独立按键源检查该状态; 复合源 (C12/SHOT/DIR) 读原始字段不受影响。 */
 void rc_map_lp_set(rc_src_t s, bool confirmed);
 bool rc_map_lp_get(rc_src_t s);
+void rc_map_lp_reset_all(void);
+void rc_map_lp_update(rc_src_t s, bool pressed, int64_t now_us, int64_t threshold_us);
 
 #ifdef __cplusplus
 }

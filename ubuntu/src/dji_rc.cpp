@@ -193,9 +193,7 @@ static bool g_lock_prev_high[CH_COUNT] = {};
 static uint16_t g_lock_on_value[CH_COUNT] = {};
 static uint16_t g_lock_off_value[CH_COUNT] = {};
 static std::mutex g_lock_mtx;
-// ── 长按触发 (每源按下起始时间; 0 = 未按下) ──
-static constexpr int64_t LP_THRESHOLD_US = 500000;   // 长按确认阈值 500ms
-static int64_t g_lp_press_us[SRC_COUNT] = {};        // 读写受 g_mtx 保护 (build_output_channels 内)
+static constexpr int64_t LP_THRESHOLD_US = 500000;   // 长按锁存阈值 500ms
 
 // ── CRSF 参数表 (供 Device_Ping/Parameter_Read 响应, ELRS 协议) ──
 static crsf_param_t g_crsf_params[] = {
@@ -917,8 +915,8 @@ static bool src_lockable(rc_src_t s)
 
 static bool src_lock_active(const rc_state_t &st, rc_src_t s)
 {
-    /* 配置长按的源: 未确认(按住不足500ms)不算按下, 短按不 toggle 自锁 latch */
-    if (rc_cfg_lp(s) && !rc_map_lp_get(s)) return false;
+    /* 配置长按锁存的源: 锁存态即按下态, 不再依赖物理键是否仍按住。 */
+    if (rc_cfg_lp(s)) return rc_map_lp_get(s);
     switch (s) {
         case SRC_REC: return st.rec != 0;
         case SRC_RTH: return st.rth != 0;
@@ -966,8 +964,8 @@ static void apply_channel_locks(const rc_state_t &st, uint16_t ch[CH_COUNT],
     }
 }
 
-/* 长按计时: 对配置为长按(rc_cfg_lp)的按键源, 按住 ≥500ms 置确认 (rc_map_lp_set true),
- * 松开置 false。仅更新确认状态, 不改 st — 复合源 (C12/SHOT/DIR) 读原始字段不受影响,
+/* 长按锁存: 对配置为长按(rc_cfg_lp)的按键源, 按住 ≥500ms 锁存 on,
+ * 下一次短按释放后恢复 off。仅更新锁存状态, 不改 st — 复合源 (C12/SHOT/DIR) 读原始字段不受影响,
  * 独立按键源由 src_value 内部检查 g_lp_confirmed。须在 g_mtx 内调用 (读 g_cfg)。 */
 static void update_long_press(const rc_state_t &st)
 {
@@ -983,14 +981,7 @@ static void update_long_press(const rc_state_t &st)
     };
     for (const LpSrc &e : kLp) {
         bool pressed = (st.*(e.field)) != 0;
-        if (pressed) {
-            if (g_lp_press_us[e.s] == 0) g_lp_press_us[e.s] = now;   // 上升沿: 记起始
-            bool confirmed = (now - g_lp_press_us[e.s] >= LP_THRESHOLD_US);
-            rc_map_lp_set(e.s, confirmed);
-        } else {
-            g_lp_press_us[e.s] = 0;                  // 松开: 复位 + 清确认
-            rc_map_lp_set(e.s, false);
-        }
+        rc_map_lp_update(e.s, pressed, now, LP_THRESHOLD_US);
     }
 }
 
