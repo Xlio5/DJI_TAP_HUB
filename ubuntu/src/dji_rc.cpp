@@ -1119,7 +1119,8 @@ static void output_from_input_event(DjiPort *p)
         uint32_t seq = g_rcmsg_seq.fetch_add(1, std::memory_order_relaxed) + 1;
         send_rcmsg(rcFd, g_rcmsg_dst, merged, true, seq, n);
     }
-    if (outFd >= 0) out_send(merged);   // write() outside mutex
+    /* protocol output requires fresh 921600; 115200 only feeds rcmsg/status. */
+    if (outFd >= 0 && d.active == RcActiveSource::P20_921600) out_send(merged);
 }
 
 // ── CRSF 回传接收线程: 读 UART0 上行帧 (GPS/BATT/ATT/VARIO/LINK) ──

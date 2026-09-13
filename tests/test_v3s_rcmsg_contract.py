@@ -22,6 +22,11 @@ class V3sRcmsgContractTest(unittest.TestCase):
         self.assertIn("--rcmsg-port 65530", src)
         self.assertIn("--interval 20", src)
 
+    def test_protocol_output_requires_921600_source(self):
+        src = DJI_RC.read_text(encoding="utf-8")
+        self.assertIn("protocol output requires fresh 921600", src)
+        self.assertIn("if (outFd >= 0 && d.active == RcActiveSource::P20_921600) out_send(merged);", src)
+
 
 if __name__ == "__main__":
     unittest.main()
