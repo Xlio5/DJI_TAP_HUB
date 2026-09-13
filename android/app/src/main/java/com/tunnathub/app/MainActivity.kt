@@ -82,8 +82,8 @@ private val SRC_CFG_GROUPS: List<Pair<String, List<SrcCfgRow>>> = buildList {
             add(SrcCfgRow("st${i}_mid", "STICK$i 中位", def = 1500))
             add(SrcCfgRow("st${i}_rev", "STICK$i 反向", rev = true, def = 0))
         }
-        add(SrcCfgRow("dial_min", "DIAL 最小", def = 1000))
-        add(SrcCfgRow("dial_max", "DIAL 最大", def = 2000))
+        add(SrcCfgRow("dial_min", "DIAL 左", def = 1000))
+        add(SrcCfgRow("dial_max", "DIAL 右", def = 2000))
         add(SrcCfgRow("dial_rev", "DIAL 反向", rev = true, def = 0))
     })
     // MODE 三档

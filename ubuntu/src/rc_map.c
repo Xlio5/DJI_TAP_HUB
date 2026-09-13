@@ -117,7 +117,7 @@ void rc_cfg_defaults(rc_src_cfg_t *cfg)
         /* st1-6: min max mid rev = 1000/2000/1500/0 (原行为) */
         1000,2000,1500,0, 1000,2000,1500,0, 1000,2000,1500,0,
         1000,2000,1500,0, 1000,2000,1500,0, 1000,2000,1500,0,
-        /* dial (min max rev) */
+        /* dial (min max rev): raw 0=中位1500, 左拨=1000, 右拨=2000 */
         1000,2000,0,
         /* mode S/N/F: N=1000, S=1500, F=2000 */
         1500,1000,2000,
@@ -329,8 +329,11 @@ static uint16_t src_value(const rc_state_t *st, rc_src_t s) {
             if (d < 0) d = 0;
             if (d > 255) d = 255;
             int16_t mn = f[0], mx = f[1];
-            if (f[2]) d = 255 - d;                       /* 反向 */
-            return (uint16_t)(mn + (mx - mn) * d / 255);
+            int16_t mid = 1500;
+            if (d == 0) return mid;                       /* 未动/回中 */
+            if (f[2]) d = 256 - d;                        /* 反向: 左右互换, 0 仍为中位 */
+            if (d < 128) return (uint16_t)(mid - (mid - mn) * (128 - d) / 127);
+            return (uint16_t)(mid + (mx - mid) * (d - 128) / 127);
         }
         case SRC_AIRCRAFT: {
             bool active = rc_cfg_lp(SRC_AIRCRAFT) ? g_lp_confirmed[SRC_AIRCRAFT] : st->aircraft != 0;
