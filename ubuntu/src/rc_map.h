@@ -4,7 +4,7 @@
  *
  * source 定义:
  *   CH1..CH6  : 解码摇杆(直接用 us 值)
- *   MODE      : 3档 S/N/F -> 1000/1500/2000
+ *   MODE      : 3档 N/S/F -> 1000/1500/2000
  *   REC/RTH/STOP/C1/C2/C3/AIRCRAFT/BACK/BTN/UP/DOWN/LEFT/RIGHT:
  *               2档开关 -> 1000/2000
  *   FOCUS/SHOT : 同一个两段式快门键，松开/半按/全按 -> 1000/1500/2000
@@ -79,7 +79,7 @@ void rc_map_apply_preset(rc_map_preset_t p, uint8_t map[CH_COUNT]);
 /* ── 源配置 (每输入源的输出值, 参考 EdgeTX 混控) ──
  * 每个输入源可自定义其映射到输出通道时的数值:
  *   摇杆/Dial: min/max/mid/rev (两段线性缩放)
- *   MODE/FOCUS/SHOT : 三档值 (S/N/F 或 快门松/focus半按/shot全按)
+ *   MODE/FOCUS/SHOT : 三档值 (N/S/F 或 快门松/focus半按/shot全按)
  *   2档开关   : off/on 触发值；开启 lp 后长按锁存 on，下一次短按恢复 off
  *   C12 4档 / DIR 6档: 每档位值
  * 表驱动存 85 个 uint16 (rc_cfg_names 给出 JSON key), web_server/dji_rc/App 共享。 */
@@ -97,7 +97,7 @@ enum {
     CFG_ST6_MIN, CFG_ST6_MAX, CFG_ST6_MID, CFG_ST6_REV,
     /* DIAL 旋钮 (线性 min→max, 无中位) */
     CFG_DIAL_MIN, CFG_DIAL_MAX, CFG_DIAL_REV,
-    /* MODE 三档 S/N/F */
+    /* MODE 三档 S/N/F (默认值为 N=1000, S=1500, F=2000) */
     CFG_MODE_S, CFG_MODE_N, CFG_MODE_F,
     /* 2档开关 (每源 3 项: off on lp, lp=长按触发标志 0/1) */
     CFG_REC_OFF, CFG_REC_ON, CFG_REC_LP,

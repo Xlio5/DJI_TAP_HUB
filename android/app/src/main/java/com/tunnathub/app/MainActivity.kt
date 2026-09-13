@@ -88,8 +88,8 @@ private val SRC_CFG_GROUPS: List<Pair<String, List<SrcCfgRow>>> = buildList {
     })
     // MODE 三档
     add("三档 MODE" to listOf(
-        SrcCfgRow("mode_s", "S 档", def = 1000),
-        SrcCfgRow("mode_n", "N 档", def = 1500),
+        SrcCfgRow("mode_s", "S 档", def = 1500),
+        SrcCfgRow("mode_n", "N 档", def = 1000),
         SrcCfgRow("mode_f", "F 档", def = 2000),
     ))
     // 按键开关；focus 是快门半按，full press 由 shot_hi 给出。
