@@ -111,6 +111,8 @@ const char *rc_cfg_names[CFG_COUNT] = {
     "lr_0", "lr_1", "lr_2", "lr_3", "lr_4", "lr_5",
 };
 
+enum { DIAL_DIR_THRESHOLD = 160 };
+
 void rc_cfg_defaults(rc_src_cfg_t *cfg)
 {
     static const uint16_t defs[CFG_COUNT] = {
@@ -329,11 +331,10 @@ static uint16_t src_value(const rc_state_t *st, rc_src_t s) {
             if (d < 0) d = 0;
             if (d > 255) d = 255;
             int16_t mn = f[0], mx = f[1];
-            int16_t mid = 1500;
-            if (d == 0) return mid;                       /* 未动/回中 */
-            if (f[2]) d = 256 - d;                        /* 反向: 左右互换, 0 仍为中位 */
-            if (d < 128) return (uint16_t)(mid - (mid - mn) * (128 - d) / 127);
-            return (uint16_t)(mid + (mx - mid) * (d - 128) / 127);
+            if (d == 0) return 1500;                      /* 未动/回中 */
+            bool right = d >= DIAL_DIR_THRESHOLD;         /* 先判左/右方向, 再离散赋值 */
+            if (f[2]) right = !right;                     /* 反向: 左右互换, 0 仍为中位 */
+            return right ? mx : mn;
         }
         case SRC_AIRCRAFT: {
             bool active = rc_cfg_lp(SRC_AIRCRAFT) ? g_lp_confirmed[SRC_AIRCRAFT] : st->aircraft != 0;

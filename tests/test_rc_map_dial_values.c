@@ -38,6 +38,14 @@ int main(void)
     rc_map_build(&st, map, out);
     check_u16(out[0], 1000, "dial_left");
 
+    st.dial = 130;
+    rc_map_build(&st, map, out);
+    check_u16(out[0], 1000, "dial_left_observed_raw");
+
+    st.dial = 185;
+    rc_map_build(&st, map, out);
+    check_u16(out[0], 2000, "dial_right_observed_raw");
+
     st.dial = 255;
     rc_map_build(&st, map, out);
     check_u16(out[0], 2000, "dial_right");

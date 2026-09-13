@@ -78,7 +78,7 @@ void rc_map_apply_preset(rc_map_preset_t p, uint8_t map[CH_COUNT]);
 
 /* ── 源配置 (每输入源的输出值, 参考 EdgeTX 混控) ──
  * 每个输入源可自定义其映射到输出通道时的数值:
- *   摇杆: min/max/mid/rev; Dial: 0=中位, 两侧线性缩放到 min/max
+ *   摇杆: min/max/mid/rev; Dial: 0=中位, 左/右方向离散输出 min/max
  *   MODE/FOCUS/SHOT : 三档值 (N/S/F 或 快门松/focus半按/shot全按)
  *   2档开关   : off/on 触发值；开启 lp 后长按锁存 on，下一次短按恢复 off
  *   C12 4档 / DIR 6档: 每档位值
@@ -95,7 +95,7 @@ enum {
     CFG_ST4_MIN, CFG_ST4_MAX, CFG_ST4_MID, CFG_ST4_REV,
     CFG_ST5_MIN, CFG_ST5_MAX, CFG_ST5_MID, CFG_ST5_REV,
     CFG_ST6_MIN, CFG_ST6_MAX, CFG_ST6_MID, CFG_ST6_REV,
-    /* DIAL 旋钮 (线性 min→max, 无中位) */
+    /* DIAL 旋钮 (0=中位1500, 左/右方向离散输出 min/max) */
     CFG_DIAL_MIN, CFG_DIAL_MAX, CFG_DIAL_REV,
     /* MODE 三档 S/N/F (默认值为 N=1000, S=1500, F=2000) */
     CFG_MODE_S, CFG_MODE_N, CFG_MODE_F,

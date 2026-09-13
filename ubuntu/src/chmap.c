@@ -35,8 +35,9 @@ void chmap_build(const rc_state_t *st, uint16_t out[CH_COUNT])
 
     out[10] = sw2(st->aircraft);   /* CH11 AIRCRAFT */
 
-    /* CH12: DIAL 0~255 -> 1000~2000 */
-    out[11] = (uint16_t)(CH_MIN + (int)st->dial * 1000 / 255);
+    /* CH12: DIAL 0=中位, 左/右方向离散输出 */
+    out[11] = (st->dial == 0) ? CH_MID :
+              (st->dial >= 160) ? CH_MAX : CH_MIN;
 
     out[12] = sw2(st->stop);       /* CH13 STOP */
 
