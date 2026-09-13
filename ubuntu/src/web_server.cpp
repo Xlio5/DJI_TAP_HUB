@@ -44,7 +44,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.61"   // 固件版本 — RTH/RTL 长按锁存, 短按恢复
+#define VERSION     "1.6.62"   // 固件版本 — RTH/RTL 长按 1s 锁存, 短按恢复
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;

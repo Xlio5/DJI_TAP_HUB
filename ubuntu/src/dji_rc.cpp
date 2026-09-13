@@ -193,7 +193,7 @@ static bool g_lock_prev_high[CH_COUNT] = {};
 static uint16_t g_lock_on_value[CH_COUNT] = {};
 static uint16_t g_lock_off_value[CH_COUNT] = {};
 static std::mutex g_lock_mtx;
-static constexpr int64_t LP_THRESHOLD_US = 500000;   // 长按锁存阈值 500ms
+static constexpr int64_t LP_THRESHOLD_US = 1000000;  // 长按锁存阈值 1s
 
 // ── CRSF 参数表 (供 Device_Ping/Parameter_Read 响应, ELRS 协议) ──
 static crsf_param_t g_crsf_params[] = {
@@ -964,7 +964,7 @@ static void apply_channel_locks(const rc_state_t &st, uint16_t ch[CH_COUNT],
     }
 }
 
-/* 长按锁存: 对配置为长按(rc_cfg_lp)的按键源, 按住 ≥500ms 锁存 on,
+/* 长按锁存: 对配置为长按(rc_cfg_lp)的按键源, 按住 ≥1s 锁存 on,
  * 下一次短按释放后恢复 off。仅更新锁存状态, 不改 st — 复合源 (C12/SHOT/DIR) 读原始字段不受影响,
  * 独立按键源由 src_value 内部检查 g_lp_confirmed。须在 g_mtx 内调用 (读 g_cfg)。 */
 static void update_long_press(const rc_state_t &st)

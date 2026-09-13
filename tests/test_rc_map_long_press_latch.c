@@ -49,35 +49,38 @@ int main(void)
     check_u16(out[0], 1000, "rth_initial_off");
 
     st.rth = 1;
-    rc_map_lp_update(SRC_RTH, true, 1000000, 500000);
+    rc_map_lp_update(SRC_RTH, true, 1000000, 1000000);
     rc_map_build(&st, map, out);
     check_u16(out[0], 1000, "rth_short_press_does_not_trigger");
 
     st.rth = 0;
-    rc_map_lp_update(SRC_RTH, false, 1200000, 500000);
+    rc_map_lp_update(SRC_RTH, false, 1200000, 1000000);
     rc_map_build(&st, map, out);
     check_u16(out[0], 1000, "rth_short_release_stays_off");
     check_bool(rc_map_lp_get(SRC_RTH), 0, "rth_latch_after_short");
 
     st.rth = 1;
-    rc_map_lp_update(SRC_RTH, true, 2000000, 500000);
-    rc_map_lp_update(SRC_RTH, true, 2500000, 500000);
+    rc_map_lp_update(SRC_RTH, true, 2000000, 1000000);
+    rc_map_lp_update(SRC_RTH, true, 2500000, 1000000);
     rc_map_build(&st, map, out);
-    check_u16(out[0], 2000, "rth_long_press_triggers_on");
+    check_u16(out[0], 1000, "rth_half_second_press_still_off");
+    rc_map_lp_update(SRC_RTH, true, 3000000, 1000000);
+    rc_map_build(&st, map, out);
+    check_u16(out[0], 2000, "rth_one_second_press_triggers_on");
     check_bool(rc_map_lp_get(SRC_RTH), 1, "rth_latch_after_long");
 
     st.rth = 0;
-    rc_map_lp_update(SRC_RTH, false, 2600000, 500000);
+    rc_map_lp_update(SRC_RTH, false, 3100000, 1000000);
     rc_map_build(&st, map, out);
     check_u16(out[0], 2000, "rth_release_after_long_stays_latched");
 
     st.rth = 1;
-    rc_map_lp_update(SRC_RTH, true, 3000000, 500000);
+    rc_map_lp_update(SRC_RTH, true, 3500000, 1000000);
     rc_map_build(&st, map, out);
     check_u16(out[0], 2000, "rth_short_press_while_latched_keeps_on");
 
     st.rth = 0;
-    rc_map_lp_update(SRC_RTH, false, 3100000, 500000);
+    rc_map_lp_update(SRC_RTH, false, 3600000, 1000000);
     rc_map_build(&st, map, out);
     check_u16(out[0], 1000, "rth_short_release_clears_latch");
     check_bool(rc_map_lp_get(SRC_RTH), 0, "rth_latch_after_clear");
