@@ -24,6 +24,7 @@ else()
 endif()
 
 find_package(Threads REQUIRED)
+include(CTest)
 
 # 守护进程
 add_executable(usb_tund
@@ -77,6 +78,8 @@ add_executable(adb_getevent_rc_test
 target_include_directories(adb_getevent_rc_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
+
+add_test(NAME adb_getevent_rc_test COMMAND adb_getevent_rc_test)
 
 install(TARGETS usb_tund web_server DESTINATION /usr/local/bin)
 

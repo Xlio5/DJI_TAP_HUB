@@ -84,10 +84,11 @@ int16_t normalize_getevent_axis(const std::string &code, int32_t value)
     return clamp_axis((int)(v * 660 / 32768));
 }
 
-bool apply_getevent_axis(const GeteventAbsEvent &event, rc_state_t *state)
+bool apply_getevent_axis(const GeteventAbsEvent &event, const std::string &axis_device,
+                         rc_state_t *state)
 {
     if (!state) return false;
-    if (event.device != "/dev/input/event4") return false;
+    if (event.device != axis_device) return false;
     int idx = axis_index(event.code);
     if (idx < 0) return false;
     state->type = RC_APP_FUSED;

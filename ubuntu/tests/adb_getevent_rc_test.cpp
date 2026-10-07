@@ -43,18 +43,19 @@ int main()
     rc_state_t st;
     std::memset(&st, 0, sizeof(st));
     st.type = RC_NONE;
-    expect(apply_getevent_axis(ev, &st), "apply ABS_RY");
+    expect(apply_getevent_axis(ev, "/dev/input/event4", &st), "apply ABS_RY");
     expectEq(st.type, RC_APP_FUSED, "state marked as app fused");
     expectEq(st.ch[1], normalize_getevent_axis("ABS_RY", -2086), "ABS_RY maps to ch2");
 
     expect(parse_getevent_abs_line("[ 1235.044742] /dev/input/event4: EV_ABS       ABS_RZ               000000ff", &ev),
            "parse trigger axis");
-    expect(apply_getevent_axis(ev, &st), "apply ABS_RZ");
+    expect(apply_getevent_axis(ev, "/dev/input/event4", &st), "apply ABS_RZ");
     expectEq(st.ch[4], 660, "ABS_RZ trigger max maps to ch5");
 
     expect(parse_getevent_abs_line("[ 1235.044742] /dev/input/event3: EV_ABS       ABS_RX               00007fff", &ev),
            "parse non-event4 line");
-    expect(!apply_getevent_axis(ev, &st), "ignore non-event4 axis for joystick state");
+    expect(!apply_getevent_axis(ev, "/dev/input/event4", &st), "ignore non-event4 axis for joystick state");
+    expect(apply_getevent_axis(ev, "/dev/input/event3", &st), "custom axis device is honored");
 
     expect(!parse_getevent_abs_line("[ 1235.044742] /dev/input/event4: EV_SYN       SYN_REPORT           00000000", &ev),
            "ignore non-ABS line");

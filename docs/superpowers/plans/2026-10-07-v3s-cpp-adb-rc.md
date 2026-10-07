@@ -13,6 +13,9 @@
 - Do not add Python3 or the full adb/platform-tools package to V3s.
 - Keep the first executable small and dependency-free: no OpenSSL, Boost, or libusb.
 - Preserve the existing `dji_rc` output path in this stage; do not change live SBUS/CRSF arbitration until the C++ ADB source is proven on board.
+- This stage intentionally supports no-auth / already-authorized TCP adbd only; RSA `AUTH` signing is a follow-up if a target asks for authentication.
+- This stage covers 6 joystick axes only. EV_KEY buttons such as L1~R3 and REC/SHOT require a follow-up parser that reads full `getevent -lt` and maps event3 keys.
+- Before using this as a primary RC source, run a human stick-movement test and confirm live `WRTE` data produces non-zero `events`.
 - Use Android axis mapping already used by the App: `ABS_RX->ch1`, `ABS_RY->ch2`, `ABS_Y->ch3`, `ABS_X->ch4`, `ABS_RZ->ch5`, `ABS_Z->ch6`.
 - Normalize full-range ABS axes to `raw * 660 / 32768` and trigger axes `ABS_Z/ABS_RZ` to `(raw - 127) * 660 / 128`.
 

@@ -75,6 +75,7 @@ int main(int argc, char **argv)
 
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
+    std::signal(SIGPIPE, SIG_IGN);
 
     AdbClient adb;
     std::string error;
@@ -127,7 +128,7 @@ int main(int argc, char **argv)
             std::string line = linebuf.substr(0, pos);
             linebuf.erase(0, pos + 1);
             GeteventAbsEvent ev;
-            if (parse_getevent_abs_line(line, &ev) && apply_getevent_axis(ev, &state)) {
+            if (parse_getevent_abs_line(line, &ev) && apply_getevent_axis(ev, device, &state)) {
                 events++;
             }
         }

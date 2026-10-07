@@ -60,7 +60,7 @@ bool write_all(int fd, const uint8_t *data, size_t len, int timeout_ms, std::str
 {
     size_t off = 0;
     while (off < len) {
-        ssize_t n = ::send(fd, data + off, len - off, 0);
+        ssize_t n = ::send(fd, data + off, len - off, MSG_NOSIGNAL);
         if (n > 0) {
             off += (size_t)n;
             continue;
@@ -256,7 +256,6 @@ bool AdbClient::readShellChunk(std::string *out, bool *closed, std::string *erro
         }
         if (pkt.command == adb_command("CLSE")) {
             if (closed) *closed = true;
-            writePacket(adb_command("CLSE"), local_id_, pkt.arg0, nullptr, 0, nullptr);
             return true;
         }
         if (error) *error = "unexpected packet while reading shell: " + packet_name(pkt.command);
