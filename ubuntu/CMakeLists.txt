@@ -68,6 +68,16 @@ target_include_directories(rc_source_select_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
+add_executable(adb_getevent_rc_test
+    tests/adb_getevent_rc_test.cpp
+    src/adb_client.cpp
+    src/adb_getevent_rc.cpp
+)
+
+target_include_directories(adb_getevent_rc_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
 install(TARGETS usb_tund web_server DESTINATION /usr/local/bin)
 
 # DJI RC 双路串口解码守护进程
@@ -83,6 +93,16 @@ add_executable(dji_rc
     src/rc_map.c
 )
 
+add_executable(v3s_adb_rc
+    src/v3s_adb_rc.cpp
+    src/adb_client.cpp
+    src/adb_getevent_rc.cpp
+)
+
+target_include_directories(v3s_adb_rc PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
 add_executable(aux_uart_test
     src/aux_uart_test.cpp
 )
@@ -92,4 +112,5 @@ target_link_libraries(dji_rc PRIVATE
 )
 
 install(TARGETS dji_rc aux_uart_test DESTINATION /usr/local/bin)
+install(TARGETS v3s_adb_rc DESTINATION /usr/local/bin)
 install(FILES ${CMAKE_SOURCE_DIR}/../protocol/frame.h DESTINATION /usr/local/include/tun_nat_hub)
