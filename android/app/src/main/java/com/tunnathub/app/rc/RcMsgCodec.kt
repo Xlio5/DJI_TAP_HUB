@@ -1,6 +1,7 @@
 package com.tunnathub.app.rc
 
 import com.tunnathub.app.RcMsg
+import com.tunnathub.app.util.AppLog
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -28,7 +29,13 @@ object RcMsgCodec {
         buf.putLong(sample.timestampMs * 1000L)
         channels.forEach { buf.putShort(it.toShort()) }
         raw.forEach { buf.putShort(it.toShort()) }
-        buf.putInt(buttonBits(sample))
+        val buttons = buttonBits(sample)
+        // 诊断: 确认 L1~R3 (bit 15-20) 编码状态
+        if (buttons and 0x3F0000 != 0) {
+            AppLog.i("RcCodec", "l1=%d l2=%d l3=%d r1=%d r2=%d r3=%d buttons=0x%08x".format(
+                sample.l1, sample.l2, sample.l3, sample.r1, sample.r2, sample.r3, buttons))
+        }
+        buf.putInt(buttons)
         buf.put(modeByte(sample.mode))
         buf.put(sample.dial.coerceIn(0, 255).toByte())
         var flags = FLAG_ANDROID_FUSED

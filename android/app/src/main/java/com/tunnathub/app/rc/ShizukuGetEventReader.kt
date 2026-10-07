@@ -55,10 +55,17 @@ class ShizukuGetEventReader(
                         onSample(sample(axes, keys))
                         continue
                     }
-                    val key = GetEventRcReader.parseKeyLine(line) ?: continue
-                    val name = GetEventRcReader.DEFAULT_KEY_MAP[key.code] ?: continue
-                    keys[name] = if (key.pressed) 1 else 0
-                    onSample(sample(axes, keys))
+                    val key = GetEventRcReader.parseKeyLine(line)
+                    if (key != null) {
+                        val name = GetEventRcReader.DEFAULT_KEY_MAP[key.code]
+                        // 诊断: 打印所有按键事件含映射, 确认物理 L1~R3 触发的 getevent code
+                        AppLog.i("LRDiag", "KEY ${key.code} pressed=${key.pressed} mapped=$name [$line]")
+                        name ?: continue
+                        keys[name] = if (key.pressed) 1 else 0
+                        val s = sample(axes, keys)
+                        AppLog.i("LRDiag", "  keys.L1=${keys["L1"]} keys.R1=${keys["R1"]} sample.l1=${s.l1} sample.r1=${s.r1}")
+                        onSample(s)
+                    }
                 }
             }
             AppLog.i("ShizukuReader", "getevent 流结束 (进程退出)")
