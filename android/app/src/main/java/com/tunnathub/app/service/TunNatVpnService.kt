@@ -337,7 +337,14 @@ class TunNatVpnService : VpnService() {
             AppLog.i(TAG, "TUN 接口已建立")
         } catch (e: Exception) {
             Log.e(TAG, "无法建立 TUN", e)
-            stopSelf()
+            AppLog.e(TAG, "无法建立 TUN: ${e.message}")
+            isStarted = false
+            isStartedForUi = false
+            isRunning = false
+            stopKeepAliveThreads()
+            updateNotification("需要打开 App 完成 VPN 授权")
+            stopForeground(false)
+            stopSelf(startId)
             return START_NOT_STICKY
         }
 
