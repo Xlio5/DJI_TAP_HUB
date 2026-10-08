@@ -1696,6 +1696,9 @@ int main(int argc, char **argv)
     int rcmsg_port = RCMSG_PORT;
     bool adb_rc = false;
     bool adb_rc_primary = false;
+    bool adb_getevent_enabled = true;
+    bool adb_40007_enabled = true;
+    bool app_rc_enabled = true;
     const char *adb_host = "10.0.0.2";
     int adb_port = 5555;
     const char *adb_device = "/dev/input/event4";
@@ -1720,6 +1723,9 @@ int main(int argc, char **argv)
         else if (std::strcmp(argv[i], "--rcmsg-port") == 0 && i + 1 < argc) rcmsg_port = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--adb-rc") == 0) adb_rc = true;
         else if (std::strcmp(argv[i], "--adb-rc-primary") == 0) { adb_rc = true; adb_rc_primary = true; }
+        else if (std::strcmp(argv[i], "--adb-no-getevent") == 0) adb_getevent_enabled = false;
+        else if (std::strcmp(argv[i], "--adb-no-40007") == 0) adb_40007_enabled = false;
+        else if (std::strcmp(argv[i], "--no-app-rc") == 0) app_rc_enabled = false;
         else if (std::strcmp(argv[i], "--adb-host") == 0 && i + 1 < argc) adb_host = argv[++i];
         else if (std::strcmp(argv[i], "--adb-port") == 0 && i + 1 < argc) adb_port = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--adb-device") == 0 && i + 1 < argc) adb_device = argv[++i];
@@ -1761,8 +1767,12 @@ int main(int argc, char **argv)
     std::printf("P20: %s @%d  |  P0: %s @%d  |  print every %dms\n\n",
                 dev1, baud1, dev2, baud2, interval_ms);
     if (adb_rc) {
-        std::printf("[dji_rc] ADB RC enabled: %s:%d device=%s primary=%d\n",
-                    adb_host, adb_port, adb_device, adb_rc_primary ? 1 : 0);
+        std::printf("[dji_rc] ADB RC enabled: %s:%d device=%s primary=%d getevent=%d p40007=%d\n",
+                    adb_host, adb_port, adb_device, adb_rc_primary ? 1 : 0,
+                    adb_getevent_enabled ? 1 : 0, adb_40007_enabled ? 1 : 0);
+    }
+    if (!app_rc_enabled) {
+        std::printf("[dji_rc] app_rc UDP input disabled (--no-app-rc)\n");
     }
 
     if (!selftest()) return 1;
@@ -1821,12 +1831,16 @@ int main(int argc, char **argv)
     crsf_params_init();   /* 初始化 CRSF 参数表 (Device_Ping 响应用) */
     if (g_p20.fd >= 0) t1 = std::thread(rx_thread, &g_p20);
     if (g_p0.fd  >= 0) t2 = std::thread(rx_thread, &g_p0);
-    t_app = std::thread(app_rc_thread);
+    if (app_rc_enabled) t_app = std::thread(app_rc_thread);
     if (adb_rc) {
-        t_adb_ge = std::thread(adb_getevent_thread, std::string(adb_host),
-                               (uint16_t)adb_port, std::string(adb_device));
-        t_adb_40007 = std::thread(adb_40007_thread, std::string(adb_host),
-                                  (uint16_t)adb_port);
+        if (adb_getevent_enabled) {
+            t_adb_ge = std::thread(adb_getevent_thread, std::string(adb_host),
+                                   (uint16_t)adb_port, std::string(adb_device));
+        }
+        if (adb_40007_enabled) {
+            t_adb_40007 = std::thread(adb_40007_thread, std::string(adb_host),
+                                      (uint16_t)adb_port);
+        }
         t_adb_pub = std::thread(adb_rc_publish_thread);
     }
     /* 上行 crsf_rx_thread: CRSF 遥测回传 或 bridge 模式都需要 (bridge 双向转发 ELRS 响应) */
