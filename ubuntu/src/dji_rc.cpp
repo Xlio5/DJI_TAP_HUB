@@ -16,6 +16,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <csignal>
+#include <climits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -37,6 +39,9 @@ extern "C" {
 #include "crsf.h"
 #include "rc_map.h"
 }
+#include "adb_client.h"
+#include "adb_getevent_rc.h"
+#include "adb_rc_fusion.h"
 #include "rc_source_select.h"
 
 // 自定义波特率 (termios2 BOTHER): 标准 termios 表没有 100000/400000/420000。
@@ -70,6 +75,13 @@ static rc_state_t g_app_rc; // App 侧 getevent+40007 融合后的 RCM1 状态
 static uint32_t g_app_good = 0;
 static uint32_t g_app_rx = 0;
 static int64_t g_app_last_us = 0;
+static rc_state_t g_adb_getevent_rc;
+static rc_state_t g_adb_40007_rc;
+static uint32_t g_adb_getevent_good = 0;
+static uint32_t g_adb_40007_good = 0;
+static int64_t g_adb_getevent_last_us = 0;
+static int64_t g_adb_40007_last_us = 0;
+static int64_t g_adb_publish_last_us = 0;
 static std::mutex g_mtx;
 static std::atomic<bool> g_stop{false};
 static std::atomic<bool> g_crsf_stop{false};   /* 独立控制 CRSF 回传线程 (t3), 不干扰 t1/t2 */
@@ -316,6 +328,7 @@ static constexpr int APP_RC_PORT = 65531;
 // 手机主地址 10.0.0.2 (Android VpnService 只对主地址投递 protect 隧道包)。
 // V3s 把电脑发的 144.11 包 DNAT 到 10.0.0.2, 手机在此收 rcmsg/局域网入向。
 static constexpr const char *RCMSG_HOST = "10.0.0.2";
+static std::atomic<bool> g_adb_rc_primary{false};
 
 // ── CRSF 桥 (crsf-bridge 模式): SC16IS752 CRSF 帧 ↔ 网口 UDP 透明转发 ──
 // App 跑 ELRS Lua 脚本, 经网口 UDP 发 CRSF 参数命令, V3s 转 SC16IS752。
@@ -730,6 +743,171 @@ static void app_rc_thread()
         g_mtx.unlock();
     }
     ::close(fd);
+}
+
+static bool adb_decode_40007_packet(const duml_pkt_t &pk, rc_state_t *out)
+{
+    if (!out) return false;
+    if (pk.cmd_set == 6 && pk.cmd_id == 0xAE) {
+        return decode_rc_ae(pk.payload, pk.payload_len, out);
+    }
+    if (pk.cmd_set == 1 && pk.cmd_id == 0x02) {
+        return decode_special_02(pk.payload, pk.payload_len, out);
+    }
+    return false;
+}
+
+static void adb_getevent_thread(const std::string host, uint16_t port,
+                                const std::string device)
+{
+    while (!g_stop.load(std::memory_order_relaxed)) {
+        AdbClient adb;
+        AdbClientOptions opt;
+        opt.host = host;
+        opt.port = port;
+        opt.io_timeout_ms = 2000;
+        std::string error;
+        if (!adb.connect(opt, &error) || !adb.openShell("getevent -lt " + device, &error)) {
+            std::fprintf(stderr, "[dji_rc] adb getevent connect failed: %s\n", error.c_str());
+            for (int i = 0; i < 10 && !g_stop.load(std::memory_order_relaxed); i++) ::usleep(200000);
+            continue;
+        }
+        std::printf("[dji_rc] adb getevent connected %s:%u %s\n",
+                    host.c_str(), port, device.c_str());
+        std::fflush(stdout);
+
+        std::string linebuf;
+        bool closed = false;
+        while (!g_stop.load(std::memory_order_relaxed) && !closed) {
+            std::string chunk;
+            if (!adb.readShellChunk(&chunk, &closed, &error)) {
+                std::fprintf(stderr, "[dji_rc] adb getevent read failed: %s\n", error.c_str());
+                break;
+            }
+            if (chunk.empty()) continue;
+            {
+                std::lock_guard<std::mutex> lock(g_mtx);
+                g_app_rx += (uint32_t)chunk.size();
+            }
+            linebuf.append(chunk);
+            size_t pos;
+            while ((pos = linebuf.find('\n')) != std::string::npos) {
+                std::string line = linebuf.substr(0, pos);
+                linebuf.erase(0, pos + 1);
+                GeteventAbsEvent ev;
+                rc_state_t st;
+                bool ok = false;
+                {
+                    std::lock_guard<std::mutex> lock(g_mtx);
+                    st = g_adb_getevent_rc;
+                    ok = parse_getevent_abs_line(line, &ev) && apply_getevent_axis(ev, device, &st);
+                    if (ok) {
+                        g_adb_getevent_rc = st;
+                        g_adb_getevent_good++;
+                        g_adb_getevent_last_us = now_us();
+                    }
+                }
+            }
+            if (linebuf.size() > 4096) linebuf.erase(0, linebuf.size() - 1024);
+        }
+        std::fprintf(stderr, "[dji_rc] adb getevent disconnected, reconnecting\n");
+    }
+}
+
+static void adb_40007_thread(const std::string host, uint16_t port)
+{
+    const std::string shell = "toybox nc 127.0.0.1 40007 || nc 127.0.0.1 40007";
+    while (!g_stop.load(std::memory_order_relaxed)) {
+        AdbClient adb;
+        AdbClientOptions opt;
+        opt.host = host;
+        opt.port = port;
+        opt.io_timeout_ms = 2000;
+        std::string error;
+        if (!adb.connect(opt, &error) || !adb.openShell(shell, &error)) {
+            std::fprintf(stderr, "[dji_rc] adb 40007 connect failed: %s\n", error.c_str());
+            for (int i = 0; i < 10 && !g_stop.load(std::memory_order_relaxed); i++) ::usleep(200000);
+            continue;
+        }
+        std::printf("[dji_rc] adb 40007 connected %s:%u\n", host.c_str(), port);
+        std::fflush(stdout);
+
+        uint8_t buf[4096];
+        int len = 0;
+        bool closed = false;
+        while (!g_stop.load(std::memory_order_relaxed) && !closed) {
+            std::string chunk;
+            if (!adb.readShellChunk(&chunk, &closed, &error)) {
+                std::fprintf(stderr, "[dji_rc] adb 40007 read failed: %s\n", error.c_str());
+                break;
+            }
+            if (chunk.empty()) continue;
+            int copy = (int)chunk.size();
+            if (copy > (int)sizeof(buf) - len) copy = (int)sizeof(buf) - len;
+            std::memcpy(buf + len, chunk.data(), copy);
+            len += copy;
+            {
+                std::lock_guard<std::mutex> lock(g_mtx);
+                g_app_rx += (uint32_t)chunk.size();
+            }
+
+            int off = 0;
+            while (len - off >= 1) {
+                duml_pkt_t pk;
+                int r = duml_parse(buf + off, len - off, &pk);
+                if (r < 0) break;
+                if (r == 0) { off += 1; continue; }
+                rc_state_t st;
+                if (adb_decode_40007_packet(pk, &st)) {
+                    std::lock_guard<std::mutex> lock(g_mtx);
+                    g_adb_40007_rc = st;
+                    g_adb_40007_good++;
+                    g_adb_40007_last_us = now_us();
+                }
+                off += pk.pkt_len;
+            }
+            if (off > 0) {
+                std::memmove(buf, buf + off, len - off);
+                len -= off;
+            }
+            if (len == (int)sizeof(buf)) {
+                std::memmove(buf, buf + 1, len - 1);
+                len -= 1;
+            }
+        }
+        std::fprintf(stderr, "[dji_rc] adb 40007 disconnected, reconnecting\n");
+    }
+}
+
+static void adb_rc_publish_thread()
+{
+    while (!g_stop.load(std::memory_order_relaxed)) {
+        ::usleep(20000);
+        int64_t n = now_us();
+        rc_state_t ge, p4, fused;
+        int64_t ge_last, p4_last;
+        uint32_t ge_good, p4_good;
+        {
+            std::lock_guard<std::mutex> lock(g_mtx);
+            ge = g_adb_getevent_rc;
+            p4 = g_adb_40007_rc;
+            ge_last = g_adb_getevent_last_us;
+            p4_last = g_adb_40007_last_us;
+            ge_good = g_adb_getevent_good;
+            p4_good = g_adb_40007_good;
+        }
+        int64_t ge_age = (ge.type == RC_NONE || ge_last == 0) ? INT64_MAX : n - ge_last;
+        int64_t p4_age = (p4.type == RC_NONE || p4_last == 0) ? INT64_MAX : n - p4_last;
+        adb_rc_fuse(&ge, ge_age, &p4, p4_age, &fused);
+        if (fused.type == RC_NONE) continue;
+        {
+            std::lock_guard<std::mutex> lock(g_mtx);
+            g_app_rc = fused;
+            g_app_good = ge_good + p4_good;
+            g_app_last_us = n;
+            g_adb_publish_last_us = n;
+        }
+    }
 }
 
 // ── 自检 ──────────────────────────────────────────────────────
@@ -1515,6 +1693,11 @@ int main(int argc, char **argv)
     bool crsf_telem = true;                  /* CRSF 接收回传 */
     const char *rcmsg_host = RCMSG_HOST;
     int rcmsg_port = RCMSG_PORT;
+    bool adb_rc = false;
+    bool adb_rc_primary = false;
+    const char *adb_host = "10.0.0.2";
+    int adb_port = 5555;
+    const char *adb_device = "/dev/input/event4";
 
     // 简易参数解析
     for (int i = 1; i < argc; i++) {
@@ -1534,6 +1717,11 @@ int main(int argc, char **argv)
         else if (std::strcmp(argv[i], "--sbus-baud") == 0 && i + 1 < argc) out_baud = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--rcmsg-host") == 0 && i + 1 < argc) rcmsg_host = argv[++i];
         else if (std::strcmp(argv[i], "--rcmsg-port") == 0 && i + 1 < argc) rcmsg_port = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--adb-rc") == 0) adb_rc = true;
+        else if (std::strcmp(argv[i], "--adb-rc-primary") == 0) { adb_rc = true; adb_rc_primary = true; }
+        else if (std::strcmp(argv[i], "--adb-host") == 0 && i + 1 < argc) adb_host = argv[++i];
+        else if (std::strcmp(argv[i], "--adb-port") == 0 && i + 1 < argc) adb_port = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--adb-device") == 0 && i + 1 < argc) adb_device = argv[++i];
         else if (std::strcmp(argv[i], "--crsf-bridge") == 0) g_crsf_bridge = true;
         else if (std::strcmp(argv[i], "--crsfbr-host") == 0 && i + 1 < argc) crsfbr_host = argv[++i];
         else if (std::strcmp(argv[i], "--crsfbr-port") == 0 && i + 1 < argc) { crsfbr_port = std::atoi(argv[++i]); }
@@ -1554,6 +1742,7 @@ int main(int argc, char **argv)
     if (out_baud == 0) out_baud = (out_mode == 'c') ? 115200 : (g_sbus_std ? 100000 : 115200);
     g_out_baud.store(out_baud);   /* 先修复零值再赋值 */  // C1: atomic store
     g_crsf_telem = crsf_telem;
+    g_adb_rc_primary.store(adb_rc_primary, std::memory_order_release);
 
     /* bridge 模式: 强制 CRSF 输出 (UART0 双向 CRSF, 参数帧透明转发) */
     if (g_crsf_bridge) {
@@ -1570,6 +1759,10 @@ int main(int argc, char **argv)
     std::printf("\n=== DJI RC daemon (V3s) ===\n");
     std::printf("P20: %s @%d  |  P0: %s @%d  |  print every %dms\n\n",
                 dev1, baud1, dev2, baud2, interval_ms);
+    if (adb_rc) {
+        std::printf("[dji_rc] ADB RC enabled: %s:%d device=%s primary=%d\n",
+                    adb_host, adb_port, adb_device, adb_rc_primary ? 1 : 0);
+    }
 
     if (!selftest()) return 1;
 
@@ -1623,11 +1816,18 @@ int main(int argc, char **argv)
     }
 
     // 启动接收线程 (协议输出在 P20 rx_thread 的 handle_pkt 里事件驱动)
-    std::thread t1, t2, t3, t4, t_app;
+    std::thread t1, t2, t3, t4, t_app, t_adb_ge, t_adb_40007, t_adb_pub;
     crsf_params_init();   /* 初始化 CRSF 参数表 (Device_Ping 响应用) */
     if (g_p20.fd >= 0) t1 = std::thread(rx_thread, &g_p20);
     if (g_p0.fd  >= 0) t2 = std::thread(rx_thread, &g_p0);
     t_app = std::thread(app_rc_thread);
+    if (adb_rc) {
+        t_adb_ge = std::thread(adb_getevent_thread, std::string(adb_host),
+                               (uint16_t)adb_port, std::string(adb_device));
+        t_adb_40007 = std::thread(adb_40007_thread, std::string(adb_host),
+                                  (uint16_t)adb_port);
+        t_adb_pub = std::thread(adb_rc_publish_thread);
+    }
     /* 上行 crsf_rx_thread: CRSF 遥测回传 或 bridge 模式都需要 (bridge 双向转发 ELRS 响应) */
     if ((out_mode == 'c' && g_crsf_telem) || g_crsf_bridge) {
         if (g_out_fd.load() >= 0)
@@ -1653,19 +1853,22 @@ int main(int argc, char **argv)
 
         rc_state_t s20, s0, sapp;
         uint32_t g20, g0, rx20, rx0, appGood, appRx;
-        int64_t l20, l0, lapp;
+        int64_t l20, l0, lapp, ladbpub;
 
         g_mtx.lock();
         s20 = g_p20.state; g20 = g_p20.good; rx20 = g_p20.rx_bytes; l20 = g_p20.last_us;
         s0  = g_p0.state;  g0  = g_p0.good;  rx0  = g_p0.rx_bytes;  l0  = g_p0.last_us;
         sapp = g_app_rc; appGood = g_app_good; appRx = g_app_rx; lapp = g_app_last_us;
+        ladbpub = g_adb_publish_last_us;
         g_mtx.unlock();
 
         int64_t n = now_us();
         int64_t age20 = (s20.type == RC_NONE) ? INT64_MAX : n - l20;
         int64_t age0  = (s0.type  == RC_NONE) ? INT64_MAX : n - l0;
         int64_t ageApp = (sapp.type == RC_NONE) ? INT64_MAX : n - lapp;
+        int64_t ageAdbPub = (ladbpub == 0) ? INT64_MAX : n - ladbpub;
         bool appFresh = (sapp.type != RC_NONE) && (ageApp <= 80000LL);
+        bool adbFresh = appFresh && (ageAdbPub <= 80000LL);
         bool p20Fresh = (s20.type != RC_NONE) && (age20 <= RC_STALE_US);
         bool p0Fresh = (s0.type != RC_NONE) && (age0 <= RC_STALE_US);
 
@@ -1677,7 +1880,10 @@ int main(int argc, char **argv)
         rc_state_t merged;
         rc_merge(&s20, age20, &s0, age0, RC_STALE_US, &merged);
         rc_state_t m;
-        if (serialActive) {
+        bool preferApp = g_adb_rc_primary.load(std::memory_order_acquire) && adbFresh;
+        if (preferApp) {
+            m = sapp;      /* V3s ADB primary: getevent+40007 压过串口, 避免飞线依赖 */
+        } else if (serialActive) {
             m = merged;   /* 串口有数据, 按 active 节拍使用 921600+115200 完整融合态 */
         } else if (appFresh) {
             m = sapp;      /* 无串口 → App RCM1 融合输入 (adb getevent + 40007) */
@@ -1686,28 +1892,32 @@ int main(int argc, char **argv)
         }
 
         if (m.type != RC_NONE) {
-            if (!serialActive) {
+            if (!serialActive || preferApp) {
                 // App 融合路径无串口事件驱动, 必须由主循环推进 latch 并按 interval 发送 rcmsg。
                 advance_output_latches(m);
             }
             // 状态文件 (供 web_server /api/rc)
             const char *activeSrc = "android_rcm1";
+            if (preferApp) activeSrc = "v3s_adb_rc";
             if (serialActive) activeSrc = rc_fused_source_name(p20Fresh, p0Fresh, d.active);
+            if (preferApp) activeSrc = "v3s_adb_rc";
             write_state_file(m, activeSrc, g20, g0, rx20, rx0,
                              appGood, appRx, ageApp, appFresh, now_us());
-            if (!serialActive && appFresh) {
+            if ((!serialActive || preferApp) && appFresh) {
                 uint32_t seq = g_rcmsg_seq.fetch_add(1, std::memory_order_relaxed) + 1;
                 send_rcmsg(rcmsg_fd, rcmsg_dst, m, true, seq, n);
             }
-        } else if (rx20 > 0 || rx0 > 0) {
-            // UART有数据但RC掉线: 写空状态防旧数据残留
+        } else {
+            // 无有效 RC: 写空状态防旧数据残留。
             static const char no_rc[] = "{\"error\":\"no RC data\",\"rx1\":%u,\"rx2\":%u}\n";
             char buf[128];
             int w = snprintf(buf, sizeof(buf), no_rc, rx20, rx0);
             write_text_atomic("/tmp/rc_state.json", buf, w);
             write_text_atomic("/var/log/rc_state.json", buf, w);
-            uint32_t seq = g_rcmsg_seq.fetch_add(1, std::memory_order_relaxed) + 1;
-            send_rcmsg(rcmsg_fd, rcmsg_dst, m, false, seq, n);
+            if (rx20 > 0 || rx0 > 0 || appFresh) {
+                uint32_t seq = g_rcmsg_seq.fetch_add(1, std::memory_order_relaxed) + 1;
+                send_rcmsg(rcmsg_fd, rcmsg_dst, m, false, seq, n);
+            }
         }
 
         // CRSF 回传: 有回传数据时发 tlm UDP (65531) + 写状态文件
@@ -1807,7 +2017,7 @@ int main(int argc, char **argv)
                 rc_state_to_kv(&m, line, sizeof(line));
             }
             std::printf("[dji_rc] %s | g1=%u g2=%u app=%u primary=%s rx1=%u rx2=%u app_rx=%u\n",
-                        line, g20, g0, appGood, appFresh ? "app" : "uart", rx20, rx0, appRx);
+                        line, g20, g0, appGood, preferApp ? "v3s_adb" : (appFresh ? "app" : "uart"), rx20, rx0, appRx);
             if (debug_uart0 && (n - g_last_debug_us) >= 5000000LL) {
                 debug_log("[dji_rc][dbg] %s g1=%u g2=%u rx1=%u rx2=%u age1=%lld age2=%lld",
                           line, g20, g0, rx20, rx0, (long long)age20, (long long)age0);
@@ -1828,6 +2038,9 @@ int main(int argc, char **argv)
     if (t3.joinable()) t3.join();
     if (t4.joinable()) t4.join();   /* bridge 下行线程 */
     if (t_app.joinable()) t_app.join();
+    if (t_adb_ge.joinable()) t_adb_ge.join();
+    if (t_adb_40007.joinable()) t_adb_40007.join();
+    if (t_adb_pub.joinable()) t_adb_pub.join();
     if (t1.joinable()) t1.join();
     if (t2.joinable()) t2.join();
     g_rcmsg_fd.store(-1, std::memory_order_release);

@@ -81,12 +81,26 @@ target_include_directories(adb_getevent_rc_test PRIVATE
 
 add_test(NAME adb_getevent_rc_test COMMAND adb_getevent_rc_test)
 
+add_executable(adb_rc_fusion_test
+    tests/adb_rc_fusion_test.cpp
+    src/adb_rc_fusion.cpp
+)
+
+target_include_directories(adb_rc_fusion_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+add_test(NAME adb_rc_fusion_test COMMAND adb_rc_fusion_test)
+
 install(TARGETS usb_tund web_server DESTINATION /usr/local/bin)
 
 # DJI RC 双路串口解码守护进程
 # 注意: dji_rc.cpp 使用 crsf.c (CRSF 编解码/回传) 和 rc_map.c (通道映射), 必须链接
 add_executable(dji_rc
     src/dji_rc.cpp
+    src/adb_client.cpp
+    src/adb_getevent_rc.cpp
+    src/adb_rc_fusion.cpp
     src/rc_source_select.cpp
     src/duml.c
     src/rc_decode.c
