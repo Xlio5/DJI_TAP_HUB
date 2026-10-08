@@ -816,7 +816,8 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
 
 static void adb_40007_thread(const std::string host, uint16_t port)
 {
-    const std::string shell = "toybox nc 127.0.0.1 40007 || nc 127.0.0.1 40007";
+    const std::string shell =
+        "while true; do (toybox nc 127.0.0.1 40007 || nc 127.0.0.1 40007); sleep 1; done";
     while (!g_stop.load(std::memory_order_relaxed)) {
         AdbClient adb;
         AdbClientOptions opt;
