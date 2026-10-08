@@ -60,6 +60,13 @@ int main()
     expect(!parse_getevent_abs_line("[ 1235.044742] /dev/input/event4: EV_SYN       SYN_REPORT           00000000", &ev),
            "ignore non-ABS line");
 
+    expect(parse_getevent_abs_line("[ 4088.971127] EV_ABS       ABS_RX               ffffdf3a", &ev),
+           "parse device-filtered getevent line without device prefix");
+    expect(ev.device.empty(), "device-filtered getevent line has no device prefix");
+    expect(ev.code == "ABS_RX", "axis code parsed without device prefix");
+    expect(apply_getevent_axis(ev, "/dev/input/event4", &st),
+           "device-filtered getevent line is accepted for selected device");
+
     std::cout << "adb_getevent_rc_test PASS\n";
     return 0;
 }

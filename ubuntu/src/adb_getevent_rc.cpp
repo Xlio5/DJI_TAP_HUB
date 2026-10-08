@@ -41,6 +41,7 @@ bool parse_getevent_abs_line(const std::string &line, GeteventAbsEvent *event)
 {
     if (!event) return false;
     if (line.find("EV_ABS") == std::string::npos) return false;
+    *event = GeteventAbsEvent{};
 
     std::istringstream in(line);
     std::string tok;
@@ -59,7 +60,7 @@ bool parse_getevent_abs_line(const std::string &line, GeteventAbsEvent *event)
             break;
         }
     }
-    if (device.empty() || ev.empty() || code.empty() || value.empty()) return false;
+    if (ev.empty() || code.empty() || value.empty()) return false;
     bool ok = false;
     int32_t parsed = parse_hex_i32(value, &ok);
     if (!ok) return false;
@@ -88,7 +89,7 @@ bool apply_getevent_axis(const GeteventAbsEvent &event, const std::string &axis_
                          rc_state_t *state)
 {
     if (!state) return false;
-    if (event.device != axis_device) return false;
+    if (!event.device.empty() && event.device != axis_device) return false;
     int idx = axis_index(event.code);
     if (idx < 0) return false;
     state->type = RC_APP_FUSED;
