@@ -67,6 +67,17 @@ int main()
     expect(apply_getevent_axis(ev, "/dev/input/event4", &st),
            "device-filtered getevent line is accepted for selected device");
 
+    expect(parse_getevent_abs_line("    ABS_X                 : value 0, min -32768, max 32767, fuzz 16, flat 128, resolution 0", &ev),
+           "parse getevent -lp ABS_X current value");
+    expect(ev.device.empty(), "getevent -lp axis line has no device prefix");
+    expect(ev.code == "ABS_X", "getevent -lp axis code parsed");
+    expectEq(ev.value, 0, "getevent -lp neutral value parsed");
+
+    expect(parse_getevent_abs_line("    ABS_Z                 : value 127, min 0, max 255, fuzz 0, flat 0, resolution 0", &ev),
+           "parse getevent -lp trigger current value");
+    expect(ev.code == "ABS_Z", "getevent -lp trigger code parsed");
+    expectEq(ev.value, 127, "getevent -lp trigger value parsed");
+
     std::cout << "adb_getevent_rc_test PASS\n";
     return 0;
 }

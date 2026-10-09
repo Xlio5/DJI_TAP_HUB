@@ -65,6 +65,17 @@ int main()
                 &p40007, ADB_RC_40007_FRESH_US + 1, &fused);
     expect(fused.type == RC_NONE, "all stale sources yield RC_NONE");
 
+    int64_t held_age = adb_rc_getevent_effective_age_us(true, true, 10000000, 1000);
+    expectEq((int)held_age, 0, "connected getevent holds last axis state");
+
+    int64_t disconnected_age = adb_rc_getevent_effective_age_us(false, true, 10000000, 1000);
+    expect(disconnected_age > ADB_RC_GETEVENT_FRESH_US,
+           "disconnected getevent does not hold stale axis state");
+
+    int64_t missing_age = adb_rc_getevent_effective_age_us(true, false, 10000000, 1000);
+    expect(missing_age > ADB_RC_GETEVENT_FRESH_US,
+           "connected getevent without first state is not fresh");
+
     std::cout << "adb_rc_fusion_test PASS\n";
     return 0;
 }

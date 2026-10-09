@@ -1,6 +1,16 @@
 #include "adb_rc_fusion.h"
 
 #include <cstring>
+#include <climits>
+
+int64_t adb_rc_getevent_effective_age_us(bool connected, bool has_state,
+                                         int64_t now_us, int64_t last_us)
+{
+    if (!has_state || last_us <= 0) return INT64_MAX;
+    if (connected) return 0;
+    if (now_us < last_us) return INT64_MAX;
+    return now_us - last_us;
+}
 
 void adb_rc_fuse(const rc_state_t *getevent_state, int64_t getevent_age_us,
                  const rc_state_t *p40007_state, int64_t p40007_age_us,

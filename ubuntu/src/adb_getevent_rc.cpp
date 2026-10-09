@@ -1,6 +1,7 @@
 #include "adb_getevent_rc.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -28,6 +29,53 @@ int32_t parse_hex_i32(const std::string &s, bool *ok)
     return (int32_t)(uint32_t)v;
 }
 
+int32_t parse_dec_i32(const std::string &s, bool *ok)
+{
+    errno = 0;
+    char *end = nullptr;
+    long v = std::strtol(s.c_str(), &end, 10);
+    *ok = errno == 0 && end != s.c_str() && *end == '\0';
+    return (int32_t)v;
+}
+
+std::string trim_copy(const std::string &s)
+{
+    size_t first = 0;
+    while (first < s.size() && std::isspace((unsigned char)s[first])) first++;
+    size_t last = s.size();
+    while (last > first && std::isspace((unsigned char)s[last - 1])) last--;
+    return s.substr(first, last - first);
+}
+
+bool parse_getevent_lp_abs_line(const std::string &line, GeteventAbsEvent *event)
+{
+    std::string s = trim_copy(line);
+    if (s.find("ABS_") != 0) return false;
+
+    size_t colon = s.find(':');
+    if (colon == std::string::npos) return false;
+    std::string code = trim_copy(s.substr(0, colon));
+    if (axis_index(code) < 0) return false;
+
+    size_t value_pos = s.find("value", colon + 1);
+    if (value_pos == std::string::npos) return false;
+    value_pos += 5;
+    while (value_pos < s.size() && std::isspace((unsigned char)s[value_pos])) value_pos++;
+    size_t value_end = value_pos;
+    if (value_end < s.size() && (s[value_end] == '-' || s[value_end] == '+')) value_end++;
+    while (value_end < s.size() && std::isdigit((unsigned char)s[value_end])) value_end++;
+    if (value_end == value_pos) return false;
+
+    bool ok = false;
+    int32_t parsed = parse_dec_i32(s.substr(value_pos, value_end - value_pos), &ok);
+    if (!ok) return false;
+
+    event->device.clear();
+    event->code = code;
+    event->value = parsed;
+    return true;
+}
+
 int16_t clamp_axis(int value)
 {
     if (value < -660) return -660;
@@ -40,8 +88,10 @@ int16_t clamp_axis(int value)
 bool parse_getevent_abs_line(const std::string &line, GeteventAbsEvent *event)
 {
     if (!event) return false;
-    if (line.find("EV_ABS") == std::string::npos) return false;
     *event = GeteventAbsEvent{};
+    if (line.find("EV_ABS") == std::string::npos) {
+        return parse_getevent_lp_abs_line(line, event);
+    }
 
     std::istringstream in(line);
     std::string tok;

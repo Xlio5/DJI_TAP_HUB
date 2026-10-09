@@ -84,6 +84,7 @@ static int64_t g_adb_40007_last_us = 0;
 static int64_t g_adb_publish_last_us = 0;
 static std::atomic<uint32_t> g_adb_getevent_events{0};
 static std::atomic<int64_t> g_adb_getevent_dt_us{0};
+static std::atomic<bool> g_adb_getevent_connected{false};
 static std::atomic<uint32_t> g_rcmsg_tx_ok{0};
 static std::atomic<int64_t> g_rcmsg_tx_last_us{0};
 static std::atomic<int64_t> g_rcmsg_tx_dt_us{0};
@@ -777,7 +778,8 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
         opt.port = port;
         opt.io_timeout_ms = 2000;
         std::string error;
-        if (!adb.connect(opt, &error) || !adb.openShell("getevent -lt " + device, &error)) {
+        std::string shell = "getevent -lp " + device + "; exec getevent -lt " + device;
+        if (!adb.connect(opt, &error) || !adb.openShell(shell, &error)) {
             std::fprintf(stderr, "[dji_rc] adb getevent connect failed: %s\n", error.c_str());
             for (int i = 0; i < 10 && !g_stop.load(std::memory_order_relaxed); i++) ::usleep(200000);
             continue;
@@ -785,6 +787,7 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
         std::printf("[dji_rc] adb getevent connected %s:%u %s\n",
                     host.c_str(), port, device.c_str());
         std::fflush(stdout);
+        g_adb_getevent_connected.store(true, std::memory_order_release);
 
         std::string linebuf;
         bool closed = false;
@@ -826,6 +829,7 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
             }
             if (linebuf.size() > 4096) linebuf.erase(0, linebuf.size() - 1024);
         }
+        g_adb_getevent_connected.store(false, std::memory_order_release);
         std::fprintf(stderr, "[dji_rc] adb getevent disconnected, reconnecting\n");
     }
 }
@@ -904,6 +908,7 @@ static void adb_rc_publish_thread()
         rc_state_t ge, p4, fused;
         int64_t ge_last, p4_last;
         uint32_t ge_good, p4_good;
+        bool ge_connected;
         {
             std::lock_guard<std::mutex> lock(g_mtx);
             ge = g_adb_getevent_rc;
@@ -912,8 +917,11 @@ static void adb_rc_publish_thread()
             p4_last = g_adb_40007_last_us;
             ge_good = g_adb_getevent_good;
             p4_good = g_adb_40007_good;
+            ge_connected = g_adb_getevent_connected.load(std::memory_order_acquire);
         }
-        int64_t ge_age = (ge.type == RC_NONE || ge_last == 0) ? INT64_MAX : n - ge_last;
+        int64_t ge_age = adb_rc_getevent_effective_age_us(ge_connected,
+                                                          ge.type != RC_NONE,
+                                                          n, ge_last);
         int64_t p4_age = (p4.type == RC_NONE || p4_last == 0) ? INT64_MAX : n - p4_last;
         adb_rc_fuse(&ge, ge_age, &p4, p4_age, &fused);
         if (fused.type == RC_NONE) continue;
