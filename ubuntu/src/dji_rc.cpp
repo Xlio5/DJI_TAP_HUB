@@ -82,6 +82,11 @@ static uint32_t g_adb_40007_good = 0;
 static int64_t g_adb_getevent_last_us = 0;
 static int64_t g_adb_40007_last_us = 0;
 static int64_t g_adb_publish_last_us = 0;
+static std::atomic<uint32_t> g_adb_getevent_events{0};
+static std::atomic<int64_t> g_adb_getevent_dt_us{0};
+static std::atomic<uint32_t> g_rcmsg_tx_ok{0};
+static std::atomic<int64_t> g_rcmsg_tx_last_us{0};
+static std::atomic<int64_t> g_rcmsg_tx_dt_us{0};
 static std::mutex g_mtx;
 static std::atomic<bool> g_stop{false};
 static std::atomic<bool> g_crsf_stop{false};   /* 独立控制 CRSF 回传线程 (t3), 不干扰 t1/t2 */
@@ -612,6 +617,11 @@ static void send_rcmsg(int fd, const sockaddr_in &dst, const rc_state_t &st,
         /* 目标不可达/缓冲区满时 sendto 返回 EAGAIN, 忽略 (主循环不能阻塞) */
         if (errno != EAGAIN && errno != EWOULDBLOCK)
             std::fprintf(stderr, "[dji_rc] rcmsg send fail n=%d errno=%d\n", (int)n, errno);
+    } else {
+        int64_t prev = g_rcmsg_tx_last_us.exchange(ts_us, std::memory_order_relaxed);
+        if (prev > 0 && ts_us > prev)
+            g_rcmsg_tx_dt_us.store(ts_us - prev, std::memory_order_relaxed);
+        g_rcmsg_tx_ok.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -795,17 +805,23 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
                 std::string line = linebuf.substr(0, pos);
                 linebuf.erase(0, pos + 1);
                 GeteventAbsEvent ev;
+                if (!parse_getevent_abs_line(line, &ev)) continue;
                 rc_state_t st;
-                bool ok = false;
                 {
                     std::lock_guard<std::mutex> lock(g_mtx);
                     st = g_adb_getevent_rc;
-                    ok = parse_getevent_abs_line(line, &ev) && apply_getevent_axis(ev, device, &st);
-                    if (ok) {
-                        g_adb_getevent_rc = st;
-                        g_adb_getevent_good++;
-                        g_adb_getevent_last_us = now_us();
-                    }
+                }
+                if (!apply_getevent_axis(ev, device, &st)) continue;
+                {
+                    std::lock_guard<std::mutex> lock(g_mtx);
+                    int64_t event_us = now_us();
+                    if (g_adb_getevent_last_us > 0 && event_us > g_adb_getevent_last_us)
+                        g_adb_getevent_dt_us.store(event_us - g_adb_getevent_last_us,
+                                                   std::memory_order_relaxed);
+                    g_adb_getevent_events.fetch_add(1, std::memory_order_relaxed);
+                    g_adb_getevent_rc = st;
+                    g_adb_getevent_good++;
+                    g_adb_getevent_last_us = event_us;
                 }
             }
             if (linebuf.size() > 4096) linebuf.erase(0, linebuf.size() - 1024);
@@ -1011,15 +1027,22 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
 
     static int64_t prev_us = 0;
     static uint32_t prev_g1 = 0, prev_g2 = 0, prev_rx1 = 0, prev_rx2 = 0, prev_tx_ok = 0;
+    static uint32_t prev_adb_ge = 0, prev_rcmsg_tx = 0;
     static uint32_t out_count = 0;
     static double good1_hz = 0.0, good2_hz = 0.0, rx1_bps = 0.0, rx2_bps = 0.0, out_hz = 0.0, tx_hz = 0.0;
+    static double adb_ge_hz = 0.0, rcmsg_tx_hz = 0.0;
     uint32_t tx_ok = g_tx_ok.load();
     uint32_t tx_err = g_tx_err.load();
+    uint32_t adb_ge = g_adb_getevent_events.load(std::memory_order_relaxed);
+    uint32_t rcmsg_tx = g_rcmsg_tx_ok.load(std::memory_order_relaxed);
+    int64_t adb_ge_dt_us = g_adb_getevent_dt_us.load(std::memory_order_relaxed);
+    int64_t rcmsg_tx_dt_us = g_rcmsg_tx_dt_us.load(std::memory_order_relaxed);
 
     out_count++;
     if (prev_us == 0) {
         prev_us = ts_us;
         prev_g1 = g1; prev_g2 = g2; prev_rx1 = rx1; prev_rx2 = rx2; prev_tx_ok = tx_ok;
+        prev_adb_ge = adb_ge; prev_rcmsg_tx = rcmsg_tx;
     } else {
         int64_t elapsed_us = ts_us - prev_us;
         if (elapsed_us >= 1000000LL) {
@@ -1030,8 +1053,11 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
             rx2_bps = (rx2 - prev_rx2) / sec;
             out_hz = out_count / sec;
             tx_hz = (tx_ok - prev_tx_ok) / sec;
+            adb_ge_hz = (adb_ge - prev_adb_ge) / sec;
+            rcmsg_tx_hz = (rcmsg_tx - prev_rcmsg_tx) / sec;
             prev_us = ts_us;
             prev_g1 = g1; prev_g2 = g2; prev_rx1 = rx1; prev_rx2 = rx2; prev_tx_ok = tx_ok;
+            prev_adb_ge = adb_ge; prev_rcmsg_tx = rcmsg_tx;
             out_count = 0;
         }
     }
@@ -1049,7 +1075,10 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
         "\"l1\":%d,\"l2\":%d,\"l3\":%d,\"r1\":%d,\"r2\":%d,\"r3\":%d,\"lr_pos\":%d,"
         "\"good1\":%u,\"good2\":%u,\"rx1\":%u,\"rx2\":%u,"
         "\"good1_hz\":%.1f,\"good2_hz\":%.1f,\"rx1_bps\":%.1f,\"rx2_bps\":%.1f,\"out_hz\":%.1f,"
-        "\"tx_hz\":%.1f,\"tx_ok\":%u,\"tx_err\":%u,\"active_src\":\"%s\","
+        "\"tx_hz\":%.1f,\"tx_ok\":%u,\"tx_err\":%u,"
+        "\"adb_ge_hz\":%.1f,\"adb_ge_dt_ms\":%.1f,\"adb_ge_count\":%u,"
+        "\"rcmsg_tx_hz\":%.1f,\"rcmsg_tx_dt_ms\":%.1f,\"rcmsg_tx_count\":%u,"
+        "\"active_src\":\"%s\","
         "\"app_rc_good\":%u,\"app_rc_rx\":%u,\"app_rc_age_ms\":%lld,"
         "\"rc_input_primary\":\"%s\","
         "\"type\":\"%s\",\"ts_us\":%lld}\n",
@@ -1062,7 +1091,10 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
         st.l1, st.l2, st.l3, st.r1, st.r2, st.r3, g_lr_pos,
         g1, g2, rx1, rx2,
         good1_hz, good2_hz, rx1_bps, rx2_bps, out_hz,
-        tx_hz, tx_ok, tx_err, active_src ? active_src : "none",
+        tx_hz, tx_ok, tx_err,
+        adb_ge_hz, adb_ge_dt_us / 1000.0, adb_ge,
+        rcmsg_tx_hz, rcmsg_tx_dt_us / 1000.0, rcmsg_tx,
+        active_src ? active_src : "none",
         app_good, app_rx,
         (long long)((app_age_us == INT64_MAX) ? -1 : app_age_us / 1000),
         app_primary ? "android_rcm1" : "uart_fallback",
@@ -1883,7 +1915,9 @@ int main(int argc, char **argv)
         int64_t ageApp = (sapp.type == RC_NONE) ? INT64_MAX : n - lapp;
         int64_t ageAdbPub = (ladbpub == 0) ? INT64_MAX : n - ladbpub;
         bool appFresh = (sapp.type != RC_NONE) && (ageApp <= 80000LL);
-        bool adbFresh = appFresh && (ageAdbPub <= 80000LL);
+        bool adbPrimary = g_adb_rc_primary.load(std::memory_order_acquire);
+        bool adbFresh = (sapp.type != RC_NONE) &&
+                        (ageAdbPub <= ADB_RC_GETEVENT_FRESH_US || ageApp <= ADB_RC_GETEVENT_FRESH_US);
         bool p20Fresh = (s20.type != RC_NONE) && (age20 <= RC_STALE_US);
         bool p0Fresh = (s0.type != RC_NONE) && (age0 <= RC_STALE_US);
 
@@ -1895,7 +1929,8 @@ int main(int argc, char **argv)
         rc_state_t merged;
         rc_merge(&s20, age20, &s0, age0, RC_STALE_US, &merged);
         rc_state_t m;
-        bool preferApp = g_adb_rc_primary.load(std::memory_order_acquire) && adbFresh;
+        bool preferApp = adbPrimary && adbFresh;
+        bool rcmsgFresh = preferApp || appFresh;
         if (preferApp) {
             m = sapp;      /* V3s ADB primary: getevent+40007 压过串口, 避免飞线依赖 */
         } else if (serialActive) {
@@ -1911,25 +1946,33 @@ int main(int argc, char **argv)
                 // App 融合路径无串口事件驱动, 必须由主循环推进 latch 并按 interval 发送 rcmsg。
                 advance_output_latches(m);
             }
-            // 状态文件 (供 web_server /api/rc)
-            const char *activeSrc = "android_rcm1";
-            if (preferApp) activeSrc = "v3s_adb_rc";
-            if (serialActive) activeSrc = rc_fused_source_name(p20Fresh, p0Fresh, d.active);
-            if (preferApp) activeSrc = "v3s_adb_rc";
-            write_state_file(m, activeSrc, g20, g0, rx20, rx0,
-                             appGood, appRx, ageApp, appFresh, now_us());
-            if ((!serialActive || preferApp) && appFresh) {
+            // 状态文件供 web/API 轮询，限频写入，避免慢文件 I/O 拖低 rcmsg 发送节拍。
+            static int64_t last_state_write_us = 0;
+            if (n - last_state_write_us >= 100000LL) {
+                last_state_write_us = n;
+                const char *activeSrc = "android_rcm1";
+                if (preferApp) activeSrc = "v3s_adb_rc";
+                if (serialActive) activeSrc = rc_fused_source_name(p20Fresh, p0Fresh, d.active);
+                if (preferApp) activeSrc = "v3s_adb_rc";
+                write_state_file(m, activeSrc, g20, g0, rx20, rx0,
+                                 appGood, appRx, ageApp, rcmsgFresh, n);
+            }
+            if ((!serialActive || preferApp) && rcmsgFresh) {
                 uint32_t seq = g_rcmsg_seq.fetch_add(1, std::memory_order_relaxed) + 1;
                 send_rcmsg(rcmsg_fd, rcmsg_dst, m, true, seq, n);
             }
         } else {
             // 无有效 RC: 写空状态防旧数据残留。
-            static const char no_rc[] = "{\"error\":\"no RC data\",\"rx1\":%u,\"rx2\":%u}\n";
-            char buf[128];
-            int w = snprintf(buf, sizeof(buf), no_rc, rx20, rx0);
-            write_text_atomic("/tmp/rc_state.json", buf, w);
-            write_text_atomic("/var/log/rc_state.json", buf, w);
-            if (rx20 > 0 || rx0 > 0 || appFresh) {
+            static int64_t last_no_rc_write_us = 0;
+            if (n - last_no_rc_write_us >= 100000LL) {
+                last_no_rc_write_us = n;
+                static const char no_rc[] = "{\"error\":\"no RC data\",\"rx1\":%u,\"rx2\":%u}\n";
+                char buf[128];
+                int w = snprintf(buf, sizeof(buf), no_rc, rx20, rx0);
+                write_text_atomic("/tmp/rc_state.json", buf, w);
+                write_text_atomic("/var/log/rc_state.json", buf, w);
+            }
+            if (rx20 > 0 || rx0 > 0 || rcmsgFresh) {
                 uint32_t seq = g_rcmsg_seq.fetch_add(1, std::memory_order_relaxed) + 1;
                 send_rcmsg(rcmsg_fd, rcmsg_dst, m, false, seq, n);
             }
