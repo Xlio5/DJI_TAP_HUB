@@ -685,23 +685,17 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var rcL3 by remember { mutableStateOf(0) }; var rcR1 by remember { mutableStateOf(0) }
     var rcR2 by remember { mutableStateOf(0) }; var rcR3 by remember { mutableStateOf(0) }
     var rcType by remember { mutableStateOf("") }
-    var v3sRcMsgCount by remember { mutableIntStateOf(0) }
+    val v3sRcMsgPump = remember { RcMsgUiPump<RcMsg.Data>() }
     var v3sRcMsgHz by remember { mutableStateOf(0f) }
     var v3sGood1Hz by remember { mutableStateOf(0f) }
     var v3sGood2Hz by remember { mutableStateOf(0f) }
     val currentRcInputMode by rememberUpdatedState(rcInputMode)
 
     LaunchedEffect(vpnRunning) {
-        var lastCount = v3sRcMsgCount
-        var lastAt = System.currentTimeMillis()
         while (vpnRunning) {
             delay(1000L)
-            val now = System.currentTimeMillis()
-            val dtMs = (now - lastAt).coerceAtLeast(1L)
-            val count = v3sRcMsgCount
-            v3sRcMsgHz = ((count - lastCount).coerceAtLeast(0) * 1000f) / dtMs
-            lastCount = count
-            lastAt = now
+            v3sRcMsgHz = v3sRcMsgPump.sampleReceiveHz()
+            if (v3sRcMsgHz > 0.05f) AppLog.d("RcMsg", "V3S rcmsg rx %.1fHz".format(v3sRcMsgHz))
         }
         v3sRcMsgHz = 0f
     }
@@ -734,6 +728,23 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         rcL1 = data.l1; rcL2 = data.l2; rcL3 = data.l3
         rcR1 = data.r1; rcR2 = data.r2; rcR3 = data.r3
         rcType = type
+    }
+
+    LaunchedEffect(vpnRunning, rcInputMode) {
+        while (vpnRunning) {
+            val data = v3sRcMsgPump.takeLatestForUi()
+            if (data != null) {
+                // UI 只消费最新帧: 避免接收线程每个 UDP 包直接写 Compose state 导致主线程卡顿。
+                if (currentRcInputMode == RcInputMode.V3S_RCMSG) {
+                    applyRcData(data, "V3S-RCMSG")
+                } else {
+                    // 安卓融合模式只更新 CH7-16, 摇杆 CH1-6 仍用本地融合即时。
+                    rcConnected = true
+                    rcChs = rcChannelsForIncomingData(rcChs, data.chs, currentRcInputMode, "V3S-RCMSG")
+                }
+            }
+            delay(20L)
+        }
     }
 
     LaunchedEffect(serviceFusedRcData, rcInputMode) {
@@ -900,15 +911,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         sock.receive(pkt)
                         val data = RcMsg.parse(pkt.data.copyOf(pkt.length))
                         if (data != null) {
-                            v3sRcMsgCount++
-                            // V3s 回传含按键映射后的实际 CH 输出 (CH7-16: rec→CH8, mode→CH7, dial→CH12 等, 固件 src_value 映射)。
-                            if (currentRcInputMode == RcInputMode.V3S_RCMSG) {
-                                applyRcData(data, "V3S-RCMSG")
-                            } else {
-                                // 安卓融合模式只更新 CH7-16, 摇杆 CH1-6 仍用本地融合即时。
-                                rcConnected = true
-                                rcChs = rcChannelsForIncomingData(rcChs, data.chs, currentRcInputMode, "V3S-RCMSG")
-                            }
+                            v3sRcMsgPump.notePacket(data)
                         }
                     } catch (_: java.net.SocketTimeoutException) {
                         // 空闲超时, 继续等
