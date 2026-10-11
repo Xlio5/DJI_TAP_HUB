@@ -814,13 +814,17 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
                 std::string line = linebuf.substr(0, pos);
                 linebuf.erase(0, pos + 1);
                 GeteventAbsEvent ev;
-                if (!parse_getevent_abs_line(line, &ev)) continue;
+                bool is_axis = parse_getevent_abs_line(line, &ev);
+                bool is_key = !is_axis && parse_getevent_key_line(line, &ev);
+                if (!is_axis && !is_key) continue;
                 rc_state_t st;
                 {
                     std::lock_guard<std::mutex> lock(g_mtx);
                     st = g_adb_getevent_rc;
                 }
-                if (!apply_getevent_axis(ev, device, &st)) continue;
+                bool applied = is_axis ? apply_getevent_axis(ev, device, &st)
+                                       : apply_getevent_key(ev, device, &st);
+                if (!applied) continue;
                 {
                     std::lock_guard<std::mutex> lock(g_mtx);
                     int64_t event_us = now_us();
@@ -887,7 +891,9 @@ static void adb_40007_thread(const std::string host, uint16_t port)
                 rc_state_t st;
                 if (adb_decode_40007_packet(pk, &st)) {
                     std::lock_guard<std::mutex> lock(g_mtx);
-                    g_adb_40007_rc = st;
+                    rc_state_t merged;
+                    adb_rc_merge_40007_state(&g_adb_40007_rc, &st, &merged);
+                    g_adb_40007_rc = merged;
                     g_adb_40007_good++;
                     g_adb_40007_last_us = now_us();
                 }
@@ -908,6 +914,7 @@ static void adb_40007_thread(const std::string host, uint16_t port)
 
 static void adb_rc_publish_thread()
 {
+    AdbRcButtonHold button_hold;
     while (!g_stop.load(std::memory_order_relaxed)) {
         ::usleep(20000);
         int64_t n = now_us();
@@ -931,9 +938,11 @@ static void adb_rc_publish_thread()
         int64_t p4_age = (p4.type == RC_NONE || p4_last == 0) ? INT64_MAX : n - p4_last;
         adb_rc_fuse(&ge, ge_age, &p4, p4_age, &fused);
         if (fused.type == RC_NONE) continue;
+        rc_state_t stretched;
+        adb_rc_stretch_buttons(&fused, n, &button_hold, &stretched);
         {
             std::lock_guard<std::mutex> lock(g_mtx);
-            g_adb_rc = fused;
+            g_adb_rc = stretched;
             g_adb_good = ge_good + p4_good;
             g_adb_last_us = n;
             g_adb_publish_last_us = n;

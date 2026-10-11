@@ -52,6 +52,38 @@ int main()
     expectEq(fused.rec, 1, "40007 supplies rec");
     expectEq(fused.c1, 1, "40007 supplies C1");
 
+    ge.rec = 1;
+    p40007.rec = 0;
+    adb_rc_fuse(&ge, 20000, &p40007, 20000, &fused);
+    expectEq(fused.rec, 1, "getevent REC is ORed with 40007");
+    ge.rec = 0;
+    p40007.rec = 1;
+
+    rc_state_t special = make_state(RC_SPECIAL, 300);
+    special.mode = 'F';
+    special.shot = 1;
+    rc_state_t merged40007{};
+    adb_rc_merge_40007_state(&p40007, &special, &merged40007);
+    expectEq(merged40007.type, RC_AE, "special packet keeps AE extended state type");
+    expectEq(merged40007.c1, 1, "special packet does not clear AE C1");
+    expectEq(merged40007.dial, 77, "special packet does not clear AE dial");
+    expectEq(merged40007.shot, 1, "special packet updates common shot");
+    expectEq(merged40007.mode, 'F', "special packet updates common mode");
+
+    AdbRcButtonHold buttonHold{};
+    rc_state_t pressed = p40007;
+    pressed.c1 = 1;
+    rc_state_t released = p40007;
+    released.c1 = 0;
+    rc_state_t stretched{};
+    adb_rc_stretch_buttons(&pressed, 1000000, &buttonHold, &stretched);
+    expectEq(stretched.c1, 1, "pressed button is immediate");
+    adb_rc_stretch_buttons(&released, 1050000, &buttonHold, &stretched);
+    expectEq(stretched.c1, 1, "short button pulse is held for UI");
+    adb_rc_stretch_buttons(&released, 1000000 + ADB_RC_BUTTON_HOLD_US + 1,
+                           &buttonHold, &stretched);
+    expectEq(stretched.c1, 0, "button releases after minimum hold");
+
     adb_rc_fuse(&ge, ADB_RC_GETEVENT_FRESH_US + 1, &p40007, 20000, &fused);
     expectEq(fused.ch[0], 200, "stale getevent falls back to 40007 axis");
     expectEq(fused.ch[5], 205, "40007 fallback supplies all axes");

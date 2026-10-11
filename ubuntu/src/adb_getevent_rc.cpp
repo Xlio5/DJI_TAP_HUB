@@ -121,6 +121,34 @@ bool parse_getevent_abs_line(const std::string &line, GeteventAbsEvent *event)
     return true;
 }
 
+bool parse_getevent_key_line(const std::string &line, GeteventAbsEvent *event)
+{
+    if (!event || line.find("EV_KEY") == std::string::npos) return false;
+    *event = GeteventAbsEvent{};
+    std::istringstream in(line);
+    std::string tok;
+    while (in >> tok) {
+        if (!tok.empty() && tok[0] == '/' && tok.find("/dev/input/event") == 0) {
+            event->device = tok;
+            if (!event->device.empty() && event->device.back() == ':') event->device.pop_back();
+        }
+        if (tok != "EV_KEY") continue;
+        std::string value;
+        if (!(in >> event->code >> value)) return false;
+        if (event->code != "BTN_TL" && event->code != "BTN_TR") return false;
+        if (value == "DOWN") event->value = 1;
+        else if (value == "UP") event->value = 0;
+        else {
+            bool ok = false;
+            event->value = parse_hex_i32(value, &ok);
+            if (!ok) return false;
+            event->value = event->value != 0 ? 1 : 0;
+        }
+        return true;
+    }
+    return false;
+}
+
 int16_t normalize_getevent_axis(const std::string &code, int32_t value)
 {
     if (code == "ABS_Z" || code == "ABS_RZ") {
@@ -145,5 +173,18 @@ bool apply_getevent_axis(const GeteventAbsEvent &event, const std::string &axis_
     state->type = RC_APP_FUSED;
     if (state->mode == '\0') state->mode = '?';
     state->ch[idx] = normalize_getevent_axis(event.code, event.value);
+    return true;
+}
+
+bool apply_getevent_key(const GeteventAbsEvent &event, const std::string &key_device,
+                        rc_state_t *state)
+{
+    if (!state) return false;
+    if (!event.device.empty() && event.device != key_device) return false;
+    if (event.code == "BTN_TL") state->rec = event.value != 0;
+    else if (event.code == "BTN_TR") state->shot = event.value != 0;
+    else return false;
+    state->type = RC_APP_FUSED;
+    if (state->mode == '\0') state->mode = '?';
     return true;
 }

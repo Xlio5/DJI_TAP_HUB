@@ -60,6 +60,19 @@ int main()
     expect(!parse_getevent_abs_line("[ 1235.044742] /dev/input/event4: EV_SYN       SYN_REPORT           00000000", &ev),
            "ignore non-ABS line");
 
+    expect(parse_getevent_key_line("[ 1235.044742] /dev/input/event4: EV_KEY       BTN_TL                DOWN", &ev),
+           "parse REC key down");
+    expect(apply_getevent_key(ev, "/dev/input/event4", &st), "apply REC key down");
+    expectEq(st.rec, 1, "BTN_TL maps to REC");
+    expect(parse_getevent_key_line("[ 1235.064742] /dev/input/event4: EV_KEY       BTN_TR                00000001", &ev),
+           "parse SHOT numeric down");
+    expect(apply_getevent_key(ev, "/dev/input/event4", &st), "apply SHOT key down");
+    expectEq(st.shot, 1, "BTN_TR maps to SHOT");
+    expect(parse_getevent_key_line("[ 1235.084742] /dev/input/event4: EV_KEY       BTN_TL                UP", &ev),
+           "parse REC key up");
+    expect(apply_getevent_key(ev, "/dev/input/event4", &st), "apply REC key up");
+    expectEq(st.rec, 0, "REC releases on UP");
+
     expect(parse_getevent_abs_line("[ 4088.971127] EV_ABS       ABS_RX               ffffdf3a", &ev),
            "parse device-filtered getevent line without device prefix");
     expect(ev.device.empty(), "device-filtered getevent line has no device prefix");
