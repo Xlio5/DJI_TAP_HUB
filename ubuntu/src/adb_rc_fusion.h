@@ -19,6 +19,11 @@ struct AdbRcEdgeQueue {
     bool has_last = false;
 };
 
+struct AdbRcButtonTracker {
+    rc_state_t last{};
+    bool has_last = false;
+};
+
 int64_t adb_rc_getevent_effective_age_us(bool connected, bool has_state,
                                          int64_t now_us, int64_t last_us);
 
@@ -30,3 +35,5 @@ void adb_rc_merge_40007_state(const rc_state_t *previous,
                               const rc_state_t *incoming, rc_state_t *out);
 bool adb_rc_queue_button_change(AdbRcEdgeQueue *queue, const rc_state_t *state);
 bool adb_rc_pop_button_change(AdbRcEdgeQueue *queue, rc_state_t *state);
+bool adb_rc_track_button_change(AdbRcButtonTracker *tracker,
+                                const rc_state_t *state);

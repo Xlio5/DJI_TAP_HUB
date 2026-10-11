@@ -94,6 +94,20 @@ static bool buttons_equal(const rc_state_t &a, const rc_state_t &b)
     return true;
 }
 
+bool adb_rc_track_button_change(AdbRcButtonTracker *tracker,
+                                const rc_state_t *state)
+{
+    if (!tracker || !state) return false;
+    if (!tracker->has_last) {
+        tracker->last = *state;
+        tracker->has_last = true;
+        return false;
+    }
+    const bool changed = !buttons_equal(tracker->last, *state);
+    tracker->last = *state;
+    return changed;
+}
+
 bool adb_rc_queue_button_change(AdbRcEdgeQueue *queue, const rc_state_t *state)
 {
     if (!queue || !state) return false;

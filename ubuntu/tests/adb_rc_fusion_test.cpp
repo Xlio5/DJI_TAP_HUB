@@ -93,6 +93,19 @@ int main()
     expectEq(edge.rec, 0, "REC up remains second");
     expect(!adb_rc_pop_button_change(&edgeQueue, &edge), "edge queue is drained");
 
+    AdbRcButtonTracker tracker{};
+    released.c3 = 0;
+    pressed = released;
+    pressed.c3 = 1;
+    expect(!adb_rc_track_button_change(&tracker, &released),
+           "initial state establishes tracker baseline");
+    expect(adb_rc_track_button_change(&tracker, &pressed),
+           "C3 press is a direct edge");
+    expect(!adb_rc_track_button_change(&tracker, &pressed),
+           "repeated pressed state is not a direct edge");
+    expect(adb_rc_track_button_change(&tracker, &released),
+           "C3 release is a direct edge");
+
     adb_rc_fuse(&ge, ADB_RC_GETEVENT_FRESH_US + 1, &p40007, 20000, &fused);
     expectEq(fused.ch[0], 200, "stale getevent falls back to 40007 axis");
     expectEq(fused.ch[5], 205, "40007 fallback supplies all axes");
