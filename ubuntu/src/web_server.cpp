@@ -459,7 +459,7 @@ static Config loadConfig(bool* outChanged = nullptr) {
     return cfg;
 }
 
-static void saveConfig(const Config& cfg) {
+static bool saveConfig(const Config& cfg) {
     // Write config to SPI Flash @0xFD000 (persistent across reboots)
     std::stringstream ss;
     ss << "{\n";
@@ -501,10 +501,10 @@ static void saveConfig(const Config& cfg) {
     std::string json = ss.str();
     if (json.size() > CFG_MAX - 2) {
         std::cerr << "[cfg] ERROR: config too large (" << json.size() << " > " << (CFG_MAX-2) << ")" << std::endl;
-        return;
+        return false;
     }
     int fd = ::open(CFG_DEV, O_WRONLY);
-    if (fd < 0) { std::cerr << "[cfg] ERROR: cannot open " << CFG_DEV << std::endl; return; }
+    if (fd < 0) { std::cerr << "[cfg] ERROR: cannot open " << CFG_DEV << std::endl; return false; }
     uint16_t len = (uint16_t)json.size();
     ::lseek(fd, CFG_OFFSET, SEEK_SET);
     // H: 检查写返回值, 写失败报错 (SPI flash 磨损/坏块)
@@ -512,9 +512,25 @@ static void saveConfig(const Config& cfg) {
     ssize_t w2 = ::write(fd, json.c_str(), len);
     ::close(fd);
     sync();
-    if (w1 != 2 || w2 != (ssize_t)len)
+    if (w1 != 2 || w2 != (ssize_t)len) {
         std::cerr << "[cfg] WARN: 配置写入不完整 (" << w1 << "+" << w2 << "/" << len << ")" << std::endl;
+        return false;
+    }
+    int verifyFd = ::open(CFG_DEV, O_RDONLY);
+    uint16_t verifyLen = 0;
+    std::string verifyJson(json.size(), '\0');
+    bool verified = verifyFd >= 0 &&
+        ::lseek(verifyFd, CFG_OFFSET, SEEK_SET) >= 0 &&
+        ::read(verifyFd, &verifyLen, 2) == 2 && verifyLen == len &&
+        ::read(verifyFd, &verifyJson[0], verifyLen) == verifyLen &&
+        verifyJson == json;
+    if (verifyFd >= 0) ::close(verifyFd);
+    if (!verified) {
+        std::cerr << "[cfg] ERROR: 配置写入后读回校验失败" << std::endl;
+        return false;
+    }
     std::cout << "[cfg] saved " << len << " bytes to " << CFG_DEV << " @0x" << std::hex << CFG_OFFSET << std::dec << std::endl;
+    return true;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1357,11 +1373,12 @@ static Response handleRequest(const Request& req) {
                 resp.body = R"({"ok":false,"error":"invalid rc input mode"})";
             } else {
                 cfg.rcInputMode = mode;
-                saveConfig(cfg);
+                bool saved = saveConfig(cfg);
                 JsonObj obj;
-                obj.pair("ok", JsonValue::boolean(true));
+                obj.pair("ok", JsonValue::boolean(saved));
                 obj.pair("mode", JsonValue::string(cfg.rcInputMode));
                 resp.body = obj.done();
+                if (!saved) resp.code = 500;
             }
         } else if (p == "/api/camera/add") {
             Camera c;

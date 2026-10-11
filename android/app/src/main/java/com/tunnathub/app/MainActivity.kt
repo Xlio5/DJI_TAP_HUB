@@ -808,7 +808,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             } catch (e: Exception) {
                 android.util.Log.e("TunNatHub", "API POST $path 失败: ${e.javaClass.simpleName} ${e.message}")
             }
-            onResult?.invoke(ok)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                onResult?.invoke(ok)
+            }
         }
     }
 
@@ -884,6 +886,14 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         needVpnReconnect = true
                         AppLog.w("TunNatHub", "网段不同步! V3s=$rs/$rp → 自动同步")
                     }
+                }
+                val v3sMode = Regex("\"rc_input_mode\"\\s*:\\s*\"([^\"]+)\"")
+                    .find(text)?.groupValues?.get(1)?.let(RcInputMode::fromPref)
+                if (v3sMode != null && v3sMode != rcInputMode) {
+                    rcInputMode = v3sMode
+                    prefs.edit().putString(RcInputMode.PREF_KEY, v3sMode.prefValue).apply()
+                    TunNatVpnService.requestRcFusionRestart()
+                    AppLog.i("RcInput", "已同步 V3s 输入链路: ${v3sMode.prefValue}")
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -2077,13 +2087,23 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                             color = if (rcInputMode == mode) Color(0xFF0EA5E9) else Color(0xFF1E293B),
                                             shape = RoundedCornerShape(6.dp),
                                             onClick = {
+                                                val previousMode = rcInputMode
                                                 rcInputMode = mode
                                                 prefs.edit().putString(RcInputMode.PREF_KEY, mode.prefValue).apply()
                                                 TunNatVpnService.requestRcFusionRestart()
                                                 if (mode == RcInputMode.ANDROID_FUSION) {
                                                     (ctx as? MainActivity)?.ensureShizukuPermission()
                                                 }
-                                                AppLog.i("RcInput", "输入链路切换: ${mode.prefValue}")
+                                                apiPost("/api/rc/input", "{\"mode\":\"${mode.prefValue}\"}") { ok ->
+                                                    if (ok) {
+                                                        AppLog.i("RcInput", "V3s 输入链路切换: ${mode.prefValue}")
+                                                    } else {
+                                                        rcInputMode = previousMode
+                                                        prefs.edit().putString(RcInputMode.PREF_KEY, previousMode.prefValue).apply()
+                                                        TunNatVpnService.requestRcFusionRestart()
+                                                        AppLog.e("RcInput", "V3s 输入链路切换失败，已恢复 ${previousMode.prefValue}")
+                                                    }
+                                                }
                                             }
                                         ) {
                                             Text(

@@ -42,6 +42,7 @@ extern "C" {
 #include "adb_client.h"
 #include "adb_getevent_rc.h"
 #include "adb_rc_fusion.h"
+#include "rc_input_mode.h"
 #include "rc_source_select.h"
 
 // 自定义波特率 (termios2 BOTHER): 标准 termios 表没有 100000/400000/420000。
@@ -71,10 +72,14 @@ struct DjiPort {
 
 static DjiPort g_p20;      // ttyS1 @921600
 static DjiPort g_p0;       // ttyS2 @115200
-static rc_state_t g_app_rc; // App 侧 getevent+40007 融合后的 RCM1 状态
-static uint32_t g_app_good = 0;
-static uint32_t g_app_rx = 0;
-static int64_t g_app_last_us = 0;
+static rc_state_t g_android_rc;
+static uint32_t g_android_good = 0;
+static uint32_t g_android_rx = 0;
+static int64_t g_android_last_us = 0;
+static rc_state_t g_adb_rc;
+static uint32_t g_adb_good = 0;
+static uint32_t g_adb_rx = 0;
+static int64_t g_adb_last_us = 0;
 static rc_state_t g_adb_getevent_rc;
 static rc_state_t g_adb_40007_rc;
 static uint32_t g_adb_getevent_good = 0;
@@ -90,6 +95,7 @@ static std::atomic<int64_t> g_rcmsg_tx_last_us{0};
 static std::atomic<int64_t> g_rcmsg_tx_dt_us{0};
 static std::mutex g_mtx;
 static std::atomic<bool> g_stop{false};
+static std::atomic<RcInputMode> g_rc_input_mode{RcInputMode::V3sAdb};
 static std::atomic<bool> g_crsf_stop{false};   /* 独立控制 CRSF 回传线程 (t3), 不干扰 t1/t2 */
 static std::atomic<bool> g_bridge_stop{false}; /* 独立控制 bridge 下行线程 (t4), 避免与 t3 的 g_crsf_stop 互相干扰 */
 
@@ -744,12 +750,12 @@ static void app_rc_thread()
             break;
         }
         g_mtx.lock();
-        g_app_rx += (uint32_t)n;
+        g_android_rx += (uint32_t)n;
         rc_state_t st;
         if (n == (ssize_t)sizeof(msg) && rcmsg_to_state(msg, &st)) {
-            g_app_rc = st;
-            g_app_good++;
-            g_app_last_us = now_us();
+            g_android_rc = st;
+            g_android_good++;
+            g_android_last_us = now_us();
         }
         g_mtx.unlock();
     }
@@ -800,7 +806,7 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
             if (chunk.empty()) continue;
             {
                 std::lock_guard<std::mutex> lock(g_mtx);
-                g_app_rx += (uint32_t)chunk.size();
+                g_adb_rx += (uint32_t)chunk.size();
             }
             linebuf.append(chunk);
             size_t pos;
@@ -869,7 +875,7 @@ static void adb_40007_thread(const std::string host, uint16_t port)
             len += copy;
             {
                 std::lock_guard<std::mutex> lock(g_mtx);
-                g_app_rx += (uint32_t)chunk.size();
+                g_adb_rx += (uint32_t)chunk.size();
             }
 
             int off = 0;
@@ -927,9 +933,9 @@ static void adb_rc_publish_thread()
         if (fused.type == RC_NONE) continue;
         {
             std::lock_guard<std::mutex> lock(g_mtx);
-            g_app_rc = fused;
-            g_app_good = ge_good + p4_good;
-            g_app_last_us = n;
+            g_adb_rc = fused;
+            g_adb_good = ge_good + p4_good;
+            g_adb_last_us = n;
             g_adb_publish_last_us = n;
         }
     }
@@ -1026,7 +1032,7 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
                              uint32_t g1, uint32_t g2,
                              uint32_t rx1, uint32_t rx2,
                              uint32_t app_good, uint32_t app_rx,
-                             int64_t app_age_us, bool app_primary,
+                             int64_t app_age_us, RcInputMode input_mode,
                              int64_t ts_us)
 {
     uint16_t ch[CH_COUNT];
@@ -1088,7 +1094,7 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
         "\"rcmsg_tx_hz\":%.1f,\"rcmsg_tx_dt_ms\":%.1f,\"rcmsg_tx_count\":%u,"
         "\"active_src\":\"%s\","
         "\"app_rc_good\":%u,\"app_rc_rx\":%u,\"app_rc_age_ms\":%lld,"
-        "\"rc_input_primary\":\"%s\","
+        "\"rc_input_mode\":\"%s\",\"rc_input_primary\":\"%s\","
         "\"type\":\"%s\",\"ts_us\":%lld}\n",
         ch[0], ch[1], ch[2], ch[3], ch[4], ch[5], ch[6], ch[7],
         ch[8], ch[9], ch[10], ch[11], ch[12], ch[13], ch[14], ch[15],
@@ -1105,7 +1111,7 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
         active_src ? active_src : "none",
         app_good, app_rx,
         (long long)((app_age_us == INT64_MAX) ? -1 : app_age_us / 1000),
-        app_primary ? "android_rcm1" : "uart_fallback",
+        rc_input_mode_name(input_mode), active_src ? active_src : "none",
         rc_type_name(st.type),
         (long long)ts_us);
 
@@ -1304,6 +1310,7 @@ static void out_send(const rc_state_t &m)
 /* 输入事件驱动输出: 921600 在 50ms 窗口内优先；超时后 115200 接管。 */
 static void output_from_input_event(DjiPort *p)
 {
+    if (g_rc_input_mode.load(std::memory_order_acquire) != RcInputMode::V3sSerial) return;
     int outFd = g_out_fd.load(std::memory_order_relaxed);
     int rcFd = g_rcmsg_fd.load(std::memory_order_relaxed);
     if (outFd < 0 && rcFd < 0) return;   // C1: atomic load
@@ -1714,6 +1721,23 @@ static bool load_rc_output_cfg(char &mode, int &baud, bool &sbus_std)
     return found;
 }
 
+static RcInputMode load_rc_input_mode()
+{
+    int fd = ::open("/dev/mtdblock0", O_RDONLY);
+    if (fd < 0) return RcInputMode::V3sAdb;
+    uint16_t len = 0;
+    ::lseek(fd, 0xFD000, SEEK_SET);
+    if (::read(fd, &len, 2) != 2 || len == 0 || len > 0x3000) {
+        ::close(fd);
+        return RcInputMode::V3sAdb;
+    }
+    std::string json((size_t)len, '\0');
+    ssize_t got = ::read(fd, &json[0], len);
+    ::close(fd);
+    if (got != (ssize_t)len) return RcInputMode::V3sAdb;
+    return parse_rc_input_mode(cfg_json_str(json, "rc_input_mode"));
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // main
 // ═══════════════════════════════════════════════════════════════════════
@@ -1790,6 +1814,9 @@ int main(int argc, char **argv)
     g_out_baud.store(out_baud);   /* 先修复零值再赋值 */  // C1: atomic store
     g_crsf_telem = crsf_telem;
     g_adb_rc_primary.store(adb_rc_primary, std::memory_order_release);
+    g_rc_input_mode.store(load_rc_input_mode(), std::memory_order_release);
+    std::printf("[dji_rc] RC input mode: %s\n",
+                rc_input_mode_name(g_rc_input_mode.load(std::memory_order_acquire)));
 
     /* bridge 模式: 强制 CRSF 输出 (UART0 双向 CRSF, 参数帧透明转发) */
     if (g_crsf_bridge) {
@@ -1812,7 +1839,7 @@ int main(int argc, char **argv)
                     adb_getevent_enabled ? 1 : 0, adb_40007_enabled ? 1 : 0);
     }
     if (!app_rc_enabled) {
-        std::printf("[dji_rc] app_rc UDP input disabled (--no-app-rc)\n");
+        std::printf("[dji_rc] --no-app-rc 已兼容保留；Android UDP 采集器以热切换待机方式运行\n");
     }
 
     if (!selftest()) return 1;
@@ -1871,7 +1898,7 @@ int main(int argc, char **argv)
     crsf_params_init();   /* 初始化 CRSF 参数表 (Device_Ping 响应用) */
     if (g_p20.fd >= 0) t1 = std::thread(rx_thread, &g_p20);
     if (g_p0.fd  >= 0) t2 = std::thread(rx_thread, &g_p0);
-    if (app_rc_enabled) t_app = std::thread(app_rc_thread);
+    t_app = std::thread(app_rc_thread);
     if (adb_rc) {
         if (adb_getevent_enabled) {
             t_adb_ge = std::thread(adb_getevent_thread, std::string(adb_host),
@@ -1906,66 +1933,64 @@ int main(int argc, char **argv)
         // int64_t now_lua = now_us();
         // if (now_lua - last_lua >= 15000LL) { ... }
 
-        rc_state_t s20, s0, sapp;
-        uint32_t g20, g0, rx20, rx0, appGood, appRx;
-        int64_t l20, l0, lapp, ladbpub;
+        rc_state_t s20, s0, sandroid, sadb;
+        uint32_t g20, g0, rx20, rx0, androidGood, androidRx, adbGood, adbRx;
+        int64_t l20, l0, landroid, ladb;
 
         g_mtx.lock();
         s20 = g_p20.state; g20 = g_p20.good; rx20 = g_p20.rx_bytes; l20 = g_p20.last_us;
         s0  = g_p0.state;  g0  = g_p0.good;  rx0  = g_p0.rx_bytes;  l0  = g_p0.last_us;
-        sapp = g_app_rc; appGood = g_app_good; appRx = g_app_rx; lapp = g_app_last_us;
-        ladbpub = g_adb_publish_last_us;
+        sandroid = g_android_rc; androidGood = g_android_good;
+        androidRx = g_android_rx; landroid = g_android_last_us;
+        sadb = g_adb_rc; adbGood = g_adb_good; adbRx = g_adb_rx; ladb = g_adb_last_us;
         g_mtx.unlock();
 
         int64_t n = now_us();
         int64_t age20 = (s20.type == RC_NONE) ? INT64_MAX : n - l20;
         int64_t age0  = (s0.type  == RC_NONE) ? INT64_MAX : n - l0;
-        int64_t ageApp = (sapp.type == RC_NONE) ? INT64_MAX : n - lapp;
-        int64_t ageAdbPub = (ladbpub == 0) ? INT64_MAX : n - ladbpub;
-        bool appFresh = (sapp.type != RC_NONE) && (ageApp <= 80000LL);
-        bool adbPrimary = g_adb_rc_primary.load(std::memory_order_acquire);
-        bool adbFresh = (sapp.type != RC_NONE) &&
-                        (ageAdbPub <= ADB_RC_GETEVENT_FRESH_US || ageApp <= ADB_RC_GETEVENT_FRESH_US);
+        int64_t ageAndroid = (sandroid.type == RC_NONE) ? INT64_MAX : n - landroid;
+        int64_t ageAdb = (sadb.type == RC_NONE) ? INT64_MAX : n - ladb;
+        bool androidFresh = sandroid.type != RC_NONE && ageAndroid <= 80000LL;
+        bool adbFresh = sadb.type != RC_NONE && ageAdb <= ADB_RC_GETEVENT_FRESH_US;
         bool p20Fresh = (s20.type != RC_NONE) && (age20 <= RC_STALE_US);
         bool p0Fresh = (s0.type != RC_NONE) && (age0 <= RC_STALE_US);
 
-        /* 输入源: 串口 (UART1/2 DJI 遥控) 优先; 无串口 → App 融合 (adb getevent + 40007)。
-         * 老大定: 有串口用串口, 没串口默认 adb+40007, 输出源头唯一。 */
         RcSourceDecision d = rc_select_priority_source(s20, age20, s0, age0,
                                                        P20_PRIORITY_US, RC_STALE_US);
         bool serialActive = (d.active != RcActiveSource::None);
         rc_state_t merged;
         rc_merge(&s20, age20, &s0, age0, RC_STALE_US, &merged);
-        rc_state_t m;
-        bool preferApp = adbPrimary && adbFresh;
-        bool rcmsgFresh = preferApp || appFresh;
-        if (preferApp) {
-            m = sapp;      /* V3s ADB primary: getevent+40007 压过串口, 避免飞线依赖 */
-        } else if (serialActive) {
-            m = merged;   /* 串口有数据, 按 active 节拍使用 921600+115200 完整融合态 */
-        } else if (appFresh) {
-            m = sapp;      /* 无串口 → App RCM1 融合输入 (adb getevent + 40007) */
-        } else {
-            m = d.state;
+        RcInputMode inputMode = g_rc_input_mode.load(std::memory_order_acquire);
+        RcInputSource selected = select_rc_input(inputMode, androidFresh,
+                                                  serialActive, adbFresh);
+        rc_state_t m{};
+        const char *activeSrc = "none";
+        int64_t selectedAge = INT64_MAX;
+        uint32_t selectedGood = 0;
+        uint32_t selectedRx = 0;
+        if (selected == RcInputSource::Android) {
+            m = sandroid; activeSrc = "android_rcm1"; selectedAge = ageAndroid;
+            selectedGood = androidGood; selectedRx = androidRx;
+        } else if (selected == RcInputSource::Serial) {
+            m = merged; activeSrc = rc_fused_source_name(p20Fresh, p0Fresh, d.active);
+        } else if (selected == RcInputSource::Adb) {
+            m = sadb; activeSrc = "v3s_adb_rc"; selectedAge = ageAdb;
+            selectedGood = adbGood; selectedRx = adbRx;
         }
+        bool rcmsgFresh = selected != RcInputSource::None;
 
         if (m.type != RC_NONE) {
-            if (!serialActive || preferApp) {
-                // App 融合路径无串口事件驱动, 必须由主循环推进 latch 并按 interval 发送 rcmsg。
+            if (selected != RcInputSource::Serial) {
                 advance_output_latches(m);
             }
             // 状态文件供 web/API 轮询，限频写入，避免慢文件 I/O 拖低 rcmsg 发送节拍。
             static int64_t last_state_write_us = 0;
             if (n - last_state_write_us >= 100000LL) {
                 last_state_write_us = n;
-                const char *activeSrc = "android_rcm1";
-                if (preferApp) activeSrc = "v3s_adb_rc";
-                if (serialActive) activeSrc = rc_fused_source_name(p20Fresh, p0Fresh, d.active);
-                if (preferApp) activeSrc = "v3s_adb_rc";
                 write_state_file(m, activeSrc, g20, g0, rx20, rx0,
-                                 appGood, appRx, ageApp, rcmsgFresh, n);
+                                 selectedGood, selectedRx, selectedAge, inputMode, n);
             }
-            if ((!serialActive || preferApp) && rcmsgFresh) {
+            if (selected != RcInputSource::Serial && rcmsgFresh) {
                 uint32_t seq = g_rcmsg_seq.fetch_add(1, std::memory_order_relaxed) + 1;
                 send_rcmsg(rcmsg_fd, rcmsg_dst, m, true, seq, n);
             }
@@ -2002,6 +2027,14 @@ int main(int argc, char **argv)
         static int64_t last_cfg_check = 0;
         if (n - last_cfg_check > 2000000LL) {
             last_cfg_check = n;
+            RcInputMode nextInputMode = load_rc_input_mode();
+            RcInputMode oldInputMode = g_rc_input_mode.exchange(nextInputMode,
+                                                                 std::memory_order_acq_rel);
+            if (nextInputMode != oldInputMode) {
+                std::printf("[dji_rc] RC input mode changed: %s -> %s\n",
+                            rc_input_mode_name(oldInputMode),
+                            rc_input_mode_name(nextInputMode));
+            }
             char cm; int cb; bool cs;
             // DBG#baud: 记录 load_rc_output_cfg 读取结果, 定位热重配为何不触发
             bool cfgOk = load_rc_output_cfg(cm, cb, cs);
@@ -2082,8 +2115,9 @@ int main(int argc, char **argv)
             } else {
                 rc_state_to_kv(&m, line, sizeof(line));
             }
-            std::printf("[dji_rc] %s | g1=%u g2=%u app=%u primary=%s rx1=%u rx2=%u app_rx=%u\n",
-                        line, g20, g0, appGood, preferApp ? "v3s_adb" : (appFresh ? "app" : "uart"), rx20, rx0, appRx);
+            std::printf("[dji_rc] %s | g1=%u g2=%u input=%s source=%s rx1=%u rx2=%u selected_rx=%u\n",
+                        line, g20, g0, rc_input_mode_name(inputMode), activeSrc,
+                        rx20, rx0, selectedRx);
             if (debug_uart0 && (n - g_last_debug_us) >= 5000000LL) {
                 debug_log("[dji_rc][dbg] %s g1=%u g2=%u rx1=%u rx2=%u age1=%lld age2=%lld",
                           line, g20, g0, rx20, rx0, (long long)age20, (long long)age0);
