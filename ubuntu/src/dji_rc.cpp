@@ -1041,13 +1041,18 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
 
     static int64_t prev_us = 0;
     static uint32_t prev_g1 = 0, prev_g2 = 0, prev_rx1 = 0, prev_rx2 = 0, prev_tx_ok = 0;
-    static uint32_t prev_adb_ge = 0, prev_rcmsg_tx = 0;
+    static uint32_t prev_adb_ge = 0, prev_adb_40007 = 0, prev_rcmsg_tx = 0;
     static uint32_t out_count = 0;
     static double good1_hz = 0.0, good2_hz = 0.0, rx1_bps = 0.0, rx2_bps = 0.0, out_hz = 0.0, tx_hz = 0.0;
-    static double adb_ge_hz = 0.0, rcmsg_tx_hz = 0.0;
+    static double adb_ge_hz = 0.0, adb_40007_hz = 0.0, rcmsg_tx_hz = 0.0;
     uint32_t tx_ok = g_tx_ok.load();
     uint32_t tx_err = g_tx_err.load();
     uint32_t adb_ge = g_adb_getevent_events.load(std::memory_order_relaxed);
+    uint32_t adb_40007;
+    {
+        std::lock_guard<std::mutex> lock(g_mtx);
+        adb_40007 = g_adb_40007_good;
+    }
     uint32_t rcmsg_tx = g_rcmsg_tx_ok.load(std::memory_order_relaxed);
     int64_t adb_ge_dt_us = g_adb_getevent_dt_us.load(std::memory_order_relaxed);
     int64_t rcmsg_tx_dt_us = g_rcmsg_tx_dt_us.load(std::memory_order_relaxed);
@@ -1056,7 +1061,7 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
     if (prev_us == 0) {
         prev_us = ts_us;
         prev_g1 = g1; prev_g2 = g2; prev_rx1 = rx1; prev_rx2 = rx2; prev_tx_ok = tx_ok;
-        prev_adb_ge = adb_ge; prev_rcmsg_tx = rcmsg_tx;
+        prev_adb_ge = adb_ge; prev_adb_40007 = adb_40007; prev_rcmsg_tx = rcmsg_tx;
     } else {
         int64_t elapsed_us = ts_us - prev_us;
         if (elapsed_us >= 1000000LL) {
@@ -1068,10 +1073,11 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
             out_hz = out_count / sec;
             tx_hz = (tx_ok - prev_tx_ok) / sec;
             adb_ge_hz = (adb_ge - prev_adb_ge) / sec;
+            adb_40007_hz = (adb_40007 - prev_adb_40007) / sec;
             rcmsg_tx_hz = (rcmsg_tx - prev_rcmsg_tx) / sec;
             prev_us = ts_us;
             prev_g1 = g1; prev_g2 = g2; prev_rx1 = rx1; prev_rx2 = rx2; prev_tx_ok = tx_ok;
-            prev_adb_ge = adb_ge; prev_rcmsg_tx = rcmsg_tx;
+            prev_adb_ge = adb_ge; prev_adb_40007 = adb_40007; prev_rcmsg_tx = rcmsg_tx;
             out_count = 0;
         }
     }
@@ -1091,6 +1097,7 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
         "\"good1_hz\":%.1f,\"good2_hz\":%.1f,\"rx1_bps\":%.1f,\"rx2_bps\":%.1f,\"out_hz\":%.1f,"
         "\"tx_hz\":%.1f,\"tx_ok\":%u,\"tx_err\":%u,"
         "\"adb_ge_hz\":%.1f,\"adb_ge_dt_ms\":%.1f,\"adb_ge_count\":%u,"
+        "\"adb_40007_hz\":%.1f,\"adb_40007_count\":%u,"
         "\"rcmsg_tx_hz\":%.1f,\"rcmsg_tx_dt_ms\":%.1f,\"rcmsg_tx_count\":%u,"
         "\"active_src\":\"%s\","
         "\"app_rc_good\":%u,\"app_rc_rx\":%u,\"app_rc_age_ms\":%lld,"
@@ -1107,6 +1114,7 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
         good1_hz, good2_hz, rx1_bps, rx2_bps, out_hz,
         tx_hz, tx_ok, tx_err,
         adb_ge_hz, adb_ge_dt_us / 1000.0, adb_ge,
+        adb_40007_hz, adb_40007,
         rcmsg_tx_hz, rcmsg_tx_dt_us / 1000.0, rcmsg_tx,
         active_src ? active_src : "none",
         app_good, app_rx,

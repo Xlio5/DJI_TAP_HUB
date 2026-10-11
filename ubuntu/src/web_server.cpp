@@ -45,7 +45,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.80"   // 固件版本 — 三模式 RC 输入与 V3s 网络 ADB
+#define VERSION     "1.6.81"   // 固件版本 — V3s ADB getevent + 40007 融合
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
