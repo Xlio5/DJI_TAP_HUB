@@ -106,6 +106,15 @@ int main()
     expect(adb_rc_track_button_change(&tracker, &released),
            "C3 release is a direct edge");
 
+    expect(adb_rc_should_send_direct_edge(true, true, 4),
+           "active V3S ADB edge is sent directly");
+    expect(!adb_rc_should_send_direct_edge(false, true, 4),
+           "unchanged buttons do not send directly");
+    expect(!adb_rc_should_send_direct_edge(true, false, 4),
+           "inactive input mode does not send directly");
+    expect(!adb_rc_should_send_direct_edge(true, true, -1),
+           "invalid RCMSG socket does not send directly");
+
     adb_rc_fuse(&ge, ADB_RC_GETEVENT_FRESH_US + 1, &p40007, 20000, &fused);
     expectEq(fused.ch[0], 200, "stale getevent falls back to 40007 axis");
     expectEq(fused.ch[5], 205, "40007 fallback supplies all axes");

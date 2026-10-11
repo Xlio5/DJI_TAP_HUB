@@ -108,6 +108,12 @@ bool adb_rc_track_button_change(AdbRcButtonTracker *tracker,
     return changed;
 }
 
+bool adb_rc_should_send_direct_edge(bool button_changed,
+                                    bool v3s_adb_active, int rcmsg_fd)
+{
+    return button_changed && v3s_adb_active && rcmsg_fd >= 0;
+}
+
 bool adb_rc_queue_button_change(AdbRcEdgeQueue *queue, const rc_state_t *state)
 {
     if (!queue || !state) return false;

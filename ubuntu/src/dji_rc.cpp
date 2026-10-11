@@ -84,7 +84,7 @@ static int64_t g_adb_last_us = 0;
 static rc_state_t g_adb_getevent_rc;
 static rc_state_t g_adb_40007_rc;
 static AdbRcEdgeQueue g_adb_getevent_edge_queue;
-static AdbRcEdgeQueue g_adb_40007_edge_queue;
+static AdbRcButtonTracker g_adb_40007_button_tracker;
 static uint32_t g_adb_getevent_good = 0;
 static uint32_t g_adb_40007_good = 0;
 static int64_t g_adb_getevent_last_us = 0;
@@ -96,6 +96,11 @@ static std::atomic<bool> g_adb_getevent_connected{false};
 static std::atomic<uint32_t> g_rcmsg_tx_ok{0};
 static std::atomic<int64_t> g_rcmsg_tx_last_us{0};
 static std::atomic<int64_t> g_rcmsg_tx_dt_us{0};
+static std::atomic<uint64_t> g_adb_40007_edge_generation{0};
+static std::atomic<uint32_t> g_adb_40007_edge_tx_count{0};
+static std::atomic<uint32_t> g_adb_40007_edge_tx_err{0};
+static std::atomic<int64_t> g_adb_40007_edge_tx_us{0};
+static std::atomic<int64_t> g_adb_40007_edge_tx_max_us{0};
 static std::mutex g_mtx;
 static std::atomic<bool> g_stop{false};
 static RcEventGate g_adb_publish_gate;
@@ -600,10 +605,10 @@ static bool rcmsg_to_state(const RcMsg &msg, rc_state_t *out)
 
 static void build_output_channels(const rc_state_t &st, uint16_t ch[CH_COUNT], bool advance_latch);
 
-static void send_rcmsg(int fd, const sockaddr_in &dst, const rc_state_t &st,
+static bool send_rcmsg(int fd, const sockaddr_in &dst, const rc_state_t &st,
                        bool valid, uint32_t seq, int64_t ts_us)
 {
-    if (fd < 0) return;
+    if (fd < 0) return false;
 
     RcMsg msg{};
     msg.magic = RCMSG_MAGIC;
@@ -629,11 +634,13 @@ static void send_rcmsg(int fd, const sockaddr_in &dst, const rc_state_t &st,
         /* 目标不可达/缓冲区满时 sendto 返回 EAGAIN, 忽略 (主循环不能阻塞) */
         if (errno != EAGAIN && errno != EWOULDBLOCK)
             std::fprintf(stderr, "[dji_rc] rcmsg send fail n=%d errno=%d\n", (int)n, errno);
+        return false;
     } else {
         int64_t prev = g_rcmsg_tx_last_us.exchange(ts_us, std::memory_order_relaxed);
         if (prev > 0 && ts_us > prev)
             g_rcmsg_tx_dt_us.store(ts_us - prev, std::memory_order_relaxed);
         g_rcmsg_tx_ok.fetch_add(1, std::memory_order_relaxed);
+        return true;
     }
 }
 
@@ -899,16 +906,74 @@ static void adb_40007_thread(const std::string host, uint16_t port)
                 if (r == 0) { off += 1; continue; }
                 rc_state_t st;
                 if (adb_decode_40007_packet(pk, &st)) {
+                    const int64_t decoded_us = now_us();
                     bool button_changed;
+                    bool ge_connected;
+                    rc_state_t ge, p4, fused;
+                    int64_t ge_last, p4_last;
+                    uint32_t ge_good, p4_good;
                     {
                         std::lock_guard<std::mutex> lock(g_mtx);
                         rc_state_t merged;
                         adb_rc_merge_40007_state(&g_adb_40007_rc, &st, &merged);
                         g_adb_40007_rc = merged;
-                        button_changed = adb_rc_queue_button_change(
-                            &g_adb_40007_edge_queue, &merged);
+                        button_changed = adb_rc_track_button_change(
+                            &g_adb_40007_button_tracker, &merged);
                         g_adb_40007_good++;
-                        g_adb_40007_last_us = now_us();
+                        g_adb_40007_last_us = decoded_us;
+                        ge = g_adb_getevent_rc;
+                        p4 = g_adb_40007_rc;
+                        ge_last = g_adb_getevent_last_us;
+                        p4_last = g_adb_40007_last_us;
+                        ge_good = g_adb_getevent_good;
+                        p4_good = g_adb_40007_good;
+                        ge_connected = g_adb_getevent_connected.load(
+                            std::memory_order_acquire);
+                    }
+
+                    const int64_t fuse_us = now_us();
+                    const int64_t ge_age = adb_rc_getevent_effective_age_us(
+                        ge_connected, ge.type != RC_NONE, fuse_us, ge_last);
+                    const int64_t p4_age = p4.type == RC_NONE || p4_last == 0
+                        ? INT64_MAX : fuse_us - p4_last;
+                    adb_rc_fuse(&ge, ge_age, &p4, p4_age, &fused);
+                    if (fused.type != RC_NONE) {
+                        std::lock_guard<std::mutex> lock(g_mtx);
+                        g_adb_rc = fused;
+                        g_adb_good = ge_good + p4_good;
+                        g_adb_last_us = fuse_us;
+                        g_adb_publish_last_us = fuse_us;
+                        if (button_changed) {
+                            g_adb_40007_edge_generation.fetch_add(
+                                1, std::memory_order_release);
+                        }
+                    }
+
+                    const int rcmsg_fd = g_rcmsg_fd.load(std::memory_order_acquire);
+                    const bool v3s_adb_active = g_rc_input_mode.load(
+                        std::memory_order_acquire) == RcInputMode::V3sAdb;
+                    if (fused.type != RC_NONE && adb_rc_should_send_direct_edge(
+                            button_changed, v3s_adb_active, rcmsg_fd)) {
+                        const uint32_t seq = g_rcmsg_seq.fetch_add(
+                            1, std::memory_order_relaxed) + 1;
+                        const int64_t send_us = now_us();
+                        if (send_rcmsg(rcmsg_fd, g_rcmsg_dst, fused, true, seq,
+                                       send_us)) {
+                            const int64_t latency_us = now_us() - decoded_us;
+                            g_adb_40007_edge_tx_us.store(
+                                latency_us, std::memory_order_relaxed);
+                            int64_t previous_max = g_adb_40007_edge_tx_max_us.load(
+                                std::memory_order_relaxed);
+                            while (latency_us > previous_max &&
+                                   !g_adb_40007_edge_tx_max_us.compare_exchange_weak(
+                                       previous_max, latency_us,
+                                       std::memory_order_relaxed)) {}
+                            g_adb_40007_edge_tx_count.fetch_add(
+                                1, std::memory_order_relaxed);
+                        } else {
+                            g_adb_40007_edge_tx_err.fetch_add(
+                                1, std::memory_order_relaxed);
+                        }
                     }
                     if (button_changed) g_adb_publish_gate.notify();
                 }
@@ -947,8 +1012,7 @@ static void adb_rc_publish_thread()
             ge = g_adb_getevent_rc;
             p4 = g_adb_40007_rc;
             bool ge_edge = adb_rc_pop_button_change(&g_adb_getevent_edge_queue, &ge);
-            bool p4_edge = adb_rc_pop_button_change(&g_adb_40007_edge_queue, &p4);
-            button_edge = ge_edge || p4_edge;
+            button_edge = ge_edge;
             ge_last = g_adb_getevent_last_us;
             p4_last = g_adb_40007_last_us;
             ge_good = g_adb_getevent_good;
@@ -1087,6 +1151,14 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
     uint32_t rcmsg_tx = g_rcmsg_tx_ok.load(std::memory_order_relaxed);
     int64_t adb_ge_dt_us = g_adb_getevent_dt_us.load(std::memory_order_relaxed);
     int64_t rcmsg_tx_dt_us = g_rcmsg_tx_dt_us.load(std::memory_order_relaxed);
+    uint32_t adb_40007_edge_tx_count = g_adb_40007_edge_tx_count.load(
+        std::memory_order_relaxed);
+    uint32_t adb_40007_edge_tx_err = g_adb_40007_edge_tx_err.load(
+        std::memory_order_relaxed);
+    int64_t adb_40007_edge_tx_us = g_adb_40007_edge_tx_us.load(
+        std::memory_order_relaxed);
+    int64_t adb_40007_edge_tx_max_us = g_adb_40007_edge_tx_max_us.load(
+        std::memory_order_relaxed);
 
     out_count++;
     if (prev_us == 0) {
@@ -1129,6 +1201,8 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
         "\"tx_hz\":%.1f,\"tx_ok\":%u,\"tx_err\":%u,"
         "\"adb_ge_hz\":%.1f,\"adb_ge_dt_ms\":%.1f,\"adb_ge_count\":%u,"
         "\"adb_40007_hz\":%.1f,\"adb_40007_count\":%u,"
+        "\"adb_40007_edge_tx_count\":%u,\"adb_40007_edge_tx_us\":%lld,"
+        "\"adb_40007_edge_tx_max_us\":%lld,\"adb_40007_edge_tx_err\":%u,"
         "\"rcmsg_tx_hz\":%.1f,\"rcmsg_tx_dt_ms\":%.1f,\"rcmsg_tx_count\":%u,"
         "\"active_src\":\"%s\","
         "\"app_rc_good\":%u,\"app_rc_rx\":%u,\"app_rc_age_ms\":%lld,"
@@ -1146,6 +1220,8 @@ static void write_state_file(const rc_state_t &st, const char *active_src,
         tx_hz, tx_ok, tx_err,
         adb_ge_hz, adb_ge_dt_us / 1000.0, adb_ge,
         adb_40007_hz, adb_40007,
+        adb_40007_edge_tx_count, (long long)adb_40007_edge_tx_us,
+        (long long)adb_40007_edge_tx_max_us, adb_40007_edge_tx_err,
         rcmsg_tx_hz, rcmsg_tx_dt_us / 1000.0, rcmsg_tx,
         active_src ? active_src : "none",
         app_good, app_rx,
@@ -1984,6 +2060,7 @@ int main(int argc, char **argv)
 
         rc_state_t s20, s0, sandroid, sadb;
         uint32_t g20, g0, rx20, rx0, androidGood, androidRx, adbGood, adbRx;
+        uint64_t adbEdgeGeneration;
         int64_t l20, l0, landroid, ladb;
 
         g_mtx.lock();
@@ -1992,6 +2069,7 @@ int main(int argc, char **argv)
         sandroid = g_android_rc; androidGood = g_android_good;
         androidRx = g_android_rx; landroid = g_android_last_us;
         sadb = g_adb_rc; adbGood = g_adb_good; adbRx = g_adb_rx; ladb = g_adb_last_us;
+        adbEdgeGeneration = g_adb_40007_edge_generation.load(std::memory_order_acquire);
         g_mtx.unlock();
 
         int64_t n = now_us();
@@ -2039,7 +2117,10 @@ int main(int argc, char **argv)
                 write_state_file(m, activeSrc, g20, g0, rx20, rx0,
                                  selectedGood, selectedRx, selectedAge, inputMode, n);
             }
-            if (selected != RcInputSource::Serial && rcmsgFresh) {
+            const bool staleAcrossAdbEdge = selected == RcInputSource::Adb &&
+                adbEdgeGeneration != g_adb_40007_edge_generation.load(
+                    std::memory_order_acquire);
+            if (selected != RcInputSource::Serial && rcmsgFresh && !staleAcrossAdbEdge) {
                 uint32_t seq = g_rcmsg_seq.fetch_add(1, std::memory_order_relaxed) + 1;
                 send_rcmsg(rcmsg_fd, rcmsg_dst, m, true, seq, n);
             }
