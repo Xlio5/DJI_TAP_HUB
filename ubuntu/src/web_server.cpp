@@ -40,6 +40,7 @@
 extern "C" {
 #include "rc_map.h"
 }
+#include "rc_input_mode.h"
 
 // ═══════════════════════════════════════════════════════════════
 // 常量
@@ -203,6 +204,7 @@ struct Config {
     std::string tunSubnet = "192.168.144.0/24";
     std::vector<ForwardRule> forwards;
     std::vector<Camera> cameras;
+    std::string rcInputMode = "v3s_adb";
 
     // ── RC 输出 (SBUS/CRSF @UART0) ──
     std::string rcOutMode = "sbus";       // "sbus" | "crsf"
@@ -362,6 +364,8 @@ static Config loadConfig(bool* outChanged = nullptr) {
     if (!v.empty()) cfg.lanSubnet = v;
     v = jsonStr(json, "tun_subnet");
     if (!v.empty()) cfg.tunSubnet = v;
+    v = jsonStr(json, "rc_input_mode");
+    if (is_valid_rc_input_mode(v)) cfg.rcInputMode = v;
 
     // parse forwards array
     auto fPos = json.find("\"forwards\"");
@@ -462,6 +466,7 @@ static void saveConfig(const Config& cfg) {
     ss << "  \"rtsp_url\": \"" << cfg.rtspUrl << "\",\n";
     ss << "  \"lan_subnet\": \"" << cfg.lanSubnet << "\",\n";
     ss << "  \"tun_subnet\": \"" << cfg.tunSubnet << "\",\n";
+    ss << "  \"rc_input_mode\": \"" << cfg.rcInputMode << "\",\n";
     ss << "  \"forwards\": [\n";
     for (size_t i = 0; i < cfg.forwards.size(); i++) {
         auto& r = cfg.forwards[i];
@@ -1095,6 +1100,7 @@ static std::string apiConfig() {
     obj.pair("rtsp_url", JsonValue::string(cfg.rtspUrl));
     obj.pair("lan_subnet", JsonValue::string(cfg.lanSubnet));
     obj.pair("tun_subnet", JsonValue::string(cfg.tunSubnet));
+    obj.pair("rc_input_mode", JsonValue::string(cfg.rcInputMode));
 
     // forwards array
     std::string fArr = "[";
@@ -1256,6 +1262,11 @@ static Response handleRequest(const Request& req) {
         } else if (p == "/api/rc/output") {
             Config c = loadConfig();
             resp.body = apiRcOutput(c);
+        } else if (p == "/api/rc/input") {
+            Config c = loadConfig();
+            JsonObj obj;
+            obj.pair("mode", JsonValue::string(c.rcInputMode));
+            resp.body = obj.done();
         } else if (p == "/api/rc/telemetry") {
             // 读取 dji_rc 写入的回传数据文件
             std::ifstream f("/var/log/rc_telem.json");
@@ -1339,6 +1350,19 @@ static Response handleRequest(const Request& req) {
             obj.pair("ok", JsonValue::boolean(true));
             obj.pair("mode", JsonValue::string(cfg.rcOutMode));
             resp.body = obj.done();
+        } else if (p == "/api/rc/input") {
+            auto mode = jsonStr(req.body, "mode");
+            if (!is_valid_rc_input_mode(mode)) {
+                resp.code = 400;
+                resp.body = R"({"ok":false,"error":"invalid rc input mode"})";
+            } else {
+                cfg.rcInputMode = mode;
+                saveConfig(cfg);
+                JsonObj obj;
+                obj.pair("ok", JsonValue::boolean(true));
+                obj.pair("mode", JsonValue::string(cfg.rcInputMode));
+                resp.body = obj.done();
+            }
         } else if (p == "/api/camera/add") {
             Camera c;
             c.name = jsonStr(req.body, "name");

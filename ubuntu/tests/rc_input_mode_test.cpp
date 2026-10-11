@@ -14,6 +14,10 @@ int main() {
     expect(parse_rc_input_mode("v3s_adb") == RcInputMode::V3sAdb, "parse adb");
     expect(parse_rc_input_mode("") == RcInputMode::V3sAdb, "empty defaults adb");
     expect(parse_rc_input_mode("bad") == RcInputMode::V3sAdb, "invalid defaults adb");
+    expect(is_valid_rc_input_mode("android_fusion"), "android mode valid");
+    expect(is_valid_rc_input_mode("v3s_serial"), "serial mode valid");
+    expect(is_valid_rc_input_mode("v3s_adb"), "adb mode valid");
+    expect(!is_valid_rc_input_mode("bad"), "invalid mode rejected");
 
     expect(select_rc_input(RcInputMode::AndroidFusion, true, true, true) == RcInputSource::Android,
            "android mode selects android");

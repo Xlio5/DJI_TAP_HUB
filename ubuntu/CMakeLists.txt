@@ -46,6 +46,7 @@ target_link_libraries(usb_tund PRIVATE
 add_executable(web_server
     src/web_server.cpp
     src/rc_map.c
+    src/rc_input_mode.cpp
 )
 
 target_link_libraries(web_server PRIVATE

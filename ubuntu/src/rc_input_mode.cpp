@@ -6,6 +6,11 @@ RcInputMode parse_rc_input_mode(std::string_view value) {
     return RcInputMode::V3sAdb;
 }
 
+bool is_valid_rc_input_mode(std::string_view value) {
+    return value == "android_fusion" || value == "v3s_serial" ||
+           value == "v3s_adb";
+}
+
 const char *rc_input_mode_name(RcInputMode mode) {
     switch (mode) {
         case RcInputMode::AndroidFusion: return "android_fusion";

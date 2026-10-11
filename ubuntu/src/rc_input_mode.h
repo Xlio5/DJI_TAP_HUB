@@ -16,6 +16,7 @@ enum class RcInputSource {
 };
 
 RcInputMode parse_rc_input_mode(std::string_view value);
+bool is_valid_rc_input_mode(std::string_view value);
 const char *rc_input_mode_name(RcInputMode mode);
 RcInputSource select_rc_input(RcInputMode mode, bool android_fresh,
                               bool serial_fresh, bool adb_fresh);
