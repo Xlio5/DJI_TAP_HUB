@@ -588,12 +588,12 @@ class TunNatVpnService : VpnService() {
             while (isStarted && isActive) {
                 var socket: DatagramSocket? = null
                 try {
-                    if (RcInputMode.fromPreferences(applicationContext) == RcInputMode.V3S_RCMSG) {
+                    if (!RcInputMode.fromPreferences(applicationContext).usesAndroidFusion) {
                         fusedRcDataState.value = null
                         fusedRcSourceStatsState.value = RcSourceStats()
                         AppLog.i("RcFusion", "RC 输入源=V3s串口回传, 暂停 Android 融合采集")
                         while (isStarted && isActive &&
-                            RcInputMode.fromPreferences(applicationContext) == RcInputMode.V3S_RCMSG
+                            !RcInputMode.fromPreferences(applicationContext).usesAndroidFusion
                         ) {
                             rcFusionRestartRequested = false
                             delay(1000L)
@@ -646,7 +646,7 @@ class TunNatVpnService : VpnService() {
                             rcFusionRestartRequested = false
                             break
                         }
-                        if (RcInputMode.fromPreferences(applicationContext) == RcInputMode.V3S_RCMSG) {
+                        if (!RcInputMode.fromPreferences(applicationContext).usesAndroidFusion) {
                             break
                         }
                         delay(1000L)

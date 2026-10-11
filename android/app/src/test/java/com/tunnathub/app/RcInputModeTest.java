@@ -6,7 +6,7 @@ import java.util.List;
 public final class RcInputModeTest {
     public static void main(String[] args) {
         parsesSavedModeWithAndroidFusionAsDefault();
-        appliesV3sRcmsgAsFullRcInputWhenSelected();
+        appliesBothV3sModesAsFullRcInput();
         keepsAndroidFusionSplitChannelsWhenSelected();
         formatsTopStatusForV3sRcmsgMode();
         formatsTopStatusForAndroidFusionMode();
@@ -15,7 +15,7 @@ public final class RcInputModeTest {
     private static void formatsTopStatusForV3sRcmsgMode() {
         String text = RcInputModeKt.rcTopStatusTextForTest(
             true,
-            RcInputMode.V3S_RCMSG,
+            RcInputMode.V3S_SERIAL,
             "V3S-RCMSG",
             0.0f,
             0.0f,
@@ -43,10 +43,12 @@ public final class RcInputModeTest {
     private static void parsesSavedModeWithAndroidFusionAsDefault() {
         assertEquals(RcInputMode.ANDROID_FUSION, RcInputMode.Companion.fromPref(null), "null mode fallback");
         assertEquals(RcInputMode.ANDROID_FUSION, RcInputMode.Companion.fromPref("bad"), "bad mode fallback");
-        assertEquals(RcInputMode.V3S_RCMSG, RcInputMode.Companion.fromPref("v3s_rcmsg"), "v3s mode parse");
+        assertEquals(RcInputMode.V3S_SERIAL, RcInputMode.Companion.fromPref("v3s_rcmsg"), "legacy v3s mode parse");
+        assertEquals(RcInputMode.V3S_SERIAL, RcInputMode.Companion.fromPref("v3s_serial"), "serial mode parse");
+        assertEquals(RcInputMode.V3S_ADB, RcInputMode.Companion.fromPref("v3s_adb"), "adb mode parse");
     }
 
-    private static void appliesV3sRcmsgAsFullRcInputWhenSelected() {
+    private static void appliesBothV3sModesAsFullRcInput() {
         List<Integer> current = Arrays.asList(
             1501, 1502, 1503, 1504, 1505, 1506, 1007, 1008,
             1009, 1010, 1011, 1012, 1013, 1014, 1015, 1016
@@ -59,11 +61,15 @@ public final class RcInputModeTest {
         List<Integer> result = RcInputModeKt.rcChannelsForIncomingDataForTest(
             current,
             incoming,
-            RcInputMode.V3S_RCMSG,
+            RcInputMode.V3S_SERIAL,
             "V3S-RCMSG"
         );
 
         assertEquals(incoming, result, "v3s mode uses full rcmsg");
+        result = RcInputModeKt.rcChannelsForIncomingDataForTest(
+            current, incoming, RcInputMode.V3S_ADB, "V3S-RCMSG"
+        );
+        assertEquals(incoming, result, "v3s adb mode uses full rcmsg");
     }
 
     private static void keepsAndroidFusionSplitChannelsWhenSelected() {

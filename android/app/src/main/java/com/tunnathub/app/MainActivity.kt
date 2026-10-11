@@ -735,7 +735,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             val data = v3sRcMsgPump.takeLatestForUi()
             if (data != null) {
                 // UI 只消费最新帧: 避免接收线程每个 UDP 包直接写 Compose state 导致主线程卡顿。
-                if (currentRcInputMode == RcInputMode.V3S_RCMSG) {
+                if (currentRcInputMode.usesV3sRcMsg) {
                     applyRcData(data, "V3S-RCMSG")
                 } else {
                     // 安卓融合模式只更新 CH7-16, 摇杆 CH1-6 仍用本地融合即时。
@@ -2062,16 +2062,17 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                                 Spacer(Modifier.height(16.dp)); HorizontalDivider(color = Color(0xFF1E293B)); Spacer(Modifier.height(12.dp))
                                 SectionHdr("RC 输入链路")
                                 Text(
-                                    if (rcInputMode == RcInputMode.V3S_RCMSG)
-                                        "串口 → V3s → rcmsg → App，不启动 ADB/getevent/40007 采集。"
-                                    else
-                                        "Android 本地融合 getevent + 40007，CH1-6 即时，本地发布给 V3s。",
+                                    when (rcInputMode) {
+                                        RcInputMode.ANDROID_FUSION -> "Android 本地融合 getevent + 40007，CH1-6 即时，本地发布给 V3s。"
+                                        RcInputMode.V3S_SERIAL -> "DJI 串口 → V3s → rcmsg → App。"
+                                        RcInputMode.V3S_ADB -> "V3s 通过网络 ADB getevent 获取摇杆，再用 rcmsg 回传 App。"
+                                    },
                                     fontSize = 9.sp,
                                     color = Color(0xFF64748B)
                                 )
                                 Spacer(Modifier.height(8.dp))
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    listOf(RcInputMode.ANDROID_FUSION, RcInputMode.V3S_RCMSG).forEach { mode ->
+                                    RcInputMode.values().forEach { mode ->
                                         Surface(
                                             color = if (rcInputMode == mode) Color(0xFF0EA5E9) else Color(0xFF1E293B),
                                             shape = RoundedCornerShape(6.dp),
