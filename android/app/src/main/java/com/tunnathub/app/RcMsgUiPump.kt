@@ -9,7 +9,6 @@ class RcMsgUiPump<T>(
 ) {
     private val packetCount = AtomicInteger()
     private val latest = AtomicReference<T?>(null)
-    private val edgeQueue = ArrayDeque<T>()
     private val edgeLock = Any()
     private var hasEdgeKey = false
     private var lastEdgeKey = 0L
@@ -21,28 +20,28 @@ class RcMsgUiPump<T>(
         packetCount.incrementAndGet()
     }
 
-    fun notePacket(packet: T, edgeKey: Long) {
-        synchronized(edgeLock) {
-            latest.set(packet)
+    fun notePacket(packet: T, edgeKey: Long): T? {
+        val edge = synchronized(edgeLock) {
             if (!hasEdgeKey) {
                 hasEdgeKey = true
                 lastEdgeKey = edgeKey
+                latest.set(packet)
+                null
             } else if (edgeKey != lastEdgeKey) {
-                if (edgeQueue.size >= EDGE_QUEUE_CAPACITY) edgeQueue.removeFirst()
-                edgeQueue.addLast(packet)
                 lastEdgeKey = edgeKey
+                // 边沿由即时 Channel 独占，避免周期路径稍后回放旧按键态。
+                latest.set(null)
+                packet
+            } else {
+                latest.set(packet)
+                null
             }
         }
         packetCount.incrementAndGet()
+        return edge
     }
 
-    fun takeLatestForUi(): T? = synchronized(edgeLock) {
-        if (edgeQueue.isNotEmpty()) {
-            edgeQueue.removeFirst().also { latest.compareAndSet(it, null) }
-        } else {
-            latest.getAndSet(null)
-        }
-    }
+    fun takeLatestForUi(): T? = latest.getAndSet(null)
 
     fun sampleReceiveHz(): Float {
         val now = nowMs()
@@ -55,8 +54,4 @@ class RcMsgUiPump<T>(
     }
 
     fun getPacketCountForTest(): Int = packetCount.get()
-
-    companion object {
-        private const val EDGE_QUEUE_CAPACITY = 32
-    }
 }

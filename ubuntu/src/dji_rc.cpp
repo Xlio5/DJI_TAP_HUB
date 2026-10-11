@@ -42,6 +42,7 @@ extern "C" {
 #include "adb_client.h"
 #include "adb_getevent_rc.h"
 #include "adb_rc_fusion.h"
+#include "rc_event_gate.h"
 #include "rc_input_mode.h"
 #include "rc_source_select.h"
 
@@ -97,6 +98,8 @@ static std::atomic<int64_t> g_rcmsg_tx_last_us{0};
 static std::atomic<int64_t> g_rcmsg_tx_dt_us{0};
 static std::mutex g_mtx;
 static std::atomic<bool> g_stop{false};
+static RcEventGate g_adb_publish_gate;
+static RcEventGate g_main_loop_gate;
 static std::atomic<RcInputMode> g_rc_input_mode{RcInputMode::V3sAdb};
 static std::atomic<bool> g_crsf_stop{false};   /* 独立控制 CRSF 回传线程 (t3), 不干扰 t1/t2 */
 static std::atomic<bool> g_bridge_stop{false}; /* 独立控制 bridge 下行线程 (t4), 避免与 t3 的 g_crsf_stop 互相干扰 */
@@ -820,6 +823,7 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
                 bool is_key = !is_axis && parse_getevent_key_line(line, &ev);
                 if (!is_axis && !is_key) continue;
                 rc_state_t st;
+                bool button_changed;
                 {
                     std::lock_guard<std::mutex> lock(g_mtx);
                     st = g_adb_getevent_rc;
@@ -835,10 +839,12 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
                                                    std::memory_order_relaxed);
                     g_adb_getevent_events.fetch_add(1, std::memory_order_relaxed);
                     g_adb_getevent_rc = st;
-                    adb_rc_queue_button_change(&g_adb_getevent_edge_queue, &st);
+                    button_changed = adb_rc_queue_button_change(
+                        &g_adb_getevent_edge_queue, &st);
                     g_adb_getevent_good++;
                     g_adb_getevent_last_us = event_us;
                 }
+                if (button_changed) g_adb_publish_gate.notify();
             }
             if (linebuf.size() > 4096) linebuf.erase(0, linebuf.size() - 1024);
         }
@@ -893,13 +899,18 @@ static void adb_40007_thread(const std::string host, uint16_t port)
                 if (r == 0) { off += 1; continue; }
                 rc_state_t st;
                 if (adb_decode_40007_packet(pk, &st)) {
-                    std::lock_guard<std::mutex> lock(g_mtx);
-                    rc_state_t merged;
-                    adb_rc_merge_40007_state(&g_adb_40007_rc, &st, &merged);
-                    g_adb_40007_rc = merged;
-                    adb_rc_queue_button_change(&g_adb_40007_edge_queue, &merged);
-                    g_adb_40007_good++;
-                    g_adb_40007_last_us = now_us();
+                    bool button_changed;
+                    {
+                        std::lock_guard<std::mutex> lock(g_mtx);
+                        rc_state_t merged;
+                        adb_rc_merge_40007_state(&g_adb_40007_rc, &st, &merged);
+                        g_adb_40007_rc = merged;
+                        button_changed = adb_rc_queue_button_change(
+                            &g_adb_40007_edge_queue, &merged);
+                        g_adb_40007_good++;
+                        g_adb_40007_last_us = now_us();
+                    }
+                    if (button_changed) g_adb_publish_gate.notify();
                 }
                 off += pk.pkt_len;
             }
@@ -918,19 +929,26 @@ static void adb_40007_thread(const std::string host, uint16_t port)
 
 static void adb_rc_publish_thread()
 {
+    uint64_t generation = g_adb_publish_gate.generation();
     while (!g_stop.load(std::memory_order_relaxed)) {
-        ::usleep(20000);
+        if (g_adb_publish_gate.waitForChange(
+                generation, std::chrono::milliseconds(20), &generation) ==
+            RcEventWait::Stopped) {
+            break;
+        }
         int64_t n = now_us();
         rc_state_t ge, p4, fused;
         int64_t ge_last, p4_last;
         uint32_t ge_good, p4_good;
         bool ge_connected;
+        bool button_edge;
         {
             std::lock_guard<std::mutex> lock(g_mtx);
             ge = g_adb_getevent_rc;
             p4 = g_adb_40007_rc;
-            adb_rc_pop_button_change(&g_adb_getevent_edge_queue, &ge);
-            adb_rc_pop_button_change(&g_adb_40007_edge_queue, &p4);
+            bool ge_edge = adb_rc_pop_button_change(&g_adb_getevent_edge_queue, &ge);
+            bool p4_edge = adb_rc_pop_button_change(&g_adb_40007_edge_queue, &p4);
+            button_edge = ge_edge || p4_edge;
             ge_last = g_adb_getevent_last_us;
             p4_last = g_adb_40007_last_us;
             ge_good = g_adb_getevent_good;
@@ -950,6 +968,7 @@ static void adb_rc_publish_thread()
             g_adb_last_us = n;
             g_adb_publish_last_us = n;
         }
+        if (button_edge) g_main_loop_gate.notify();
     }
 }
 
@@ -1948,9 +1967,13 @@ int main(int argc, char **argv)
 
     // 主循环: 状态文件写入 + 控制台打印 (SBUS/CRSF 输出走独立事件驱动)
     std::printf("[dji_rc] Ctrl+C 停止\n\n");
+    uint64_t main_loop_generation = g_main_loop_gate.generation();
     while (!g_stop.load(std::memory_order_relaxed)) {
-        struct timespec ts = {0, interval_ms * 1000000L};
-        nanosleep(&ts, nullptr);
+        if (g_main_loop_gate.waitForChange(
+                main_loop_generation, std::chrono::milliseconds(interval_ms),
+                &main_loop_generation) == RcEventWait::Stopped) {
+            break;
+        }
 
         /* Lua 帧由 out_send 限流统一发送 (每 3 周期取 1 帧), 移除兜底:
          * 实测兜底线程的 tx_write_uart 写 Lua 帧 SC16 不输出 (被 out_send 摇杆覆盖),
@@ -2153,6 +2176,8 @@ int main(int argc, char **argv)
     }
 
     g_stop.store(true);
+    g_adb_publish_gate.stop();
+    g_main_loop_gate.stop();
     g_crsf_stop.store(true);
     g_bridge_stop.store(true);   /* 停 bridge 下行线程 */
     /* 先关闭 fd 唤醒阻塞的 read, 再 join, 避免死锁 */

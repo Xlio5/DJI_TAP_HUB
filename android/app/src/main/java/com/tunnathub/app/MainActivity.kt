@@ -686,6 +686,12 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
     var rcR2 by remember { mutableStateOf(0) }; var rcR3 by remember { mutableStateOf(0) }
     var rcType by remember { mutableStateOf("") }
     val v3sRcMsgPump = remember { RcMsgUiPump<RcMsg.Data>() }
+    val v3sRcEdgeChannel = remember {
+        kotlinx.coroutines.channels.Channel<RcMsg.Data>(
+            capacity = 32,
+            onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST
+        )
+    }
     var v3sRcMsgHz by remember { mutableStateOf(0f) }
     var v3sGood1Hz by remember { mutableStateOf(0f) }
     var v3sGood2Hz by remember { mutableStateOf(0f) }
@@ -728,6 +734,15 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         rcL1 = data.l1; rcL2 = data.l2; rcL3 = data.l3
         rcR1 = data.r1; rcR2 = data.r2; rcR3 = data.r3
         rcType = type
+    }
+
+    LaunchedEffect(vpnRunning, v3sRcEdgeChannel) {
+        if (!vpnRunning) return@LaunchedEffect
+        for (data in v3sRcEdgeChannel) {
+            if (currentRcInputMode.usesV3sRcMsg) {
+                applyRcData(data, "V3S-RCMSG")
+            }
+        }
     }
 
     LaunchedEffect(vpnRunning, rcInputMode) {
@@ -921,7 +936,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         sock.receive(pkt)
                         val data = RcMsg.parse(pkt.data.copyOf(pkt.length))
                         if (data != null) {
-                            v3sRcMsgPump.notePacket(data, data.buttonMask)
+                            v3sRcMsgPump.notePacket(data, data.buttonMask)?.let {
+                                v3sRcEdgeChannel.trySend(it)
+                            }
                         }
                     } catch (_: java.net.SocketTimeoutException) {
                         // 空闲超时, 继续等
