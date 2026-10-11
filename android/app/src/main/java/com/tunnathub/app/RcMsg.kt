@@ -27,7 +27,16 @@ object RcMsg {
         // L1~R3 原始按键 (RCM1 buttons bit 15-20, getevent KEY_F1..F6)
         val l1: Int = 0, val l2: Int = 0, val l3: Int = 0,
         val r1: Int = 0, val r2: Int = 0, val r3: Int = 0
-    )
+    ) {
+        val buttonMask: Long
+            get() = listOf(
+                btn, stop, focus, shot, rec, rth, c1, c2, c3,
+                up, down, left, right, aircraft, back,
+                l1, l2, l3, r1, r2, r3
+            ).foldIndexed(0L) { index, mask, value ->
+                mask or ((value.toLong() and 1L) shl index)
+            }
+    }
 
     /**
      * 解析 72 字节 rcmsg 二进制。magic 不符或长度不足返回 null。

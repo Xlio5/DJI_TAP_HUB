@@ -78,37 +78,20 @@ int main()
     expectEq(merged40007.shot, 1, "special packet updates common shot");
     expectEq(merged40007.mode, 'F', "special packet updates common mode");
 
-    AdbRcButtonHold buttonHold{};
-    rc_state_t pressed = p40007;
-    pressed.c1 = 1;
-    rc_state_t released = p40007;
-    released.c1 = 0;
-    rc_state_t stretched{};
-    adb_rc_stretch_buttons(&pressed, 1000000, &buttonHold, &stretched);
-    expectEq(stretched.c1, 1, "pressed button is immediate");
-    adb_rc_stretch_buttons(&released, 1050000, &buttonHold, &stretched);
-    expectEq(stretched.c1, 1, "short button pulse is held for UI");
-    adb_rc_stretch_buttons(&released, 1000000 + ADB_RC_BUTTON_HOLD_US + 1,
-                           &buttonHold, &stretched);
-    expectEq(stretched.c1, 0, "button releases after minimum hold");
-
-    AdbRcButtonHold ingressHold{};
-    rc_state_t keyDown = make_state(RC_APP_FUSED, 100);
-    keyDown.rec = 1;
-    adb_rc_note_button_edges(&keyDown, 2000000, &ingressHold);
-    rc_state_t keyUp = keyDown;
-    keyUp.rec = 0;
-    adb_rc_apply_button_hold(&keyUp, 2020000, &ingressHold, &stretched);
-    expectEq(stretched.rec, 1,
-             "DOWN followed by UP before publish remains visible");
-
-    keyDown = make_state(RC_APP_FUSED, 100);
-    keyDown.r3 = 1;
-    adb_rc_note_button_edges(&keyDown, 3000000, &ingressHold);
-    keyUp = keyDown;
-    keyUp.r3 = 0;
-    adb_rc_apply_button_hold(&keyUp, 3020000, &ingressHold, &stretched);
-    expectEq(stretched.r3, 1, "R3 is included in ingress edge hold");
+    AdbRcEdgeQueue edgeQueue{};
+    rc_state_t released = make_state(RC_APP_FUSED, 100);
+    expect(!adb_rc_queue_button_change(&edgeQueue, &released),
+           "first state establishes edge baseline");
+    rc_state_t pressed = released;
+    pressed.rec = 1;
+    expect(adb_rc_queue_button_change(&edgeQueue, &pressed), "REC down is queued");
+    expect(adb_rc_queue_button_change(&edgeQueue, &released), "REC up is queued");
+    rc_state_t edge{};
+    expect(adb_rc_pop_button_change(&edgeQueue, &edge), "pop REC down");
+    expectEq(edge.rec, 1, "REC down remains first");
+    expect(adb_rc_pop_button_change(&edgeQueue, &edge), "pop REC up");
+    expectEq(edge.rec, 0, "REC up remains second");
+    expect(!adb_rc_pop_button_change(&edgeQueue, &edge), "edge queue is drained");
 
     adb_rc_fuse(&ge, ADB_RC_GETEVENT_FRESH_US + 1, &p40007, 20000, &fused);
     expectEq(fused.ch[0], 200, "stale getevent falls back to 40007 axis");

@@ -921,7 +921,7 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                         sock.receive(pkt)
                         val data = RcMsg.parse(pkt.data.copyOf(pkt.length))
                         if (data != null) {
-                            v3sRcMsgPump.notePacket(data)
+                            v3sRcMsgPump.notePacket(data, data.buttonMask)
                         }
                     } catch (_: java.net.SocketTimeoutException) {
                         // 空闲超时, 继续等

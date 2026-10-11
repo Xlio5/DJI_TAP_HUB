@@ -86,33 +86,42 @@ static uint8_t rc_state_t::*const kButtonFields[] = {
     &rc_state_t::r1, &rc_state_t::r2, &rc_state_t::r3,
 };
 
-void adb_rc_note_button_edges(const rc_state_t *input, int64_t now_us,
-                              AdbRcButtonHold *hold)
+static bool buttons_equal(const rc_state_t &a, const rc_state_t &b)
 {
-    if (!input || !hold) return;
     for (size_t i = 0; i < sizeof(kButtonFields) / sizeof(kButtonFields[0]); ++i) {
-        if (input->*kButtonFields[i]) hold->until_us[i] = now_us + ADB_RC_BUTTON_HOLD_US;
+        if (a.*kButtonFields[i] != b.*kButtonFields[i]) return false;
     }
+    return true;
 }
 
-void adb_rc_apply_button_hold(const rc_state_t *input, int64_t now_us,
-                              const AdbRcButtonHold *hold, rc_state_t *out)
+bool adb_rc_queue_button_change(AdbRcEdgeQueue *queue, const rc_state_t *state)
 {
-    if (!out) return;
-    if (!input || !hold) {
-        std::memset(out, 0, sizeof(*out));
-        return;
+    if (!queue || !state) return false;
+    if (!queue->has_last) {
+        queue->last = *state;
+        queue->has_last = true;
+        return false;
     }
-    *out = *input;
-    for (size_t i = 0; i < sizeof(kButtonFields) / sizeof(kButtonFields[0]); ++i) {
-        out->*kButtonFields[i] =
-            (input->*kButtonFields[i] || now_us < hold->until_us[i]) ? 1 : 0;
+    if (buttons_equal(queue->last, *state)) {
+        queue->last = *state;
+        return false;
     }
+    queue->last = *state;
+    if (queue->count == ADB_RC_EDGE_QUEUE_CAPACITY) {
+        queue->head = (queue->head + 1) % ADB_RC_EDGE_QUEUE_CAPACITY;
+        queue->count--;
+    }
+    size_t tail = (queue->head + queue->count) % ADB_RC_EDGE_QUEUE_CAPACITY;
+    queue->items[tail] = *state;
+    queue->count++;
+    return true;
 }
 
-void adb_rc_stretch_buttons(const rc_state_t *input, int64_t now_us,
-                            AdbRcButtonHold *hold, rc_state_t *out)
+bool adb_rc_pop_button_change(AdbRcEdgeQueue *queue, rc_state_t *state)
 {
-    adb_rc_note_button_edges(input, now_us, hold);
-    adb_rc_apply_button_hold(input, now_us, hold, out);
+    if (!queue || !state || queue->count == 0) return false;
+    *state = queue->items[queue->head];
+    queue->head = (queue->head + 1) % ADB_RC_EDGE_QUEUE_CAPACITY;
+    queue->count--;
+    return true;
 }

@@ -5,7 +5,20 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class RcMsgUiPumpTest {
     public static void main(String[] args) {
         countsPacketsWithoutForcingUiApplyPerPacket();
+        preservesButtonEdgesInOrder();
         samplesReceiveRateFromPacketCounter();
+    }
+
+    private static void preservesButtonEdgesInOrder() {
+        AtomicLong now = new AtomicLong(1_000L);
+        RcMsgUiPump<Integer> pump = new RcMsgUiPump<>(now::get);
+
+        pump.notePacket(0, 0L);
+        pump.notePacket(1, 1L);
+        pump.notePacket(0, 0L);
+
+        assertEquals(Integer.valueOf(1), pump.takeLatestForUi(), "button down edge first");
+        assertEquals(Integer.valueOf(0), pump.takeLatestForUi(), "button up edge second");
     }
 
     private static void countsPacketsWithoutForcingUiApplyPerPacket() {
