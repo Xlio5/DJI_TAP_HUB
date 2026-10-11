@@ -45,7 +45,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.86"   // 固件版本 — 40007 按键边沿直接发送
+#define VERSION     "1.6.87"   // 固件版本 — V3S ADB 重叠按键严格归属 getevent
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
