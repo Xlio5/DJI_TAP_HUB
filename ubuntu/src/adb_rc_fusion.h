@@ -33,6 +33,7 @@ void adb_rc_fuse(const rc_state_t *getevent_state, int64_t getevent_age_us,
 
 void adb_rc_merge_40007_state(const rc_state_t *previous,
                               const rc_state_t *incoming, rc_state_t *out);
+void adb_rc_strip_getevent_owned_buttons(rc_state_t *state);
 bool adb_rc_queue_button_change(AdbRcEdgeQueue *queue, const rc_state_t *state);
 bool adb_rc_pop_button_change(AdbRcEdgeQueue *queue, rc_state_t *state);
 bool adb_rc_track_button_change(AdbRcButtonTracker *tracker,

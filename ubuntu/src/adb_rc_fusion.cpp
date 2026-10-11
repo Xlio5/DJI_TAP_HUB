@@ -41,8 +41,8 @@ void adb_rc_fuse(const rc_state_t *getevent_state, int64_t getevent_age_us,
 
     if (ge_fresh) {
         for (int i = 0; i < 6; i++) out->ch[i] = getevent_state->ch[i];
-        out->rec = out->rec || getevent_state->rec;
-        out->shot = out->shot || getevent_state->shot;
+        out->rec = getevent_state->rec;
+        out->shot = getevent_state->shot;
         out->l1 = out->l1 || getevent_state->l1;
         out->l2 = out->l2 || getevent_state->l2;
         out->l3 = out->l3 || getevent_state->l3;
@@ -74,6 +74,13 @@ void adb_rc_merge_40007_state(const rc_state_t *previous,
     out->focus = incoming->focus;
     out->shot = incoming->shot;
     out->rec = incoming->rec;
+}
+
+void adb_rc_strip_getevent_owned_buttons(rc_state_t *state)
+{
+    if (!state) return;
+    state->rec = 0;
+    state->shot = 0;
 }
 
 static uint8_t rc_state_t::*const kButtonFields[] = {

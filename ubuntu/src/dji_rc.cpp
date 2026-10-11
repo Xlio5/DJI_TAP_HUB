@@ -916,6 +916,8 @@ static void adb_40007_thread(const std::string host, uint16_t port)
                         std::lock_guard<std::mutex> lock(g_mtx);
                         rc_state_t merged;
                         adb_rc_merge_40007_state(&g_adb_40007_rc, &st, &merged);
+                        /* REC/SHOT 与 getevent 重叠，V3S ADB 严格只认 getevent。 */
+                        adb_rc_strip_getevent_owned_buttons(&merged);
                         g_adb_40007_rc = merged;
                         button_changed = adb_rc_track_button_change(
                             &g_adb_40007_button_tracker, &merged);

@@ -48,8 +48,8 @@ int main()
     expectEq(fused.ch[5], 105, "fresh getevent axis wins ch6");
     expectEq(fused.mode, 'N', "40007 supplies mode");
     expectEq(fused.dial, 77, "40007 supplies dial");
-    expectEq(fused.shot, 1, "40007 supplies shot");
-    expectEq(fused.rec, 1, "40007 supplies rec");
+    expectEq(fused.shot, 0, "fresh getevent release overrides 40007 SHOT");
+    expectEq(fused.rec, 0, "fresh getevent release overrides 40007 REC");
     expectEq(fused.c1, 1, "40007 supplies C1");
 
     ge.l1 = 1;
@@ -63,7 +63,7 @@ int main()
     ge.rec = 1;
     p40007.rec = 0;
     adb_rc_fuse(&ge, 20000, &p40007, 20000, &fused);
-    expectEq(fused.rec, 1, "getevent REC is ORed with 40007");
+    expectEq(fused.rec, 1, "fresh getevent supplies REC");
     ge.rec = 0;
     p40007.rec = 1;
 
@@ -77,6 +77,14 @@ int main()
     expectEq(merged40007.dial, 77, "special packet does not clear AE dial");
     expectEq(merged40007.shot, 1, "special packet updates common shot");
     expectEq(merged40007.mode, 'F', "special packet updates common mode");
+
+    merged40007.rec = 1;
+    merged40007.shot = 1;
+    merged40007.stop = 1;
+    adb_rc_strip_getevent_owned_buttons(&merged40007);
+    expectEq(merged40007.rec, 0, "40007 REC is removed before edge tracking");
+    expectEq(merged40007.shot, 0, "40007 SHOT is removed before edge tracking");
+    expectEq(merged40007.stop, 1, "40007 STOP remains available");
 
     AdbRcEdgeQueue edgeQueue{};
     rc_state_t released = make_state(RC_APP_FUSED, 100);
