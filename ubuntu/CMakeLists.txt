@@ -93,6 +93,17 @@ target_include_directories(adb_getevent_rc_test PRIVATE
 
 add_test(NAME adb_getevent_rc_test COMMAND adb_getevent_rc_test)
 
+add_executable(adb_multiplex_test
+    tests/adb_multiplex_test.cpp
+    src/adb_client.cpp
+)
+
+target_include_directories(adb_multiplex_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+add_test(NAME adb_multiplex_test COMMAND adb_multiplex_test)
+
 add_executable(adb_rc_fusion_test
     tests/adb_rc_fusion_test.cpp
     src/adb_rc_fusion.cpp

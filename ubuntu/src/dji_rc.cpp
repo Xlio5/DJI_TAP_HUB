@@ -786,123 +786,70 @@ static bool adb_decode_40007_packet(const duml_pkt_t &pk, rc_state_t *out)
     return false;
 }
 
-static void adb_getevent_thread(const std::string host, uint16_t port,
-                                const std::string device, bool joystick_stream)
+static void adb_process_getevent_chunk(const std::string &device,
+                                       bool joystick_stream,
+                                       std::string *linebuf,
+                                       const std::string &chunk)
 {
-    while (!g_stop.load(std::memory_order_relaxed)) {
-        AdbClient adb;
-        AdbClientOptions opt;
-        opt.host = host;
-        opt.port = port;
-        opt.io_timeout_ms = 2000;
-        std::string error;
-        std::string shell = build_getevent_shell(device, joystick_stream);
-        if (!adb.connect(opt, &error) || !adb.openShell(shell, &error)) {
-            std::fprintf(stderr, "[dji_rc] adb getevent connect failed: %s\n", error.c_str());
-            for (int i = 0; i < 10 && !g_stop.load(std::memory_order_relaxed); i++) ::usleep(200000);
-            continue;
-        }
-        std::printf("[dji_rc] adb getevent connected %s:%u %s\n",
-                    host.c_str(), port, device.c_str());
-        std::fflush(stdout);
-        if (joystick_stream)
-            g_adb_getevent_connected.store(true, std::memory_order_release);
-
-        std::string linebuf;
-        bool closed = false;
-        while (!g_stop.load(std::memory_order_relaxed) && !closed) {
-            std::string chunk;
-            if (!adb.readShellChunk(&chunk, &closed, &error)) {
-                std::fprintf(stderr, "[dji_rc] adb getevent read failed: %s\n", error.c_str());
-                break;
-            }
-            if (chunk.empty()) continue;
-            {
-                std::lock_guard<std::mutex> lock(g_mtx);
-                g_adb_rx += (uint32_t)chunk.size();
-            }
-            linebuf.append(chunk);
-            size_t pos;
-            while ((pos = linebuf.find('\n')) != std::string::npos) {
-                std::string line = linebuf.substr(0, pos);
-                linebuf.erase(0, pos + 1);
-                GeteventAbsEvent ev;
-                bool is_axis = parse_getevent_abs_line(line, &ev);
-                bool is_key = !is_axis && parse_getevent_key_line(line, &ev);
-                if (!is_axis && !is_key) continue;
-                bool applied = false;
-                bool button_changed = false;
-                {
-                    std::lock_guard<std::mutex> lock(g_mtx);
-                    rc_state_t st = g_adb_getevent_rc;
-                    if (joystick_stream) {
-                        applied = is_axis ? apply_getevent_axis(ev, device, &st)
-                                          : apply_getevent_key(ev, device, &st);
-                    } else if (is_key) {
-                        applied = apply_getevent_key(ev, device, &st);
-                    }
-                    if (!applied) continue;
-                    int64_t event_us = now_us();
-                    if (g_adb_getevent_last_us > 0 && event_us > g_adb_getevent_last_us)
-                        g_adb_getevent_dt_us.store(event_us - g_adb_getevent_last_us,
-                                                   std::memory_order_relaxed);
-                    g_adb_getevent_events.fetch_add(1, std::memory_order_relaxed);
-                    g_adb_getevent_rc = st;
-                    button_changed = adb_rc_queue_button_change(
-                        &g_adb_getevent_edge_queue, &st);
-                    g_adb_getevent_good++;
-                    g_adb_getevent_last_us = event_us;
-                }
-                if (button_changed) g_adb_publish_gate.notify();
-            }
-            if (linebuf.size() > 4096) linebuf.erase(0, linebuf.size() - 1024);
-        }
-        if (joystick_stream)
-            g_adb_getevent_connected.store(false, std::memory_order_release);
-        std::fprintf(stderr, "[dji_rc] adb getevent disconnected, reconnecting\n");
+    if (!linebuf || chunk.empty()) return;
+    {
+        std::lock_guard<std::mutex> lock(g_mtx);
+        g_adb_rx += (uint32_t)chunk.size();
     }
+    linebuf->append(chunk);
+    size_t pos;
+    while ((pos = linebuf->find('\n')) != std::string::npos) {
+        std::string line = linebuf->substr(0, pos);
+        linebuf->erase(0, pos + 1);
+        GeteventAbsEvent ev;
+        bool is_axis = parse_getevent_abs_line(line, &ev);
+        bool is_key = !is_axis && parse_getevent_key_line(line, &ev);
+        if (!is_axis && !is_key) continue;
+        bool applied = false;
+        bool button_changed = false;
+        {
+            std::lock_guard<std::mutex> lock(g_mtx);
+            rc_state_t st = g_adb_getevent_rc;
+            if (joystick_stream) {
+                applied = is_axis ? apply_getevent_axis(ev, device, &st)
+                                  : apply_getevent_key(ev, device, &st);
+            } else if (is_key) {
+                applied = apply_getevent_key(ev, device, &st);
+            }
+            if (!applied) continue;
+            int64_t event_us = now_us();
+            if (g_adb_getevent_last_us > 0 && event_us > g_adb_getevent_last_us)
+                g_adb_getevent_dt_us.store(event_us - g_adb_getevent_last_us,
+                                           std::memory_order_relaxed);
+            g_adb_getevent_events.fetch_add(1, std::memory_order_relaxed);
+            g_adb_getevent_rc = st;
+            button_changed = adb_rc_queue_button_change(
+                &g_adb_getevent_edge_queue, &st);
+            g_adb_getevent_good++;
+            g_adb_getevent_last_us = event_us;
+        }
+        if (button_changed) g_adb_publish_gate.notify();
+    }
+    if (linebuf->size() > 4096)
+        linebuf->erase(0, linebuf->size() - 1024);
 }
 
-static void adb_40007_thread(const std::string host, uint16_t port)
+static void adb_process_40007_chunk(uint8_t *buf, int *buffered,
+                                    const std::string &chunk)
 {
-    const std::string shell =
-        "while true; do (toybox nc 127.0.0.1 40007 || nc 127.0.0.1 40007); sleep 1; done";
-    while (!g_stop.load(std::memory_order_relaxed)) {
-        AdbClient adb;
-        AdbClientOptions opt;
-        opt.host = host;
-        opt.port = port;
-        opt.io_timeout_ms = 2000;
-        std::string error;
-        if (!adb.connect(opt, &error) || !adb.openShell(shell, &error)) {
-            std::fprintf(stderr, "[dji_rc] adb 40007 connect failed: %s\n", error.c_str());
-            for (int i = 0; i < 10 && !g_stop.load(std::memory_order_relaxed); i++) ::usleep(200000);
-            continue;
-        }
-        std::printf("[dji_rc] adb 40007 connected %s:%u\n", host.c_str(), port);
-        std::fflush(stdout);
+    if (!buf || !buffered || chunk.empty()) return;
+    int &len = *buffered;
+    int copy = (int)chunk.size();
+    if (copy > 4096 - len) copy = 4096 - len;
+    std::memcpy(buf + len, chunk.data(), copy);
+    len += copy;
+    {
+        std::lock_guard<std::mutex> lock(g_mtx);
+        g_adb_rx += (uint32_t)chunk.size();
+    }
 
-        uint8_t buf[4096];
-        int len = 0;
-        bool closed = false;
-        while (!g_stop.load(std::memory_order_relaxed) && !closed) {
-            std::string chunk;
-            if (!adb.readShellChunk(&chunk, &closed, &error)) {
-                std::fprintf(stderr, "[dji_rc] adb 40007 read failed: %s\n", error.c_str());
-                break;
-            }
-            if (chunk.empty()) continue;
-            int copy = (int)chunk.size();
-            if (copy > (int)sizeof(buf) - len) copy = (int)sizeof(buf) - len;
-            std::memcpy(buf + len, chunk.data(), copy);
-            len += copy;
-            {
-                std::lock_guard<std::mutex> lock(g_mtx);
-                g_adb_rx += (uint32_t)chunk.size();
-            }
-
-            int off = 0;
-            while (len - off >= 1) {
+    int off = 0;
+    while (len - off >= 1) {
                 duml_pkt_t pk;
                 int r = duml_parse(buf + off, len - off, &pk);
                 if (r < 0) break;
@@ -984,16 +931,90 @@ static void adb_40007_thread(const std::string host, uint16_t port)
                 }
                 off += pk.pkt_len;
             }
-            if (off > 0) {
-                std::memmove(buf, buf + off, len - off);
-                len -= off;
+    if (off > 0) {
+        std::memmove(buf, buf + off, len - off);
+        len -= off;
+    }
+    if (len == 4096) {
+        std::memmove(buf, buf + 1, len - 1);
+        len -= 1;
+    }
+}
+
+static void adb_multiplex_thread(const std::string host, uint16_t port,
+                                 const std::string joystick_device,
+                                 bool getevent_enabled, bool p40007_enabled)
+{
+    const std::string aux_device = "/dev/input/event3";
+    const std::string p40007_shell =
+        "while true; do (toybox nc 127.0.0.1 40007 || nc 127.0.0.1 40007); sleep 1; done";
+    while (!g_stop.load(std::memory_order_relaxed)) {
+        AdbClient adb;
+        AdbClientOptions opt;
+        opt.host = host;
+        opt.port = port;
+        opt.io_timeout_ms = 2000;
+        std::string error;
+        if (!adb.connect(opt, &error)) {
+            std::fprintf(stderr, "[dji_rc] adb transport connect failed: %s\n", error.c_str());
+            for (int i = 0; i < 10 && !g_stop.load(std::memory_order_relaxed); i++)
+                ::usleep(200000);
+            continue;
+        }
+
+        uint32_t event4_id = 0, event3_id = 0, p40007_id = 0;
+        bool opened = true;
+        if (getevent_enabled) {
+            opened = adb.openShellStream(
+                build_getevent_shell(joystick_device, true), &event4_id, &error) &&
+                adb.openShellStream(
+                    build_getevent_shell(aux_device, false), &event3_id, &error);
+        }
+        if (opened && p40007_enabled)
+            opened = adb.openShellStream(p40007_shell, &p40007_id, &error);
+        if (!opened) {
+            std::fprintf(stderr, "[dji_rc] adb stream open failed: %s\n", error.c_str());
+            continue;
+        }
+
+        std::printf("[dji_rc] adb multiplex connected %s:%u event4=%u event3=%u p40007=%u\n",
+                    host.c_str(), port, event4_id, event3_id, p40007_id);
+        std::fflush(stdout);
+        std::string event4_lines, event3_lines;
+        uint8_t p40007_buf[4096];
+        int p40007_len = 0;
+
+        while (!g_stop.load(std::memory_order_relaxed)) {
+            AdbStreamEvent event;
+            bool timed_out = false;
+            if (!adb.readStreamEvent(&event, &timed_out, &error)) {
+                std::fprintf(stderr, "[dji_rc] adb multiplex read failed: %s\n", error.c_str());
+                break;
             }
-            if (len == (int)sizeof(buf)) {
-                std::memmove(buf, buf + 1, len - 1);
-                len -= 1;
+            if (timed_out || event.type == AdbStreamEventType::Opened) {
+                if (event.type == AdbStreamEventType::Opened &&
+                    event.local_id == event4_id) {
+                    g_adb_getevent_connected.store(true, std::memory_order_release);
+                }
+                continue;
+            }
+            if (event.type == AdbStreamEventType::Closed) {
+                std::fprintf(stderr, "[dji_rc] adb stream %u closed, reconnecting transport\n",
+                             event.local_id);
+                break;
+            }
+            if (event.local_id == event4_id) {
+                adb_process_getevent_chunk(joystick_device, true, &event4_lines,
+                                           event.data);
+            } else if (event.local_id == event3_id) {
+                adb_process_getevent_chunk(aux_device, false, &event3_lines,
+                                           event.data);
+            } else if (event.local_id == p40007_id) {
+                adb_process_40007_chunk(p40007_buf, &p40007_len, event.data);
             }
         }
-        std::fprintf(stderr, "[dji_rc] adb 40007 disconnected, reconnecting\n");
+        g_adb_getevent_connected.store(false, std::memory_order_release);
+        std::fprintf(stderr, "[dji_rc] adb multiplex disconnected, reconnecting\n");
     }
 }
 
@@ -2020,24 +2041,15 @@ int main(int argc, char **argv)
     }
 
     // 启动接收线程 (协议输出在 P20 rx_thread 的 handle_pkt 里事件驱动)
-    std::thread t1, t2, t3, t4, t_app, t_adb_ge, t_adb_ge_aux,
-                t_adb_40007, t_adb_pub;
+    std::thread t1, t2, t3, t4, t_app, t_adb_mux, t_adb_pub;
     crsf_params_init();   /* 初始化 CRSF 参数表 (Device_Ping 响应用) */
     if (g_p20.fd >= 0) t1 = std::thread(rx_thread, &g_p20);
     if (g_p0.fd  >= 0) t2 = std::thread(rx_thread, &g_p0);
     t_app = std::thread(app_rc_thread);
     if (adb_rc) {
-        if (adb_getevent_enabled) {
-            t_adb_ge = std::thread(adb_getevent_thread, std::string(adb_host),
-                                   (uint16_t)adb_port, std::string(adb_device), true);
-            t_adb_ge_aux = std::thread(adb_getevent_thread, std::string(adb_host),
-                                       (uint16_t)adb_port,
-                                       std::string("/dev/input/event3"), false);
-        }
-        if (adb_40007_enabled) {
-            t_adb_40007 = std::thread(adb_40007_thread, std::string(adb_host),
-                                      (uint16_t)adb_port);
-        }
+        t_adb_mux = std::thread(adb_multiplex_thread, std::string(adb_host),
+                                (uint16_t)adb_port, std::string(adb_device),
+                                adb_getevent_enabled, adb_40007_enabled);
         t_adb_pub = std::thread(adb_rc_publish_thread);
     }
     /* 上行 crsf_rx_thread: CRSF 遥测回传 或 bridge 模式都需要 (bridge 双向转发 ELRS 响应) */
@@ -2279,9 +2291,7 @@ int main(int argc, char **argv)
     if (t3.joinable()) t3.join();
     if (t4.joinable()) t4.join();   /* bridge 下行线程 */
     if (t_app.joinable()) t_app.join();
-    if (t_adb_ge.joinable()) t_adb_ge.join();
-    if (t_adb_ge_aux.joinable()) t_adb_ge_aux.join();
-    if (t_adb_40007.joinable()) t_adb_40007.join();
+    if (t_adb_mux.joinable()) t_adb_mux.join();
     if (t_adb_pub.joinable()) t_adb_pub.join();
     if (t1.joinable()) t1.join();
     if (t2.joinable()) t2.join();

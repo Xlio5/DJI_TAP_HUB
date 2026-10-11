@@ -134,6 +134,50 @@ uint32_t adb_payload_checksum(const uint8_t *data, size_t len)
     return crc ^ 0xffffffffu;
 }
 
+uint32_t AdbStreamMux::allocateStream()
+{
+    const uint32_t local_id = next_local_id_++;
+    streams_[local_id] = StreamState{};
+    return local_id;
+}
+
+bool AdbStreamMux::route(const AdbPacket &packet, AdbStreamEvent *event)
+{
+    if (!event) return false;
+    auto it = streams_.find(packet.arg1);
+    if (it == streams_.end() || !it->second.open) return false;
+
+    event->local_id = packet.arg1;
+    event->remote_id = packet.arg0;
+    event->data.clear();
+    if (packet.command == adb_command("OKAY")) {
+        it->second.remote_id = packet.arg0;
+        event->type = AdbStreamEventType::Opened;
+        return true;
+    }
+    if (packet.command == adb_command("WRTE")) {
+        it->second.remote_id = packet.arg0;
+        event->type = AdbStreamEventType::Data;
+        if (!packet.payload.empty()) {
+            event->data.assign((const char *)packet.payload.data(),
+                               packet.payload.size());
+        }
+        return true;
+    }
+    if (packet.command == adb_command("CLSE")) {
+        it->second.open = false;
+        event->type = AdbStreamEventType::Closed;
+        return true;
+    }
+    return false;
+}
+
+bool AdbStreamMux::isOpen(uint32_t local_id) const
+{
+    auto it = streams_.find(local_id);
+    return it != streams_.end() && it->second.open;
+}
+
 static uint32_t adb_payload_sum(const uint8_t *data, size_t len)
 {
     uint32_t sum = 0;
@@ -217,16 +261,54 @@ bool AdbClient::connect(const AdbClientOptions &options, std::string *error)
 
 bool AdbClient::openShell(const std::string &command, std::string *error)
 {
+    return openShellStream(command, &legacy_local_id_, error);
+}
+
+bool AdbClient::openShellStream(const std::string &command, uint32_t *local_id,
+                                std::string *error)
+{
     if (fd_ < 0) {
         if (error) *error = "not connected";
         return false;
     }
-    local_id_++;
-    remote_id_ = 0;
+    const uint32_t id = mux_.allocateStream();
     std::string service = "shell:" + command;
     service.push_back('\0');
-    return writePacket(adb_command("OPEN"), local_id_, 0,
-                       (const uint8_t *)service.data(), service.size(), error);
+    if (!writePacket(adb_command("OPEN"), id, 0,
+                     (const uint8_t *)service.data(), service.size(), error)) {
+        return false;
+    }
+    if (local_id) *local_id = id;
+    return true;
+}
+
+bool AdbClient::readStreamEvent(AdbStreamEvent *event, bool *timed_out,
+                                std::string *error)
+{
+    if (timed_out) *timed_out = false;
+    while (true) {
+        AdbPacket packet;
+        std::string read_error;
+        if (!readPacket(&packet, &read_error)) {
+            if (read_error == "timeout") {
+                if (timed_out) *timed_out = true;
+                return true;
+            }
+            if (error) *error = read_error;
+            return false;
+        }
+        if (!mux_.route(packet, event)) {
+            if (error) *error = "unexpected or unknown stream packet: " +
+                                packet_name(packet.command);
+            return false;
+        }
+        if (event->type == AdbStreamEventType::Data &&
+            !writePacket(adb_command("OKAY"), event->local_id, event->remote_id,
+                         nullptr, 0, error)) {
+            return false;
+        }
+        return true;
+    }
 }
 
 bool AdbClient::readShellChunk(std::string *out, bool *closed, std::string *error)
@@ -234,32 +316,18 @@ bool AdbClient::readShellChunk(std::string *out, bool *closed, std::string *erro
     if (out) out->clear();
     if (closed) *closed = false;
     while (true) {
-        AdbPacket pkt;
-        std::string read_error;
-        if (!readPacket(&pkt, &read_error)) {
-            if (read_error == "timeout") return true;
-            if (error) *error = read_error;
-            return false;
-        }
-        if (pkt.command == adb_command("OKAY")) {
-            remote_id_ = pkt.arg0;
-            continue;
-        }
-        if (pkt.command == adb_command("WRTE")) {
-            remote_id_ = pkt.arg0;
-            if (!writePacket(adb_command("OKAY"), local_id_, remote_id_, nullptr, 0, error)) {
-                return false;
-            }
-            if (out && !pkt.payload.empty())
-                out->assign((const char *)pkt.payload.data(), pkt.payload.size());
-            return true;
-        }
-        if (pkt.command == adb_command("CLSE")) {
+        AdbStreamEvent event;
+        bool timed_out = false;
+        if (!readStreamEvent(&event, &timed_out, error)) return false;
+        if (timed_out) return true;
+        if (event.local_id != legacy_local_id_) continue;
+        if (event.type == AdbStreamEventType::Opened) continue;
+        if (event.type == AdbStreamEventType::Closed) {
             if (closed) *closed = true;
             return true;
         }
-        if (error) *error = "unexpected packet while reading shell: " + packet_name(pkt.command);
-        return false;
+        if (out) *out = std::move(event.data);
+        return true;
     }
 }
 
@@ -269,7 +337,8 @@ void AdbClient::close()
         ::close(fd_);
         fd_ = -1;
     }
-    remote_id_ = 0;
+    mux_ = AdbStreamMux{};
+    legacy_local_id_ = 0;
 }
 
 bool AdbClient::writePacket(uint32_t command, uint32_t arg0, uint32_t arg1,

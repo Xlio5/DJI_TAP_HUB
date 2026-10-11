@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 uint32_t adb_command(const char *cmd4);
@@ -22,6 +23,35 @@ struct AdbClientOptions {
     int io_timeout_ms = 3000;
 };
 
+enum class AdbStreamEventType {
+    Opened,
+    Data,
+    Closed,
+};
+
+struct AdbStreamEvent {
+    AdbStreamEventType type = AdbStreamEventType::Opened;
+    uint32_t local_id = 0;
+    uint32_t remote_id = 0;
+    std::string data;
+};
+
+class AdbStreamMux {
+public:
+    uint32_t allocateStream();
+    bool route(const AdbPacket &packet, AdbStreamEvent *event);
+    bool isOpen(uint32_t local_id) const;
+
+private:
+    struct StreamState {
+        uint32_t remote_id = 0;
+        bool open = true;
+    };
+
+    uint32_t next_local_id_ = 1;
+    std::unordered_map<uint32_t, StreamState> streams_;
+};
+
 class AdbClient {
 public:
     AdbClient();
@@ -33,6 +63,10 @@ public:
     bool connect(const AdbClientOptions &options, std::string *error);
     bool openShell(const std::string &command, std::string *error);
     bool readShellChunk(std::string *out, bool *closed, std::string *error);
+    bool openShellStream(const std::string &command, uint32_t *local_id,
+                         std::string *error);
+    bool readStreamEvent(AdbStreamEvent *event, bool *timed_out,
+                         std::string *error);
     void close();
 
 private:
@@ -42,6 +76,6 @@ private:
 
     int fd_ = -1;
     int io_timeout_ms_ = 3000;
-    uint32_t local_id_ = 1;
-    uint32_t remote_id_ = 0;
+    AdbStreamMux mux_;
+    uint32_t legacy_local_id_ = 0;
 };
