@@ -1721,21 +1721,25 @@ static bool load_rc_output_cfg(char &mode, int &baud, bool &sbus_std)
     return found;
 }
 
-static RcInputMode load_rc_input_mode()
+static bool load_rc_input_mode(RcInputMode *mode)
 {
+    if (!mode) return false;
     int fd = ::open("/dev/mtdblock0", O_RDONLY);
-    if (fd < 0) return RcInputMode::V3sAdb;
+    if (fd < 0) return false;
     uint16_t len = 0;
     ::lseek(fd, 0xFD000, SEEK_SET);
     if (::read(fd, &len, 2) != 2 || len == 0 || len > 0x3000) {
         ::close(fd);
-        return RcInputMode::V3sAdb;
+        return false;
     }
     std::string json((size_t)len, '\0');
     ssize_t got = ::read(fd, &json[0], len);
     ::close(fd);
-    if (got != (ssize_t)len) return RcInputMode::V3sAdb;
-    return parse_rc_input_mode(cfg_json_str(json, "rc_input_mode"));
+    if (got != (ssize_t)len) return false;
+    std::string value = cfg_json_str(json, "rc_input_mode");
+    if (!is_valid_rc_input_mode(value)) return false;
+    *mode = parse_rc_input_mode(value);
+    return true;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1814,7 +1818,9 @@ int main(int argc, char **argv)
     g_out_baud.store(out_baud);   /* 先修复零值再赋值 */  // C1: atomic store
     g_crsf_telem = crsf_telem;
     g_adb_rc_primary.store(adb_rc_primary, std::memory_order_release);
-    g_rc_input_mode.store(load_rc_input_mode(), std::memory_order_release);
+    RcInputMode startupInputMode = RcInputMode::V3sAdb;
+    load_rc_input_mode(&startupInputMode);
+    g_rc_input_mode.store(startupInputMode, std::memory_order_release);
     std::printf("[dji_rc] RC input mode: %s\n",
                 rc_input_mode_name(g_rc_input_mode.load(std::memory_order_acquire)));
 
@@ -2027,10 +2033,10 @@ int main(int argc, char **argv)
         static int64_t last_cfg_check = 0;
         if (n - last_cfg_check > 2000000LL) {
             last_cfg_check = n;
-            RcInputMode nextInputMode = load_rc_input_mode();
-            RcInputMode oldInputMode = g_rc_input_mode.exchange(nextInputMode,
-                                                                 std::memory_order_acq_rel);
-            if (nextInputMode != oldInputMode) {
+            RcInputMode nextInputMode;
+            RcInputMode oldInputMode = g_rc_input_mode.load(std::memory_order_acquire);
+            if (load_rc_input_mode(&nextInputMode) && nextInputMode != oldInputMode) {
+                g_rc_input_mode.store(nextInputMode, std::memory_order_release);
                 std::printf("[dji_rc] RC input mode changed: %s -> %s\n",
                             rc_input_mode_name(oldInputMode),
                             rc_input_mode_name(nextInputMode));
