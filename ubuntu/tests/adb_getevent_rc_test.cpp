@@ -25,6 +25,13 @@ static void expectEq(int actual, int expected, const char *message)
 
 int main()
 {
+    expect(build_getevent_shell("/dev/input/event4", true) ==
+               "getevent -lp /dev/input/event4; exec getevent -lt /dev/input/event4",
+           "joystick shell is restricted to event4");
+    expect(build_getevent_shell("/dev/input/event3", false) ==
+               "exec getevent -lt /dev/input/event3",
+           "aux key shell is restricted to event3");
+
     expectEq((int)adb_command("CNXN"), 0x4e584e43, "ADB command is little-endian");
     const uint8_t abc[] = {'a', 'b', 'c'};
     expectEq((int)adb_payload_checksum(abc, sizeof(abc)), 0x352441c2, "DJI TCP ADB checksum is CRC32");

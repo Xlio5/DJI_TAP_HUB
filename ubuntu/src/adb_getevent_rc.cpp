@@ -85,6 +85,14 @@ int16_t clamp_axis(int value)
 
 }  // namespace
 
+std::string build_getevent_shell(const std::string &device, bool snapshot_axes)
+{
+    if (snapshot_axes) {
+        return "getevent -lp " + device + "; exec getevent -lt " + device;
+    }
+    return "exec getevent -lt " + device;
+}
+
 bool parse_getevent_abs_line(const std::string &line, GeteventAbsEvent *event)
 {
     if (!event) return false;

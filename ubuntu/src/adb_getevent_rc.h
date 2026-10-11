@@ -13,6 +13,8 @@ struct GeteventAbsEvent {
     int32_t value = 0;
 };
 
+std::string build_getevent_shell(const std::string &device, bool snapshot_axes);
+
 bool parse_getevent_abs_line(const std::string &line, GeteventAbsEvent *event);
 bool parse_getevent_key_line(const std::string &line, GeteventAbsEvent *event);
 int16_t normalize_getevent_axis(const std::string &code, int32_t value);

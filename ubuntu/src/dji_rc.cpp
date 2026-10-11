@@ -787,7 +787,7 @@ static bool adb_decode_40007_packet(const duml_pkt_t &pk, rc_state_t *out)
 }
 
 static void adb_getevent_thread(const std::string host, uint16_t port,
-                                const std::string device)
+                                const std::string device, bool joystick_stream)
 {
     while (!g_stop.load(std::memory_order_relaxed)) {
         AdbClient adb;
@@ -796,7 +796,7 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
         opt.port = port;
         opt.io_timeout_ms = 2000;
         std::string error;
-        std::string shell = "getevent -lp " + device + "; exec getevent -lt";
+        std::string shell = build_getevent_shell(device, joystick_stream);
         if (!adb.connect(opt, &error) || !adb.openShell(shell, &error)) {
             std::fprintf(stderr, "[dji_rc] adb getevent connect failed: %s\n", error.c_str());
             for (int i = 0; i < 10 && !g_stop.load(std::memory_order_relaxed); i++) ::usleep(200000);
@@ -805,7 +805,8 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
         std::printf("[dji_rc] adb getevent connected %s:%u %s\n",
                     host.c_str(), port, device.c_str());
         std::fflush(stdout);
-        g_adb_getevent_connected.store(true, std::memory_order_release);
+        if (joystick_stream)
+            g_adb_getevent_connected.store(true, std::memory_order_release);
 
         std::string linebuf;
         bool closed = false;
@@ -829,17 +830,18 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
                 bool is_axis = parse_getevent_abs_line(line, &ev);
                 bool is_key = !is_axis && parse_getevent_key_line(line, &ev);
                 if (!is_axis && !is_key) continue;
-                rc_state_t st;
-                bool button_changed;
+                bool applied = false;
+                bool button_changed = false;
                 {
                     std::lock_guard<std::mutex> lock(g_mtx);
-                    st = g_adb_getevent_rc;
-                }
-                bool applied = is_axis ? apply_getevent_axis(ev, device, &st)
-                                       : apply_getevent_key(ev, "", &st);
-                if (!applied) continue;
-                {
-                    std::lock_guard<std::mutex> lock(g_mtx);
+                    rc_state_t st = g_adb_getevent_rc;
+                    if (joystick_stream) {
+                        applied = is_axis ? apply_getevent_axis(ev, device, &st)
+                                          : apply_getevent_key(ev, device, &st);
+                    } else if (is_key) {
+                        applied = apply_getevent_key(ev, device, &st);
+                    }
+                    if (!applied) continue;
                     int64_t event_us = now_us();
                     if (g_adb_getevent_last_us > 0 && event_us > g_adb_getevent_last_us)
                         g_adb_getevent_dt_us.store(event_us - g_adb_getevent_last_us,
@@ -855,7 +857,8 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
             }
             if (linebuf.size() > 4096) linebuf.erase(0, linebuf.size() - 1024);
         }
-        g_adb_getevent_connected.store(false, std::memory_order_release);
+        if (joystick_stream)
+            g_adb_getevent_connected.store(false, std::memory_order_release);
         std::fprintf(stderr, "[dji_rc] adb getevent disconnected, reconnecting\n");
     }
 }
@@ -2017,7 +2020,8 @@ int main(int argc, char **argv)
     }
 
     // 启动接收线程 (协议输出在 P20 rx_thread 的 handle_pkt 里事件驱动)
-    std::thread t1, t2, t3, t4, t_app, t_adb_ge, t_adb_40007, t_adb_pub;
+    std::thread t1, t2, t3, t4, t_app, t_adb_ge, t_adb_ge_aux,
+                t_adb_40007, t_adb_pub;
     crsf_params_init();   /* 初始化 CRSF 参数表 (Device_Ping 响应用) */
     if (g_p20.fd >= 0) t1 = std::thread(rx_thread, &g_p20);
     if (g_p0.fd  >= 0) t2 = std::thread(rx_thread, &g_p0);
@@ -2025,7 +2029,10 @@ int main(int argc, char **argv)
     if (adb_rc) {
         if (adb_getevent_enabled) {
             t_adb_ge = std::thread(adb_getevent_thread, std::string(adb_host),
-                                   (uint16_t)adb_port, std::string(adb_device));
+                                   (uint16_t)adb_port, std::string(adb_device), true);
+            t_adb_ge_aux = std::thread(adb_getevent_thread, std::string(adb_host),
+                                       (uint16_t)adb_port,
+                                       std::string("/dev/input/event3"), false);
         }
         if (adb_40007_enabled) {
             t_adb_40007 = std::thread(adb_40007_thread, std::string(adb_host),
@@ -2273,6 +2280,7 @@ int main(int argc, char **argv)
     if (t4.joinable()) t4.join();   /* bridge 下行线程 */
     if (t_app.joinable()) t_app.join();
     if (t_adb_ge.joinable()) t_adb_ge.join();
+    if (t_adb_ge_aux.joinable()) t_adb_ge_aux.join();
     if (t_adb_40007.joinable()) t_adb_40007.join();
     if (t_adb_pub.joinable()) t_adb_pub.join();
     if (t1.joinable()) t1.join();
