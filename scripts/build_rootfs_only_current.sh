@@ -42,6 +42,7 @@ WEB_TMP=$(mktemp -d)
 "$GPP" -std=c++17 -Os -s -static -Wall \
   -o "$TGT/usr/local/bin/web_server" \
   "$PROJECT/ubuntu/src/web_server.cpp" \
+  "$PROJECT/ubuntu/src/rc_input_mode.cpp" \
   "$WEB_TMP/rc_map.o" \
   -lpthread
 rm -rf "$WEB_TMP"
@@ -58,6 +59,10 @@ done
 "$GPP" -std=c++17 -O2 -s -Wall \
   -o "$TGT/usr/local/bin/dji_rc" \
   "$PROJECT/ubuntu/src/dji_rc.cpp" \
+  "$PROJECT/ubuntu/src/rc_input_mode.cpp" \
+  "$PROJECT/ubuntu/src/adb_client.cpp" \
+  "$PROJECT/ubuntu/src/adb_getevent_rc.cpp" \
+  "$PROJECT/ubuntu/src/adb_rc_fusion.cpp" \
   "$PROJECT/ubuntu/src/rc_source_select.cpp" \
   "$DJI_TMP/duml.o" "$DJI_TMP/rc_decode.o" "$DJI_TMP/chmap.o" "$DJI_TMP/sbus.o" "$DJI_TMP/crsf.o" "$DJI_TMP/rc_map.o" \
   -lpthread
@@ -87,5 +92,7 @@ test -x /tmp/tun_nat_hub_rootfs_check/usr/local/bin/dji_rc
 grep -n -- '--rcmsg-host\|--rcmsg-port\|--interval' /tmp/tun_nat_hub_rootfs_check/etc/init.d/S99tun_nat_hub
 test "$(grep -c '^ttyS0::respawn' /tmp/tun_nat_hub_rootfs_check/etc/inittab)" = "0"
 strings /tmp/tun_nat_hub_rootfs_check/usr/local/bin/dji_rc | grep -E 'RCM1|rcmsg-host|rcmsg-port|65530' | head -20
+strings /tmp/tun_nat_hub_rootfs_check/usr/local/bin/dji_rc | grep -F 'v3s_adb'
+strings /tmp/tun_nat_hub_rootfs_check/usr/local/bin/web_server | grep -F '/api/rc/input'
 
 echo "DONE: $ROOTFS"

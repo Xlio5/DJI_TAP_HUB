@@ -34,7 +34,8 @@ unsquashfs -q -d "$CHK" "$ROOTFS"
 grep -n "INTERNAL_FWD_ADDR=10.0.0.2" "$CHK/usr/local/bin/setup_v3s.sh"
 grep -n "MASQUERADE" "$CHK/usr/local/bin/setup_v3s.sh"
 grep -a -m1 "${VERSION#v}" "$CHK/usr/local/bin/web_server"
-grep -a -m1 "active_src" "$CHK/usr/local/bin/dji_rc"
+grep -a -m1 "rc_input_mode" "$CHK/usr/local/bin/dji_rc"
+grep -a -m1 "/api/rc/input" "$CHK/usr/local/bin/web_server"
 grep -a -m1 "921600" "$CHK/usr/local/bin/dji_rc"
 grep -a -m1 "console=ttyS0,115200" "$SPI"
 
@@ -68,7 +69,7 @@ cat > "$REL/manifest.md" <<EOF
 
 ## Purpose
 
-固化 V3s TUN/NAT 与 RC 输出策略：tun_hub=10.0.0.1/24，Android 主隧道地址=10.0.0.2，LAN 身份 x.x.x.11 DNAT 到 10.0.0.2，并对 x.x.x.11 主动访问 LAN 摄像头做 eth0 MASQUERADE。dji_rc 使用 921600 输入 50ms 优先窗口，921600 有有效 RC 包时按该路包频率输出 SBUS/CRSF，超时后由 115200 路接管。
+固化 V3s TUN/NAT 与三模式 RC 输入。支持 Android 融合、V3s 串口和 V3s 网络 ADB getevent，模式通过 /api/rc/input 持久化并由 dji_rc 热加载；三种模式严格单源，不跨源回退。
 
 ## Readback Verification
 
@@ -79,7 +80,8 @@ cat > "$REL/manifest.md" <<EOF
 - setup_v3s.sh contains INTERNAL_FWD_ADDR=10.0.0.2: OK
 - setup_v3s.sh contains MASQUERADE: OK
 - web_server strings contains ${VERSION#v}: OK
-- dji_rc strings contains active_src: OK
+- dji_rc strings contains rc_input_mode: OK
+- web_server strings contains /api/rc/input: OK
 - dji_rc strings contains 921600: OK
 - SPI bootargs contains console=ttyS0,115200: OK
 EOF
