@@ -45,7 +45,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.87"   // 固件版本 — V3S ADB 重叠按键严格归属 getevent
+#define VERSION     "1.6.88"   // 固件版本 — V3S ADB event4/event3 输入分流
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;
