@@ -63,6 +63,7 @@ done
   "$PROJECT/ubuntu/src/adb_client.cpp" \
   "$PROJECT/ubuntu/src/adb_getevent_rc.cpp" \
   "$PROJECT/ubuntu/src/adb_rc_fusion.cpp" \
+  "$PROJECT/ubuntu/src/rc_event_gate.cpp" \
   "$PROJECT/ubuntu/src/rc_source_select.cpp" \
   "$DJI_TMP/duml.o" "$DJI_TMP/rc_decode.o" "$DJI_TMP/chmap.o" "$DJI_TMP/sbus.o" "$DJI_TMP/crsf.o" "$DJI_TMP/rc_map.o" \
   -lpthread
