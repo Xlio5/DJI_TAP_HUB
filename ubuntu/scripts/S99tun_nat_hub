@@ -110,10 +110,11 @@ case "$1" in
     if [ "$SETUP_OK" = "1" ] && { [ -c /dev/ttyS1 ] || [ -c /dev/ttyS2 ]; }; then
 
         # crsf-bridge mode: protocol output CRSF frames <-> UDP 65532 (App Lua engine)
+        # RC 输入由 V3s 通过网络 ADB 直接读取 Android getevent，避免依赖 App 融合与串口飞线。
         # 波特率: SPI flash 配置优先 (ELRS/MLRS 兼容, 默认 400000, DLF 精确输出)
-        _run_bounded_log /tmp/dji_rc.log /usr/local/bin/dji_rc --interval 20 --out-dev "$RC_OUT_DEV" --out-baud 400000 --crsf-telem 1 --rcmsg-host 10.0.0.2 --rcmsg-port 65530 --crsf-bridge --crsfbr-host 10.0.0.2 --crsfbr-port 65532
+        _run_bounded_log /tmp/dji_rc.log /usr/local/bin/dji_rc --interval 20 --out-dev "$RC_OUT_DEV" --out-baud 400000 --crsf-telem 1 --rcmsg-host 10.0.0.2 --rcmsg-port 65530 --crsf-bridge --crsfbr-host 10.0.0.2 --crsfbr-port 65532 --adb-rc --adb-rc-primary --adb-no-40007 --no-app-rc --adb-host 10.0.0.2 --adb-port 5555 --adb-device /dev/input/event4
         ln -sf /tmp/dji_rc.log /var/log/dji_rc.log 2>/dev/null || true
-        _ts "dji_rc: started (crsf-bridge, out=$RC_OUT_DEV)"
+        _ts "dji_rc: started (V3s network ADB primary, crsf-bridge, out=$RC_OUT_DEV)"
     fi
 
     [ -c /dev/ttyGS0 ] && chmod 666 /dev/ttyGS0

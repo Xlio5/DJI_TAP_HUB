@@ -50,6 +50,22 @@ def test_dji_rc_log_is_bounded_in_init_script():
     assert "> /var/log/dji_rc.log 2>&1 &" not in text
 
 
+def test_s99_starts_dji_rc_with_v3s_network_adb_as_primary():
+    text = read(S99)
+    start = text.index("_run_bounded_log /tmp/dji_rc.log")
+    command = text[start:text.index("\n", start)]
+    for argument in (
+        "--adb-rc",
+        "--adb-rc-primary",
+        "--adb-no-40007",
+        "--no-app-rc",
+        "--adb-host 10.0.0.2",
+        "--adb-port 5555",
+        "--adb-device /dev/input/event4",
+    ):
+        assert argument in command
+
+
 def test_dji_rc_status_stdout_is_rate_limited():
     text = read(DJI_RC)
     assert "last_status_log_us" in text
@@ -84,7 +100,9 @@ def test_serial_rcmsg_is_driven_by_input_event_not_main_loop():
     serial_branch = loop_body[serial_select_pos:loop_body.index("} else if (appFresh)", serial_select_pos)]
     assert "send_rcmsg(rcmsg_fd" not in serial_branch
     assert "rc_merge(&s20, age20, &s0, age0, RC_STALE_US, &merged)" in loop_body
-    assert "if (!serialActive && appFresh)" in loop_body
+    assert "bool preferApp = adbPrimary && adbFresh" in loop_body
+    assert "if (preferApp)" in loop_body
+    assert "if ((!serialActive || preferApp) && rcmsgFresh)" in loop_body
     assert 'activeSrc = rc_fused_source_name' in loop_body
 
 
@@ -180,6 +198,7 @@ if __name__ == "__main__":
         test_dji_rc_never_manages_uart0_getty,
         test_web_default_output_device_is_sc16_not_uart0,
         test_dji_rc_log_is_bounded_in_init_script,
+        test_s99_starts_dji_rc_with_v3s_network_adb_as_primary,
         test_dji_rc_status_stdout_is_rate_limited,
         test_serial_rcmsg_is_driven_by_input_event_not_main_loop,
         test_s99_selects_rc_output_by_sc16_i2c_probe,
