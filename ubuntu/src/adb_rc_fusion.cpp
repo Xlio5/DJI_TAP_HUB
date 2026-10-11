@@ -43,6 +43,12 @@ void adb_rc_fuse(const rc_state_t *getevent_state, int64_t getevent_age_us,
         for (int i = 0; i < 6; i++) out->ch[i] = getevent_state->ch[i];
         out->rec = out->rec || getevent_state->rec;
         out->shot = out->shot || getevent_state->shot;
+        out->l1 = out->l1 || getevent_state->l1;
+        out->l2 = out->l2 || getevent_state->l2;
+        out->l3 = out->l3 || getevent_state->l3;
+        out->r1 = out->r1 || getevent_state->r1;
+        out->r2 = out->r2 || getevent_state->r2;
+        out->r3 = out->r3 || getevent_state->r3;
         out->type = RC_APP_FUSED;
     }
 }
@@ -70,8 +76,27 @@ void adb_rc_merge_40007_state(const rc_state_t *previous,
     out->rec = incoming->rec;
 }
 
-void adb_rc_stretch_buttons(const rc_state_t *input, int64_t now_us,
-                            AdbRcButtonHold *hold, rc_state_t *out)
+static uint8_t rc_state_t::*const kButtonFields[] = {
+    &rc_state_t::btn, &rc_state_t::stop, &rc_state_t::focus,
+    &rc_state_t::shot, &rc_state_t::rec, &rc_state_t::rth,
+    &rc_state_t::c1, &rc_state_t::c2, &rc_state_t::c3,
+    &rc_state_t::up, &rc_state_t::down, &rc_state_t::left,
+    &rc_state_t::right, &rc_state_t::aircraft, &rc_state_t::back,
+    &rc_state_t::l1, &rc_state_t::l2, &rc_state_t::l3,
+    &rc_state_t::r1, &rc_state_t::r2, &rc_state_t::r3,
+};
+
+void adb_rc_note_button_edges(const rc_state_t *input, int64_t now_us,
+                              AdbRcButtonHold *hold)
+{
+    if (!input || !hold) return;
+    for (size_t i = 0; i < sizeof(kButtonFields) / sizeof(kButtonFields[0]); ++i) {
+        if (input->*kButtonFields[i]) hold->until_us[i] = now_us + ADB_RC_BUTTON_HOLD_US;
+    }
+}
+
+void adb_rc_apply_button_hold(const rc_state_t *input, int64_t now_us,
+                              const AdbRcButtonHold *hold, rc_state_t *out)
 {
     if (!out) return;
     if (!input || !hold) {
@@ -79,15 +104,15 @@ void adb_rc_stretch_buttons(const rc_state_t *input, int64_t now_us,
         return;
     }
     *out = *input;
-    uint8_t rc_state_t::*fields[] = {
-        &rc_state_t::btn, &rc_state_t::stop, &rc_state_t::focus,
-        &rc_state_t::shot, &rc_state_t::rec, &rc_state_t::rth,
-        &rc_state_t::c1, &rc_state_t::c2, &rc_state_t::c3,
-        &rc_state_t::up, &rc_state_t::down, &rc_state_t::left,
-        &rc_state_t::right, &rc_state_t::aircraft, &rc_state_t::back,
-    };
-    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
-        if (input->*fields[i]) hold->until_us[i] = now_us + ADB_RC_BUTTON_HOLD_US;
-        out->*fields[i] = (input->*fields[i] || now_us < hold->until_us[i]) ? 1 : 0;
+    for (size_t i = 0; i < sizeof(kButtonFields) / sizeof(kButtonFields[0]); ++i) {
+        out->*kButtonFields[i] =
+            (input->*kButtonFields[i] || now_us < hold->until_us[i]) ? 1 : 0;
     }
+}
+
+void adb_rc_stretch_buttons(const rc_state_t *input, int64_t now_us,
+                            AdbRcButtonHold *hold, rc_state_t *out)
+{
+    adb_rc_note_button_edges(input, now_us, hold);
+    adb_rc_apply_button_hold(input, now_us, hold, out);
 }

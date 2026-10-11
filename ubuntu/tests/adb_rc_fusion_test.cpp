@@ -52,6 +52,14 @@ int main()
     expectEq(fused.rec, 1, "40007 supplies rec");
     expectEq(fused.c1, 1, "40007 supplies C1");
 
+    ge.l1 = 1;
+    ge.r3 = 1;
+    adb_rc_fuse(&ge, 20000, &p40007, 20000, &fused);
+    expectEq(fused.l1, 1, "getevent supplies L1");
+    expectEq(fused.r3, 1, "getevent supplies R3");
+    ge.l1 = 0;
+    ge.r3 = 0;
+
     ge.rec = 1;
     p40007.rec = 0;
     adb_rc_fuse(&ge, 20000, &p40007, 20000, &fused);
@@ -83,6 +91,24 @@ int main()
     adb_rc_stretch_buttons(&released, 1000000 + ADB_RC_BUTTON_HOLD_US + 1,
                            &buttonHold, &stretched);
     expectEq(stretched.c1, 0, "button releases after minimum hold");
+
+    AdbRcButtonHold ingressHold{};
+    rc_state_t keyDown = make_state(RC_APP_FUSED, 100);
+    keyDown.rec = 1;
+    adb_rc_note_button_edges(&keyDown, 2000000, &ingressHold);
+    rc_state_t keyUp = keyDown;
+    keyUp.rec = 0;
+    adb_rc_apply_button_hold(&keyUp, 2020000, &ingressHold, &stretched);
+    expectEq(stretched.rec, 1,
+             "DOWN followed by UP before publish remains visible");
+
+    keyDown = make_state(RC_APP_FUSED, 100);
+    keyDown.r3 = 1;
+    adb_rc_note_button_edges(&keyDown, 3000000, &ingressHold);
+    keyUp = keyDown;
+    keyUp.r3 = 0;
+    adb_rc_apply_button_hold(&keyUp, 3020000, &ingressHold, &stretched);
+    expectEq(stretched.r3, 1, "R3 is included in ingress edge hold");
 
     adb_rc_fuse(&ge, ADB_RC_GETEVENT_FRESH_US + 1, &p40007, 20000, &fused);
     expectEq(fused.ch[0], 200, "stale getevent falls back to 40007 axis");

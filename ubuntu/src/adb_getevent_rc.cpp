@@ -135,7 +135,10 @@ bool parse_getevent_key_line(const std::string &line, GeteventAbsEvent *event)
         if (tok != "EV_KEY") continue;
         std::string value;
         if (!(in >> event->code >> value)) return false;
-        if (event->code != "BTN_TL" && event->code != "BTN_TR") return false;
+        if (event->code != "BTN_TL" && event->code != "BTN_TR" &&
+            event->code != "KEY_F1" && event->code != "KEY_F2" &&
+            event->code != "KEY_F3" && event->code != "KEY_F4" &&
+            event->code != "KEY_F5" && event->code != "KEY_F6") return false;
         if (value == "DOWN") event->value = 1;
         else if (value == "UP") event->value = 0;
         else {
@@ -180,9 +183,15 @@ bool apply_getevent_key(const GeteventAbsEvent &event, const std::string &key_de
                         rc_state_t *state)
 {
     if (!state) return false;
-    if (!event.device.empty() && event.device != key_device) return false;
+    if (!key_device.empty() && !event.device.empty() && event.device != key_device) return false;
     if (event.code == "BTN_TL") state->rec = event.value != 0;
     else if (event.code == "BTN_TR") state->shot = event.value != 0;
+    else if (event.code == "KEY_F1") state->l1 = event.value != 0;
+    else if (event.code == "KEY_F2") state->l2 = event.value != 0;
+    else if (event.code == "KEY_F3") state->l3 = event.value != 0;
+    else if (event.code == "KEY_F4") state->r1 = event.value != 0;
+    else if (event.code == "KEY_F5") state->r2 = event.value != 0;
+    else if (event.code == "KEY_F6") state->r3 = event.value != 0;
     else return false;
     state->type = RC_APP_FUSED;
     if (state->mode == '\0') state->mode = '?';

@@ -73,6 +73,17 @@ int main()
     expect(apply_getevent_key(ev, "/dev/input/event4", &st), "apply REC key up");
     expectEq(st.rec, 0, "REC releases on UP");
 
+    expect(parse_getevent_key_line("[ 1235.104742] /dev/input/event3: EV_KEY       KEY_F1                DOWN", &ev),
+           "parse event3 L1 key down");
+    expect(apply_getevent_key(ev, "", &st), "apply key from any known device");
+    expectEq(st.l1, 1, "KEY_F1 maps to L1");
+    expect(parse_getevent_key_line("[ 1235.124742] /dev/input/event3: EV_KEY       KEY_F6                00000001", &ev),
+           "parse event3 R3 numeric down");
+    expect(apply_getevent_key(ev, "", &st), "apply R3 key from event3");
+    expectEq(st.r3, 1, "KEY_F6 maps to R3");
+    expect(!apply_getevent_key(ev, "/dev/input/event4", &st),
+           "explicit event4 filter still rejects event3 keys");
+
     expect(parse_getevent_abs_line("[ 4088.971127] EV_ABS       ABS_RX               ffffdf3a", &ev),
            "parse device-filtered getevent line without device prefix");
     expect(ev.device.empty(), "device-filtered getevent line has no device prefix");

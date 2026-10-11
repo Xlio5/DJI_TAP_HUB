@@ -82,6 +82,8 @@ static uint32_t g_adb_rx = 0;
 static int64_t g_adb_last_us = 0;
 static rc_state_t g_adb_getevent_rc;
 static rc_state_t g_adb_40007_rc;
+static AdbRcButtonHold g_adb_getevent_button_hold;
+static AdbRcButtonHold g_adb_40007_button_hold;
 static uint32_t g_adb_getevent_good = 0;
 static uint32_t g_adb_40007_good = 0;
 static int64_t g_adb_getevent_last_us = 0;
@@ -784,7 +786,7 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
         opt.port = port;
         opt.io_timeout_ms = 2000;
         std::string error;
-        std::string shell = "getevent -lp " + device + "; exec getevent -lt " + device;
+        std::string shell = "getevent -lp " + device + "; exec getevent -lt";
         if (!adb.connect(opt, &error) || !adb.openShell(shell, &error)) {
             std::fprintf(stderr, "[dji_rc] adb getevent connect failed: %s\n", error.c_str());
             for (int i = 0; i < 10 && !g_stop.load(std::memory_order_relaxed); i++) ::usleep(200000);
@@ -823,7 +825,7 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
                     st = g_adb_getevent_rc;
                 }
                 bool applied = is_axis ? apply_getevent_axis(ev, device, &st)
-                                       : apply_getevent_key(ev, device, &st);
+                                       : apply_getevent_key(ev, "", &st);
                 if (!applied) continue;
                 {
                     std::lock_guard<std::mutex> lock(g_mtx);
@@ -833,6 +835,7 @@ static void adb_getevent_thread(const std::string host, uint16_t port,
                                                    std::memory_order_relaxed);
                     g_adb_getevent_events.fetch_add(1, std::memory_order_relaxed);
                     g_adb_getevent_rc = st;
+                    adb_rc_note_button_edges(&st, event_us, &g_adb_getevent_button_hold);
                     g_adb_getevent_good++;
                     g_adb_getevent_last_us = event_us;
                 }
@@ -894,6 +897,7 @@ static void adb_40007_thread(const std::string host, uint16_t port)
                     rc_state_t merged;
                     adb_rc_merge_40007_state(&g_adb_40007_rc, &st, &merged);
                     g_adb_40007_rc = merged;
+                    adb_rc_note_button_edges(&st, now_us(), &g_adb_40007_button_hold);
                     g_adb_40007_good++;
                     g_adb_40007_last_us = now_us();
                 }
@@ -919,6 +923,7 @@ static void adb_rc_publish_thread()
         ::usleep(20000);
         int64_t n = now_us();
         rc_state_t ge, p4, fused;
+        AdbRcButtonHold ge_hold, p4_hold;
         int64_t ge_last, p4_last;
         uint32_t ge_good, p4_good;
         bool ge_connected;
@@ -926,6 +931,8 @@ static void adb_rc_publish_thread()
             std::lock_guard<std::mutex> lock(g_mtx);
             ge = g_adb_getevent_rc;
             p4 = g_adb_40007_rc;
+            ge_hold = g_adb_getevent_button_hold;
+            p4_hold = g_adb_40007_button_hold;
             ge_last = g_adb_getevent_last_us;
             p4_last = g_adb_40007_last_us;
             ge_good = g_adb_getevent_good;
@@ -936,7 +943,10 @@ static void adb_rc_publish_thread()
                                                           ge.type != RC_NONE,
                                                           n, ge_last);
         int64_t p4_age = (p4.type == RC_NONE || p4_last == 0) ? INT64_MAX : n - p4_last;
-        adb_rc_fuse(&ge, ge_age, &p4, p4_age, &fused);
+        rc_state_t held_ge, held_p4;
+        adb_rc_apply_button_hold(&ge, n, &ge_hold, &held_ge);
+        adb_rc_apply_button_hold(&p4, n, &p4_hold, &held_p4);
+        adb_rc_fuse(&held_ge, ge_age, &held_p4, p4_age, &fused);
         if (fused.type == RC_NONE) continue;
         rc_state_t stretched;
         adb_rc_stretch_buttons(&fused, n, &button_hold, &stretched);
