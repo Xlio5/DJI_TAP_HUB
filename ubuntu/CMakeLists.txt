@@ -65,6 +65,17 @@ add_executable(rc_source_select_test
     src/rc_source_select.cpp
 )
 
+add_executable(rc_input_mode_test
+    tests/rc_input_mode_test.cpp
+    src/rc_input_mode.cpp
+)
+
+target_include_directories(rc_input_mode_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+add_test(NAME rc_input_mode_test COMMAND rc_input_mode_test)
+
 target_include_directories(rc_source_select_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
@@ -98,6 +109,7 @@ install(TARGETS usb_tund web_server DESTINATION /usr/local/bin)
 # 注意: dji_rc.cpp 使用 crsf.c (CRSF 编解码/回传) 和 rc_map.c (通道映射), 必须链接
 add_executable(dji_rc
     src/dji_rc.cpp
+    src/rc_input_mode.cpp
     src/adb_client.cpp
     src/adb_getevent_rc.cpp
     src/adb_rc_fusion.cpp
