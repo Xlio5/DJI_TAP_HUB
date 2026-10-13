@@ -181,17 +181,54 @@ adb shell pm disable-user --user 0 <包名>     # 直接禁用，也阻止自启
 
 ---
 
-## 七、与本项目的关系
+## 七、本项目实践：TUN NAT HUB 开机自启（已实现并真机验证）
 
-本项目的 App（`com.tunnathub.app`）部署在 DJI RC 上，**开机自启被 DJI 农业 App 抢占**时用本方法解除：
+### 7.1 开机自动拉起我们的 App
 
-```powershell
-# 取消 DJI 农业自启 -> 开机停桌面 -> 手动/自启动我们的 App
-.\scripts\dji-rc\dji-autostart.ps1 off -Reboot
-```
-
-若需让**我们的 App 开机自启**，可反过来把属性指向我们：
 ```powershell
 adb shell setprop persist.dji.default_app com.tunnathub.app
+adb reboot          # 验证
 ```
-（`persist.` 属性重启不丢；但注意这与 DJI 官方 App 自启是同一个开关，二选一。）
+
+> 与 DJI 官方 App 的自启是**同一个开关**，二选一。`persist.` 属性重启不丢。
+> 想恢复停桌面：`setprop persist.dji.default_app com.android.launcher3`
+
+**实测（rc701, 2026-10-14）**：重启后 App 自动启动（前台 = MainActivity），属性保留。
+
+### 7.2 USB 权限弹窗自动同意（无人值守的关键一环）
+
+**问题**：App 起来后会请求 USB 权限（连 V3s），DJI 弹窗**只有"取消/确定"、没有标准 Android
+的"一律允许"复选框**，系统无从记住；加上 V3s/DJI RC 反复重枚举 USB 使设备路径
+(`/dev/bus/usb/00X/00Y`) 变化、`hasPermission` 失效 → **每次开机都要人工点一次**。
+
+**Shizuku 方案行不通**：Shizuku 服务端**不支持开机自启**
+（`ShizukuManager: No support start on boot`），重启后需 ADB 手动拉起，覆盖不了开机场景。
+
+**最终采用无障碍服务**（App 内 `UsbPermAccessibilityService`），两个**必踩的坑**：
+
+| 关键声明 | 缺失后果 |
+|---|---|
+| **`android:accessibilityFlags="flagReportViewIds"`** | 系统不给节点带 `viewIdResourceName`，`findAccessibilityNodeInfosByViewId()` **恒返回 null** → 静默不点、且无任何日志 |
+| **`android:directBootAware="true"`** | USB 弹窗出现在**开机早期（用户解锁前）**，非 directBootAware 服务被系统以 `AccessibilityManagerService: Ignoring non-encryption-aware service` **忽略** |
+| `android:exported="true"` | 系统跨进程绑定无障碍服务需要 |
+
+**识别与点击策略**（避免误点 + 不依赖不确定字段）：
+- 只收 `packageName == com.android.systemui` 的事件（config `packageNames` 白名单）
+- 用**弹窗正文含 "Gadget Serial"**（V3s USB gadget 名）精确判定是 USB 权限窗
+- **不按 `className` 判断**——`WindowStateChanged` 的 className 不保证是 Activity 类名
+- 点"确定"：优先 view id `android:id/button1`，**兜底**按文字"确定"向上找可点击祖先
+
+**启用**（一次性，adb 直接设，**重启保持**）：
+```powershell
+adb shell settings put secure enabled_accessibility_services com.tunnathub.app/com.tunnathub.app.usb.UsbPermAccessibilityService
+adb shell settings put secure accessibility_enabled 1
+```
+
+**诊断命令**（排查时可看这两个状态，注意看 `Bound services` 而不是 `Binding services`）：
+```powershell
+adb shell "dumpsys accessibility | grep -iA3 'Enabled services'"
+adb logcat -d | Select-String "UsbPermA11y|Ignoring non-encryption"
+```
+
+**实测（rc701, 2026-10-14）**：重启后 → App 自启 → USB 弹窗**自动点掉**（前台直接是
+MainActivity，不是 UsbPermissionActivity）→ 连上 V3s（固件 1.6.89 可达）。**全流程无人值守**。
