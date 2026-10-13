@@ -248,10 +248,16 @@ QGC 保留在设备上，手动打开照常用。
 
 **实测（rc701）**：重启后日志
 ```
-UsbPermA11y: USB 设备选择框已自动关闭 (不选任何应用)
+UsbPermA11y: USB 设备选择框已自动关闭 (本次进程仅一次)
 UsbPermA11y: USB 权限弹窗已自动同意 (无障碍)
 ```
 前台直接是 MainActivity。
+
+> **两条防干扰约束（App 1.6.92 起）**：
+> 1. **只在 App 进程内关闭一次**——即开机自启那一次；之后用户手动启动/操作时不再插手
+>    （否则 `BACK` 全局动作会退回用户正在看的界面）。USB **权限弹窗**仍每次处理（反复重枚举会多次弹）。
+> 2. **按 BACK 前校验"当前活动窗口"必须是 systemui**——systemui 在前台之外也会发事件
+>    （状态栏/通知），只按"事件来源"判断会漏判，`BACK` 会落到前台 App 上干扰操作。
 
 ### 7.4 小结：开机到可用的全自动链路
 
@@ -267,3 +273,19 @@ DJI 启动器读 persist.dji.default_app
 1. `persist.dji.default_app = com.tunnathub.app`
 2. `settings put secure enabled_accessibility_services com.tunnathub.app/…UsbPermAccessibilityService`
 3. `settings put secure accessibility_enabled 1`
+
+### 7.5 已知问题（待修，2026-10-14 发现）
+
+**开机早期 VPN 建立失败**：开机自启时 `VpnService.Builder.establish()` 返回 null
+（系统 VPN 服务尚未就绪），App 启动后连不上 V3s：
+
+```
+建立 VPN: 手机IP=192.168.144.11/24, Route=192.168.144.0/24
+E 无法建立 TUN: VpnService.Builder.establish() 返回 null
+I VPN 已停止            ← 服务随即停止, 不重试
+```
+
+- VPN 授权本身正常（`appops get com.tunnathub.app ACTIVATE_VPN` = allow）
+- **手动启动 App 时完全正常**（tun0 建立 `10.0.0.2/24`、V3s 可达）→ 判定为**开机时序**问题
+- **修复方向**：`establishVpn()` 失败时**退避重试**（而不是直接停止服务），
+  或等系统/USB 就绪（开机早期延迟几秒再建）
