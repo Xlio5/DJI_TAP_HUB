@@ -35,18 +35,23 @@ class UsbPermAccessibilityService : AccessibilityService() {
         if (e.packageName?.toString() != SYSTEMUI_PKG) return
 
         val root = rootInActiveWindow ?: return
+        // 关键: 必须确认"当前活动窗口"真的是 systemui 的对话框。
+        // systemui 在前台之外也会发事件(状态栏/通知等), 若此时把 BACK 全局动作发出去,
+        // 返回键会直接作用到当前前台(我们的 App)上 → 干扰用户操作。
+        if (root.packageName?.toString() != SYSTEMUI_PKG) return
 
         // 1) USB 设备"打开方式"选择框 (UsbResolverActivity)。
         //    由第三方 App 声明 USB_DEVICE_ATTACHED 引起 (如 QGC), 列表里通常只有那些 App,
-        //    选谁都不对(还可能与本项目抢占 V3s 串口) → 直接按返回关掉, 不选任何应用。
-        //    用系统资源 id 判定, 语言无关。
-        if (root.findAccessibilityNodeInfosByViewId(RESOLVER_LIST_ID).isNotEmpty()) {
+        //    选谁都不对(还可能与本项目抢占 V3s 串口) → 按返回关掉, 不选任何应用。
+        //    只在"本 App 进程内第一次"(即开机自启那一次)执行: 之后用户手动启动/操作时不再插手。
+        if (!resolverClosed && root.findAccessibilityNodeInfosByViewId(RESOLVER_LIST_ID).isNotEmpty()) {
             performGlobalAction(GLOBAL_ACTION_BACK)
-            Log.i(TAG, "USB 设备选择框已自动关闭 (不选任何应用)")
+            resolverClosed = true
+            Log.i(TAG, "USB 设备选择框已自动关闭 (本次进程仅一次)")
             return
         }
 
-        // 2) USB 权限弹窗 → 点"确定"
+        // 2) USB 权限弹窗 → 点"确定" (每次请求都要处理: 反复重枚举会多次弹)
         //    精确识别: 正文含 "Gadget Serial" (V3s USB gadget 名), 避免误点 systemui 其他对话框
         if (root.findAccessibilityNodeInfosByText(USB_GADGET_HINT).isEmpty()) return
 
@@ -82,6 +87,14 @@ class UsbPermAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "UsbPermA11y"
+
+        /**
+         * 本 App 进程内是否已关闭过"设备选择框"。
+         * 只在开机自启那一次插手; 之后(用户手动启动/再次插拔)不再执行 BACK,
+         * 避免返回键干扰用户在本 App 内的操作。进程重启后重置。
+         */
+        @Volatile
+        private var resolverClosed = false
         private const val SYSTEMUI_PKG = "com.android.systemui"
         private const val BUTTON_OK_ID = "android:id/button1"
         /** 系统"打开方式/为USB设备选择应用"列表 (语言无关判定) */
