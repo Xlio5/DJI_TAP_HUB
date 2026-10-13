@@ -232,3 +232,38 @@ adb logcat -d | Select-String "UsbPermA11y|Ignoring non-encryption"
 
 **实测（rc701, 2026-10-14）**：重启后 → App 自启 → USB 弹窗**自动点掉**（前台直接是
 MainActivity，不是 UsbPermissionActivity）→ 连上 V3s（固件 1.6.89 可达）。**全流程无人值守**。
+
+### 7.3 关掉"为 USB 设备选择一个应用"框（保留 QGC 可用）
+
+**问题**：QGroundControl（`org.mavlink.qgroundcontrol` + `.debug`）等第三方 App 声明了
+`USB_DEVICE_ATTACHED`，V3s 插入时系统弹 **`UsbResolverActivity`**（"为USB设备选择一个应用"）。
+列表里**只有那些 App（QGC）**，选谁都不对，还可能抢占 V3s 串口影响本项目。
+
+> 注意这**不是** USB 权限弹窗（`UsbPermissionActivity`），是**打开方式选择框**
+> （`UsbResolverActivity`）——两者是不同的系统对话框，要分别处理。
+
+**方案**：扩展同一个无障碍服务——检测到该框（按**系统资源 id `android:id/resolver_list`**
+判定，语言无关）→ `performGlobalAction(GLOBAL_ACTION_BACK)` **自动关掉，不选任何应用**。
+QGC 保留在设备上，手动打开照常用。
+
+**实测（rc701）**：重启后日志
+```
+UsbPermA11y: USB 设备选择框已自动关闭 (不选任何应用)
+UsbPermA11y: USB 权限弹窗已自动同意 (无障碍)
+```
+前台直接是 MainActivity。
+
+### 7.4 小结：开机到可用的全自动链路
+
+```
+DJI 启动器读 persist.dji.default_app
+  → 拉起 TUN NAT HUB
+    → USB 设备"选择应用"框       → 无障碍自动关闭 (7.3)
+    → USB 权限弹窗               → 无障碍自动点"确定" (7.2)
+      → App 连上 V3s, 融合/隧道工作
+```
+
+三项配置**一次设置、重启保持**：
+1. `persist.dji.default_app = com.tunnathub.app`
+2. `settings put secure enabled_accessibility_services com.tunnathub.app/…UsbPermAccessibilityService`
+3. `settings put secure accessibility_enabled 1`

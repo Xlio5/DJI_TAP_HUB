@@ -35,7 +35,19 @@ class UsbPermAccessibilityService : AccessibilityService() {
         if (e.packageName?.toString() != SYSTEMUI_PKG) return
 
         val root = rootInActiveWindow ?: return
-        // 精确识别: 正文含 "Gadget Serial" (V3s USB gadget 名), 避免误点 systemui 其他对话框
+
+        // 1) USB 设备"打开方式"选择框 (UsbResolverActivity)。
+        //    由第三方 App 声明 USB_DEVICE_ATTACHED 引起 (如 QGC), 列表里通常只有那些 App,
+        //    选谁都不对(还可能与本项目抢占 V3s 串口) → 直接按返回关掉, 不选任何应用。
+        //    用系统资源 id 判定, 语言无关。
+        if (root.findAccessibilityNodeInfosByViewId(RESOLVER_LIST_ID).isNotEmpty()) {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            Log.i(TAG, "USB 设备选择框已自动关闭 (不选任何应用)")
+            return
+        }
+
+        // 2) USB 权限弹窗 → 点"确定"
+        //    精确识别: 正文含 "Gadget Serial" (V3s USB gadget 名), 避免误点 systemui 其他对话框
         if (root.findAccessibilityNodeInfosByText(USB_GADGET_HINT).isEmpty()) return
 
         val btn = findOkButton(root) ?: return
@@ -72,6 +84,8 @@ class UsbPermAccessibilityService : AccessibilityService() {
         private const val TAG = "UsbPermA11y"
         private const val SYSTEMUI_PKG = "com.android.systemui"
         private const val BUTTON_OK_ID = "android:id/button1"
+        /** 系统"打开方式/为USB设备选择应用"列表 (语言无关判定) */
+        private const val RESOLVER_LIST_ID = "android:id/resolver_list"
         private const val OK_TEXT = "确定"
         /** V3s USB gadget 名 (弹窗正文 "…访问 Gadget Serial v2.4 吗?") */
         private const val USB_GADGET_HINT = "Gadget Serial"
