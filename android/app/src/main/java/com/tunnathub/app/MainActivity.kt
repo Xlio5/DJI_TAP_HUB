@@ -56,6 +56,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.tunnathub.app.BuildConfig
 import com.tunnathub.app.service.TunNatVpnService
 import com.tunnathub.app.usb.UsbBridge
+import com.tunnathub.app.usb.UsbPermAutoApprover
 import com.tunnathub.app.util.AppLog
 import com.tunnathub.app.video.Media3RtspProbePlayer
 import com.tunnathub.app.video.RtspPlaybackEngine
@@ -480,6 +481,8 @@ class MainActivity : ComponentActivity() {
                 Intent(USB_PERM_ACTION).setPackage(packageName),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
             um.requestPermission(dev, pi)
+            // DJI RC 弹窗无"记住"选项 → Shizuku 自动点"确定"
+            UsbPermAutoApprover.scheduleApprove()
         }
     }
 

@@ -91,6 +91,8 @@ class BootReceiver : BroadcastReceiver() {
                                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
                                 )
                                 usbManager.requestPermission(device, pi)
+                                // DJI RC 弹窗无"记住"选项 → Shizuku 自动点"确定"
+                                com.tunnathub.app.usb.UsbPermAutoApprover.scheduleApprove()
                                 return@Thread
                             }
                             Log.i(TAG, "USB 权限已授予，启动 VPN")

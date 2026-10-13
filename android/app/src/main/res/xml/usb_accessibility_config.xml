@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  USB 权限弹窗自动同意 (无障碍服务配置)
+
+  关键: accessibilityFlags="flagReportViewIds" 必须声明 ——
+  否则系统不给节点带 viewIdResourceName, findAccessibilityNodeInfosByViewId()
+  会永远返回 null (之前的失败根因)。canRetrieveWindowContent 用于读取窗口树。
+
+  只监听 systemui 包; 代码内再按弹窗正文 "Gadget Serial" 精确识别, 避免误点其他对话框。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds"
+    android:notificationTimeout="100"
+    android:packageNames="com.android.systemui"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/app_name" />

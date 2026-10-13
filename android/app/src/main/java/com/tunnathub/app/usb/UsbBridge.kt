@@ -171,6 +171,8 @@ class UsbBridge(
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         try {
             usbManager.requestPermission(device, pi)
+            // DJI RC 上会弹系统窗且无"记住"选项 → 用 Shizuku 自动点"确定" (无人值守)
+            UsbPermAutoApprover.scheduleApprove()
             // 等待权限授予（device_filter.xml 匹配时自动授予，无弹窗）
             latch.await(3, TimeUnit.SECONDS)
         } catch (e: Exception) {

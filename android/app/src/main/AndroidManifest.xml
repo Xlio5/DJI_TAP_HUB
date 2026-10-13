@@ -68,6 +68,23 @@
             </intent-filter>
         </service>
 
+        <!-- USB 权限弹窗自动同意 (无障碍服务)。
+             Shizuku 服务端不支持开机自启, 无法覆盖开机场景; 无障碍服务由系统托管,
+             启用一次后重启自动生效。检测 UsbPermissionActivity 自动点"确定"。 -->
+        <service
+            android:name=".usb.UsbPermAccessibilityService"
+            android:exported="true"
+            android:directBootAware="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/usb_accessibility_config" />
+        </service>
+
         <!-- 开机自启 + USB 热插拔 -->
         <receiver
             android:name=".BootReceiver"
