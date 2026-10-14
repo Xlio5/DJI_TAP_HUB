@@ -45,7 +45,7 @@ extern "C" {
 // ═══════════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════════
-#define VERSION     "1.6.89"   // 固件版本 — 单 transport 复用 ADB RC 输入流
+#define VERSION     "1.6.90"   // 固件版本 — 长按锁存阈值 1s -> 0.8s (RTH)
 constexpr int    PORT       = 8080;
 constexpr int    BUF_SZ     = 8192;
 constexpr int    MAX_CLI    = 8;

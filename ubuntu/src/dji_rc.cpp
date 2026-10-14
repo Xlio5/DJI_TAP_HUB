@@ -227,7 +227,7 @@ static bool g_lock_prev_high[CH_COUNT] = {};
 static uint16_t g_lock_on_value[CH_COUNT] = {};
 static uint16_t g_lock_off_value[CH_COUNT] = {};
 static std::mutex g_lock_mtx;
-static constexpr int64_t LP_THRESHOLD_US = 1000000;  // 长按锁存阈值 1s
+static constexpr int64_t LP_THRESHOLD_US = 800000;   // 长按锁存阈值 0.8s (RTH 等 lp=1 的源; 原 1s)
 
 // ── CRSF 参数表 (供 Device_Ping/Parameter_Read 响应, ELRS 协议) ──
 static crsf_param_t g_crsf_params[] = {
