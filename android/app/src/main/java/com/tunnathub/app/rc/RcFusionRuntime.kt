@@ -21,7 +21,7 @@ class RcFusionRuntime(
     private val port40007ReaderFactory: ((RcInputSample) -> Unit) -> Port40007RcReader,
     private val transport: RcMsgTransport,
     private val nowMs: () -> Long = { System.currentTimeMillis() },
-    private val publishIntervalMs: Long = 10L,
+    private val publishIntervalMs: Long = 20L,
     private val onError: (String, Throwable) -> Unit = { _, _ -> },
     private val onSourceStats: (RcSourceStats) -> Unit = {}
 ) : AutoCloseable {
@@ -67,13 +67,21 @@ class RcFusionRuntime(
             launch publish@{
                 var lastPublishMs = 0L
                 var consecutivePublishFailures = 0
+                var lastButtons: RcInputSample? = null
                 while (isActive) {
                     try {
                         val now = nowMs()
-                        if (RcFusionEngine.shouldPublish(lastPublishMs, now, publishIntervalMs)) {
-                            val ge = latestGetevent
-                            val p4 = latest40007
-                            val fused = RcFusionEngine.fuse(ge, p4, now)
+                        val ge = latestGetevent
+                        val p4 = latest40007
+                        val fused = RcFusionEngine.fuse(ge, p4, now)
+                        // 对齐 V3s 的发布策略: 固定周期(20ms) + **按键变化立即发布**
+                        // (对应 V3s adb_rc_publish_thread 的 g_adb_publish_gate.notify()
+                        //  以及 adb_rc_should_send_direct_edge 的按键边沿直发 RCM1)
+                        val prev = lastButtons
+                        val buttonEdge = prev != null && !buttonsEqual(prev, fused)
+                        lastButtons = fused
+                        if (buttonEdge ||
+                            RcFusionEngine.shouldPublish(lastPublishMs, now, publishIntervalMs)) {
                             transport.publish(
                                 fused,
                                 RcFusionEngine.isFresh(ge, now, RcFusionEngine.GETEVENT_FRESH_MS),
@@ -143,6 +151,20 @@ class RcFusionRuntime(
     }
 
     companion object {
+        /**
+         * 按键字段是否完全一致 —— 对齐 V3s `adb_rc_fusion.cpp` 的 `kButtonFields` /
+         * `buttons_equal()`。用于"按键变化立即发布"(边沿直发)。
+         */
+        @JvmStatic
+        fun buttonsEqual(a: RcInputSample, b: RcInputSample): Boolean =
+            a.btn == b.btn && a.stop == b.stop && a.focus == b.focus &&
+                a.shot == b.shot && a.rec == b.rec && a.rth == b.rth &&
+                a.c1 == b.c1 && a.c2 == b.c2 && a.c3 == b.c3 &&
+                a.up == b.up && a.down == b.down && a.left == b.left && a.right == b.right &&
+                a.aircraft == b.aircraft && a.back == b.back &&
+                a.l1 == b.l1 && a.l2 == b.l2 && a.l3 == b.l3 &&
+                a.r1 == b.r1 && a.r2 == b.r2 && a.r3 == b.r3
+
         /** publish 连续失败多少次判定内部死亡 (失败重试间隔 ~20ms, 20 次 ≈ 400ms) */
         private const val PUBLISH_FATAL_FAILURES = 20
         /** 源断流多久后速率归零重新起算 (覆盖 40007 的 ~2.5s 低频帧间隔) */
