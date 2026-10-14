@@ -28,10 +28,11 @@ class ShizukuGetEventReader(
     override suspend fun run() = withContext(Dispatchers.IO) {
         if (!Shizuku.pingBinder() || Shizuku.checkSelfPermission() != 0) return@withContext
         val process = try {
-            // 读所有 input 设备 (getevent 只接受单 device 参数, 多设备参数会报错退出):
-            // L1~R3 按键 (KEY_F1..F6) 在 event3, 摇杆 ABS 在 event4;
-            // 解析时摇杆轴仅认 event4 (isEvent4), 按键从任何设备收 (BTN_TOUCH 等不映射无影响)。
-            Shizuku.newProcess(arrayOf("getevent", "-lt"), null, null)
+            // 对齐 V3s `build_getevent_shell()`: 先 `-lp` 快照当前值, 再 `-lt` 持续监听 ——
+            // 没有快照时摇杆静止就永远没有 ABS 事件, 轴初值缺失 (V3s 靠 -lp 一上电即有杆位)。
+            // 读所有设备 (getevent 只接受单 device 参数): L1~R3 按键在 event3, 摇杆 ABS 在 event4;
+            // 解析时摇杆轴仅认 event4 (isEvent4), 按键从任何设备收。
+            Shizuku.newProcess(arrayOf("sh", "-c", "getevent -lp; exec getevent -lt"), null, null)
         } catch (e: Exception) {
             AppLog.w("ShizukuReader", "getevent newProcess 失败: $e")
             return@withContext
@@ -57,14 +58,9 @@ class ShizukuGetEventReader(
                     }
                     val key = GetEventRcReader.parseKeyLine(line)
                     if (key != null) {
-                        val name = GetEventRcReader.DEFAULT_KEY_MAP[key.code]
-                        // 诊断: 打印所有按键事件含映射, 确认物理 L1~R3 触发的 getevent code
-                        AppLog.i("LRDiag", "KEY ${key.code} pressed=${key.pressed} mapped=$name [$line]")
-                        name ?: continue
+                        val name = GetEventRcReader.DEFAULT_KEY_MAP[key.code] ?: continue
                         keys[name] = if (key.pressed) 1 else 0
-                        val s = sample(axes, keys)
-                        AppLog.i("LRDiag", "  keys.L1=${keys["L1"]} keys.R1=${keys["R1"]} sample.l1=${s.l1} sample.r1=${s.r1}")
-                        onSample(s)
+                        onSample(sample(axes, keys))
                     }
                 }
             }
