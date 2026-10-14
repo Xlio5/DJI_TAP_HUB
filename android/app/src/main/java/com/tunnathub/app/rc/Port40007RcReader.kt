@@ -16,10 +16,20 @@ class Port40007RcReader(
         fun readPacket(): ByteArray?
     }
 
+    /** 40007 内部状态: 供 AE/SPECIAL 帧合并用 (对齐 V3s adb_rc_merge_40007_state) */
+    private var lastState: RcInputSample? = null
+
     fun runBlocking() {
         while (!Thread.currentThread().isInterrupted) {
             val packet = packetSource.readPacket() ?: continue
-            parsePacket(packet, nowMs())?.let(onSample)
+            val incoming = parsePacket(packet, nowMs()) ?: continue
+            // 对齐 V3s dji_rc.cpp 的 40007 处理链 (原来 App 是"后到的帧直接覆盖", 缺了这两步):
+            //   ① adb_rc_merge_40007_state()          -> AE 与 SPECIAL 帧合并
+            //   ② adb_rc_strip_getevent_owned_buttons() -> rec/shot 归 getevent, 40007 侧置 0
+            val merged = mergeFrames(lastState, incoming)
+            val stripped = stripGeteventOwnedButtons(merged)
+            lastState = stripped
+            onSample(stripped)
         }
     }
 
@@ -28,6 +38,42 @@ class Port40007RcReader(
         private const val DUML_SOF = 0x55
         private const val DUML_MIN_PACKET = 13
         private const val DUML_MAX_PACKET = 1024
+
+        /** 与 parseRcAe() 的 source 一致 */
+        const val SOURCE_AE = "40007-rc-ae"
+        /** 与 parseSpecial02() 的 source 一致 */
+        const val SOURCE_SPECIAL = "40007-special-02"
+
+        /**
+         * 对齐 V3s `adb_rc_merge_40007_state()`:
+         * **仅当**【新帧是 SPECIAL 且上一状态来自 AE】时合并 —— 以 **AE 为基线**,
+         * 用 SPECIAL 覆盖 6 轴 / mode / stop / focus / shot / rec; 其余情况直接采用新帧。
+         *
+         * 这是 focus/shot 手感与 V3s 不一致的关键: App 原来不分帧型、后到者全量覆盖。
+         */
+        @JvmStatic
+        fun mergeFrames(previous: RcInputSample?, incoming: RcInputSample): RcInputSample {
+            if (previous == null) return incoming
+            if (incoming.source != SOURCE_SPECIAL || previous.source != SOURCE_AE) return incoming
+            return previous.copy(
+                source = incoming.source,
+                axes = incoming.axes,
+                mode = incoming.mode,
+                stop = incoming.stop,
+                focus = incoming.focus,
+                shot = incoming.shot,
+                rec = incoming.rec,
+                timestampMs = incoming.timestampMs
+            )
+        }
+
+        /**
+         * 对齐 V3s `adb_rc_strip_getevent_owned_buttons()`:
+         * rec / shot 由 getevent 提供 (按键直读), 40007 侧这两个字段清 0。
+         */
+        @JvmStatic
+        fun stripGeteventOwnedButtons(sample: RcInputSample): RcInputSample =
+            if (sample.rec == 0 && sample.shot == 0) sample else sample.copy(rec = 0, shot = 0)
 
         @JvmStatic
         fun parsePacket(packet: ByteArray, nowMs: Long): RcInputSample? {
