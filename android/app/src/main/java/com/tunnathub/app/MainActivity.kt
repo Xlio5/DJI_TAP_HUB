@@ -24,6 +24,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -45,6 +46,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -1418,6 +1420,75 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         }
 
         @Composable
+        fun StickVisualizer(
+            title: String,
+            horizontalAxis: String,
+            verticalAxis: String,
+            horizontalRaw: Int,
+            verticalRaw: Int,
+            position: RcStickPosition,
+            modifier: Modifier = Modifier,
+        ) {
+            Column(
+                modifier = modifier,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(title, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFCBD5E1))
+                Spacer(Modifier.height(3.dp))
+                Canvas(modifier = Modifier.size(70.dp)) {
+                    val center = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
+                    val outerRadius = size.minDimension / 2f - 2.dp.toPx()
+                    val travelRadius = outerRadius - 9.dp.toPx()
+                    drawCircle(Color(0xFF111827), radius = outerRadius, center = center)
+                    drawCircle(Color(0xFF475569), radius = outerRadius, center = center, style = Stroke(1.dp.toPx()))
+                    drawLine(
+                        Color(0xFF334155),
+                        start = androidx.compose.ui.geometry.Offset(center.x - outerRadius, center.y),
+                        end = androidx.compose.ui.geometry.Offset(center.x + outerRadius, center.y),
+                        strokeWidth = 1.dp.toPx(),
+                    )
+                    drawLine(
+                        Color(0xFF334155),
+                        start = androidx.compose.ui.geometry.Offset(center.x, center.y - outerRadius),
+                        end = androidx.compose.ui.geometry.Offset(center.x, center.y + outerRadius),
+                        strokeWidth = 1.dp.toPx(),
+                    )
+                    drawCircle(Color(0xFF64748B), radius = 2.dp.toPx(), center = center)
+                    val knobCenter = androidx.compose.ui.geometry.Offset(
+                        center.x + position.x * travelRadius,
+                        center.y + position.y * travelRadius,
+                    )
+                    drawCircle(Color(0xFFBAE6FD), radius = 8.dp.toPx(), center = knobCenter)
+                    drawCircle(Color(0xFF38BDF8), radius = 5.dp.toPx(), center = knobCenter)
+                }
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "$horizontalAxis $horizontalRaw  $verticalAxis $verticalRaw",
+                    fontSize = 9.sp,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    color = Color(0xFF94A3B8),
+                    maxLines = 1,
+                )
+            }
+        }
+
+        @Composable
+        fun StickVisualizerRow() {
+            val rawRh = rcRawChs.getOrElse(0) { 0 }
+            val rawRv = rcRawChs.getOrElse(1) { 0 }
+            val rawLv = rcRawChs.getOrElse(2) { 0 }
+            val rawLh = rcRawChs.getOrElse(3) { 0 }
+            val positions = RcStickMapper.fromRawChannels(rcRawChs)
+            Row(
+                modifier = Modifier.fillMaxWidth().background(Color(0xFF111827), RoundedCornerShape(5.dp)).padding(vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                StickVisualizer("左杆", "LH", "LV", rawLh, rawLv, positions.left, Modifier.weight(1f))
+                StickVisualizer("右杆", "RH", "RV", rawRh, rawRv, positions.right, Modifier.weight(1f))
+            }
+        }
+
+        @Composable
         fun SbusChannelGrid() {
             val channels = (1..16).map { ch ->
                 Triple("CH$ch", rcChs.getOrElse(ch - 1) { if (ch <= 6) 1500 else 1000 }, rcRawChs.getOrNull(ch - 1))
@@ -1825,6 +1896,9 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
                 }
                 ModeSwitch(rcMode)
             }
+            Spacer(Modifier.height(8.dp))
+
+            StickVisualizerRow()
             Spacer(Modifier.height(8.dp))
 
             Text("SBUS CH1-CH16", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
