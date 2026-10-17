@@ -1473,17 +1473,21 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
         }
 
         @Composable
-        fun StickVisualizerRow() {
+        fun RcControlsPanel(buttonContent: @Composable () -> Unit) {
             val rawRh = rcRawChs.getOrElse(0) { 0 }
             val rawRv = rcRawChs.getOrElse(1) { 0 }
             val rawLv = rcRawChs.getOrElse(2) { 0 }
             val rawLh = rcRawChs.getOrElse(3) { 0 }
             val positions = RcStickMapper.fromRawChannels(rcRawChs)
             Row(
-                modifier = Modifier.fillMaxWidth().background(Color(0xFF111827), RoundedCornerShape(5.dp)).padding(vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                modifier = Modifier.fillMaxWidth().background(Color(0xFF111827), RoundedCornerShape(5.dp)).padding(horizontal = 8.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 StickVisualizer("左杆", "LH", "LV", rawLh, rawLv, positions.left, Modifier.weight(1f))
+                Column(modifier = Modifier.weight(2.8f)) {
+                    buttonContent()
+                }
                 StickVisualizer("右杆", "RH", "RV", rawRh, rawRv, positions.right, Modifier.weight(1f))
             }
         }
@@ -1898,17 +1902,14 @@ fun TunNatHubApp(usbFound: Boolean, connectionState: String = "idle", usbPollCou
             }
             Spacer(Modifier.height(8.dp))
 
-            StickVisualizerRow()
-            Spacer(Modifier.height(8.dp))
-
             Text("SBUS CH1-CH16", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
             Spacer(Modifier.height(5.dp))
             SbusChannelGrid()
 
             Spacer(Modifier.height(6.dp))
-            Text("按键 / 拨轮", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
+            Text("摇杆 / 按键 / 拨轮", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
             Spacer(Modifier.height(5.dp))
-            ButtonStatusGrid()
+            RcControlsPanel { ButtonStatusGrid() }
 
             Spacer(Modifier.height(6.dp))
             Text("方向键", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE2E8F0))
