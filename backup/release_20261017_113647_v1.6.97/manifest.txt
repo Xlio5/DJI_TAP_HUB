@@ -1,0 +1,9 @@
+artifact=tun_nat_hub_android_v1.6.97_20261017_113647.apk
+version=1.6.97
+timestamp=20261017_113647
+source_commit=da7accb54537abed51058d5df8394ea1604b1b08
+branch=codex/v3s-cpp-adb
+size_bytes=32101008
+sha256=32e0cdd8af5acb9cee3d0654bdd556980e90ca331a634631729569dd830212b8
+purpose=Android RC page compact dual-stick visualization; raw channel order RH,RV,LV,LH
+layout=Left stick LH/LV; right stick RH/RV; raw full scale +/-660
