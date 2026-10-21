@@ -61,10 +61,14 @@ target_include_directories(rtsp_nat_helper_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
+add_test(NAME rtsp_nat_helper_test COMMAND rtsp_nat_helper_test)
+
 add_executable(rc_source_select_test
     tests/rc_source_select_test.cpp
     src/rc_source_select.cpp
 )
+
+add_test(NAME rc_source_select_test COMMAND rc_source_select_test)
 
 add_executable(rc_input_mode_test
     tests/rc_input_mode_test.cpp

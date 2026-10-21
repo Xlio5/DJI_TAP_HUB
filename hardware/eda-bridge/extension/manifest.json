@@ -1,9 +1,0 @@
-{
-  "name": "TUN_NAT_HUB Lceda Bridge",
-  "version": "0.1.0",
-  "description": "Import TUN_NAT_HUB Circuit DSL into Lceda Pro.",
-  "main": "main.js",
-  "permissions": [
-    "http://127.0.0.1:17321/*"
-  ]
-}

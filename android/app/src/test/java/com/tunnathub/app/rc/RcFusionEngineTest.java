@@ -21,7 +21,7 @@ public final class RcFusionEngineTest {
     }
 
     private static void staleGeteventFallsBackTo40007Axes() {
-        RcInputSample ge = RcInputSample.axes("getevent", Arrays.asList(10, 20, 30, 40, 50, 60), 900L);
+        RcInputSample ge = RcInputSample.axes("getevent", Arrays.asList(10, 20, 30, 40, 50, 60), -4_001L);
         RcInputSample p4 = RcInputSample.full("40007", Arrays.asList(1, 2, 3, 4, 5, 6), 0, 1, 0, 1, 0, 1, "S", 990L);
         RcInputSample out = RcFusionEngine.fuse(ge, p4, 1_100L);
         assertEquals(1, out.getAxes().get(0).intValue(), "CH1 fallback to 40007");

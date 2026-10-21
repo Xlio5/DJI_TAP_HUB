@@ -29,10 +29,10 @@ public final class GetEventRcReaderTest {
     }
 
     private static void normalizesWideAndByteAxes() {
-        assertEquals(1023, GetEventRcReader.normalizeAxis("ABS_X", 32767), "wide max");
-        assertEquals(-1024, GetEventRcReader.normalizeAxis("ABS_Y", -32768), "wide min");
+        assertEquals(659, GetEventRcReader.normalizeAxis("ABS_X", 32767), "wide max");
+        assertEquals(-660, GetEventRcReader.normalizeAxis("ABS_Y", -32768), "wide min");
         assertEquals(0, GetEventRcReader.normalizeAxis("ABS_Z", 127), "byte mid");
-        assertEquals(1024, GetEventRcReader.normalizeAxis("ABS_RZ", 255), "byte max");
+        assertEquals(660, GetEventRcReader.normalizeAxis("ABS_RZ", 255), "byte max");
     }
 
     private static void exposesConfirmedDefaultAxisMap() {

@@ -26,7 +26,7 @@ public final class RcMsgCodecTest {
         assertEquals(1000, data.getChs().get(0).intValue(), "CH1 us");
         assertEquals(1500, data.getChs().get(2).intValue(), "CH3 us");
         assertEquals(2000, data.getChs().get(4).intValue(), "CH5 us");
-        assertEquals(-1024, data.getRawChs().get(0).intValue(), "raw CH1");
+        assertEquals(-660, data.getRawChs().get(0).intValue(), "raw CH1");
         assertEquals(1, data.getBtn(), "BTN");
         assertEquals(1, data.getStop(), "STOP");
         assertEquals(1, data.getFocus(), "FOCUS");

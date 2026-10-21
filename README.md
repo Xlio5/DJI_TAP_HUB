@@ -1,136 +1,61 @@
-# TUN_NAT_HUB
+# TUN NAT Hub
 
-> USB 线缆上的透明 IP 隧道 — DJI RC PLUS 2 遥控器访问配套计算机局域网的零配置方案。
+[简体中文](README.zh-CN.md) | [Architecture](docs/architecture.md) | [Getting Started](docs/getting-started.md) | [Protocol](docs/protocol.md)
 
-## 这是什么
+TUN NAT Hub connects an Android-based controller to a small Linux USB device and exposes a real LAN through Android's `VpnService`. The same link carries framed IP packets, while the Linux side can acquire DJI remote-control input over network ADB, fuse `getevent` axes with port `40007` button data, and publish RCMSG, CRSF, or SBUS output.
 
-TUN_NAT_HUB 让 **DJI RC PLUS 2 无人机遥控器**通过 **USB 线缆**透明访问配套计算机（RK3588/Linux 板）所在局域网内的 IP 摄像头和网络设备——无需 WiFi、无需网络配置、即插即用。
+This is an independent community project. It is not affiliated with or endorsed by DJI, Google, GStreamer, or the manufacturers of the supported boards.
 
-```
-DJI RC PLUS 2 (Android)          Linux 板 (RK3588 / V3s)
-┌──────────────────────┐  USB   ┌─────────────────────┐
-│ VpnService            │◄──────►│ usb_tund 守护进程     │
-│ TUN: 10.0.0.2        │ 线缆   │ TUN: 10.0.0.1        │
-│ → 192.168.88.0/24    │        │ → NAT → LAN 设备     │
-└──────────────────────┘        └─────────────────────┘
-```
+## What Is Included
 
-## 核心特性
+- Android app using Kotlin, Jetpack Compose, `VpnService`, USB host APIs, and a foreground service.
+- Linux/V3s C++ services for the TUN bridge, NAT control plane, network ADB client, RC fusion, and a lightweight web API.
+- Shared `TN` framing definition and documented RC datagrams.
+- Boot and USB-attach startup support so the data path does not depend on keeping the activity open.
+- Host-side unit tests for ADB framing, RC fusion, source selection, input modes, and RTSP helpers.
 
-- **透明 IP 隧道** — Android TUN 虚拟网卡 + Linux TUN 虚拟网卡，双向 IP 包转发
-- **零配置** — USB 即插即用，30 秒内自动连接
-- **RTSP 视频播放** — 遥控器屏幕实时查看 IP 摄像头画面（<10ms 延迟）
-- **端口转发** — 局域网设备可主动访问 Android 端服务（DNAT）
-- **Web 配置面板** — 浏览器管理端口转发、摄像头列表、网络状态
-- **心跳监控** — 实时链路检测 + 带宽显示
-- **开机自启** — Android BOOT_COMPLETED + Linux systemd 双重保障
-- **低延迟** — TCP RTT 3-6ms (p50)，满足 4Mbps 视频流
+## Repository Layout
 
-## 硬件需求
+| Path | Purpose |
+| --- | --- |
+| `android/` | Android application and tests |
+| `ubuntu/` | Linux/V3s C++ daemons, tests, service files, and target scripts |
+| `protocol/` | Shared wire-format constants |
+| `docs/` | Architecture, setup, protocol, and troubleshooting guides |
+| `scripts/` | Reproducible build and publication checks |
 
-| 角色 | 设备 | 说明 |
-|------|------|------|
-| 遥控器 | DJI RC PLUS 2 | Android 系统，USB Host 模式 |
-| 配套计算机 | RK3588 (Rock 5C) 或其他 Linux 板 | USB Device 模式 (g_serial) |
-| 连接线 | USB-C to USB-A 数据线 | 连接 DJI RC (USB-A) ↔ Linux 板 (USB-C OTG) |
+Hardware design files, board manufacturing files, firmware/rootfs images, APKs, keys, captures, and private deployment scripts are intentionally not part of this repository.
 
-> **V3s 移植进行中** — 全志 V3s (Cortex-A7, 64MB DDR2) 支持可将物料成本降至 ~30 RMB。详见 [`docs/PRD-v3s-porting.md`](docs/PRD-v3s-porting.md)。
+## Quick Build
 
-## 快速开始
+Requirements are Android Studio or JDK 17 plus Android SDK/NDK/CMake, and CMake 3.16+ with a C++17 compiler for Linux.
 
-### 1. Linux 板部署
-
-```bash
-# 克隆仓库
-git clone <repo-url> && cd TUN_NAT_HUB
-
-# 一键部署到 RK3588 (192.168.88.66)
-python3 scripts/deploy_master_to_rk3588.py
-
-# 或手动部署
-cd ubuntu && mkdir build && cd build
-cmake .. && make -j$(nproc)
-sudo ../scripts/setup_gadget.sh
-sudo ../scripts/setup_nat.sh
-sudo systemctl start tun_nat_hub tun_web
+```powershell
+./scripts/build-android.ps1
 ```
 
-### 2. Android APK 安装
+The Android native video module requires a locally supplied GStreamer Android SDK subset. Set `GSTREAMER_ROOT_ANDROID` to a directory containing `arm64/include` and `arm64/lib`; see [Getting Started](docs/getting-started.md).
 
-```bash
-# 构建
-cd android && ./gradlew assembleDebug
-
-# 安装 (USB 调试)
-adb install app/build/outputs/apk/debug/app-debug.apk
-
-# 或使用预构建 APK
-adb install master-app-debug.apk
+```sh
+./scripts/build-linux.sh
 ```
 
-### 3. 使用
+The Linux host build compiles the daemons and runs the available unit tests. Device deployment requires a compatible USB gadget kernel and root privileges for TUN, routing, and firewall configuration.
 
-1. 用 USB 线连接 DJI RC PLUS 2 和 Linux 板
-2. 打开 TUN_NAT_HUB App
-3. VPN 自动启动，状态面板显示连接状态
-4. 在 RTSP 播放器中输入摄像头地址（如 `rtsp://192.168.88.100:554/stream`）
-5. 使用 Web 面板（`http://10.0.0.1:8080`）或 App 侧边栏管理端口转发
+## Reference Topology
 
-## 项目结构
+The checked-in defaults use `192.168.144.0/24`: Android is `.11`, the Linux/V3s hub is `.66`, and an example camera is `.31`. These are product defaults, not credentials, and can be changed in the app and Linux configuration.
 
-```
-TUN_NAT_HUB/
-├── android/                 # Android APK (Kotlin + Jetpack Compose)
-│   └── app/src/main/java/com/tunnathub/app/
-│       ├── service/         # VpnService + TUN 接口
-│       ├── usb/             # USB Host 通信
-│       ├── proto/           # 帧协议编解码
-│       └── MainActivity.kt  # Compose UI
-├── ubuntu/                  # Linux 服务端 (C++17 + CMake)
-│   ├── src/                 # 守护进程源码
-│   ├── scripts/             # g_serial + NAT 配置脚本
-│   ├── config/              # systemd 服务单元
-│   └── web_panel.py         # Web 配置面板
-├── protocol/                # 通信协议定义 (C99 头文件)
-├── docs/                    # 项目文档
-│   ├── architecture.md      # 架构设计文档
-│   ├── USAGE.md             # 部署和使用手册
-│   ├── platform-porting-guide.md  # 平台移植指南
-│   └── CODEMAPS/            # 代码地图
-├── scripts/                 # 部署和诊断脚本 (~70 个)
-├── .claude/                 # Claude Code 配置 + 自定义 Skills
-│   └── prds/                # 产品需求文档
-└── ref/                     # 参考项目
-```
+See [Architecture](docs/architecture.md) for all system and data-flow diagrams, and [Protocol](docs/protocol.md) for framing and port assignments.
 
-## 技术栈
+## Security
 
-| 层 | Android | Linux |
-|----|---------|-------|
-| 语言 | Kotlin | C++17, Python 3 |
-| 框架 | Jetpack Compose | CMake, Boost.Asio (规划) |
-| TUN | VpnService.Builder | /dev/net/tun (ioctl) |
-| USB | UsbManager + UsbDeviceConnection | g_serial (CDC ACM) |
-| 协议 | 自定义帧: Magic(0x544E) + Length + Payload (≤2048B) |
-| NAT | — | iptables MASQUERADE + DNAT |
-| 构建 | Gradle 8.5 + AGP | CMake 3.16 + g++ |
-
-## 文档索引
-
-| 文档 | 内容 |
-|------|------|
-| [CLAUDE.md](CLAUDE.md) | AI 开发助手指令 |
-| [docs/architecture.md](docs/architecture.md) | 完整架构设计（方案对比、数据流、决策记录） |
-| [docs/USAGE.md](docs/USAGE.md) | 部署和日常使用手册 |
-| [docs/platform-porting-guide.md](docs/platform-porting-guide.md) | 新 Linux 平台移植步骤 |
-| [docs/CODEMAPS/android.md](docs/CODEMAPS/android.md) | Android 代码地图 |
-| [docs/CODEMAPS/ubuntu.md](docs/CODEMAPS/ubuntu.md) | Ubuntu 服务端代码地图 |
-| [.claude/prds/tun-nat-hub-core.prd.md](.claude/prds/tun-nat-hub-core.prd.md) | 核心产品需求文档 |
-| [.claude/prds/v3s-porting.prd.md](.claude/prds/v3s-porting.prd.md) | V3s 移植需求文档 |
+The project uses privileged Android and Linux facilities. Review scripts before deployment, isolate the management API from untrusted networks, and never commit ADB keys or device credentials. Report vulnerabilities according to [SECURITY.md](SECURITY.md).
 
 ## License
 
-TBD
+Copyright (C) 2026 TUN NAT Hub contributors.
 
----
-*Built with vibe coding. AI-driven development using Claude Code.*
+This project is licensed under the GNU General Public License v3.0 only. Distributed modified versions must provide corresponding source under the same license. See [LICENSE](LICENSE).
+
+Third-party components retain their own licenses. In particular, the repository does not redistribute the GStreamer Android SDK.

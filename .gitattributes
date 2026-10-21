@@ -1,11 +1,15 @@
-# Force LF for Linux scripts and C++ sources
-*.sh text eol=lf
-*.py text eol=lf
+* text=auto
+
+*.c text eol=lf
+*.cc text eol=lf
 *.cpp text eol=lf
 *.h text eol=lf
 *.hpp text eol=lf
-CMakeLists.txt text eol=lf
-*.service text eol=lf
-*.c text eol=lf
-*.h text eol=lf
-*.lua text eol=lf
+*.sh text eol=lf
+linux/scripts/S99* text eol=lf
+
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+*.jar binary
+*.png binary

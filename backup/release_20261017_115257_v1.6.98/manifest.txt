@@ -1,9 +1,0 @@
-artifact=tun_nat_hub_android_v1.6.98_20261017_115257.apk
-version=1.6.98
-timestamp=20261017_115257
-source_commit=a5d3144b17585db5a2e31675bfd01a2be6e69eb0
-branch=codex/v3s-cpp-adb
-size_bytes=31855436
-sha256=3325312c4f833d2e6b9dde92b4836a1e013c5fe58b67899bc8f4e2b22d9eef3f
-purpose=Android RC page merged controls layout
-layout=Left stick | buttons and dial | right stick; dpad below

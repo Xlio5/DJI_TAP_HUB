@@ -1,67 +1,73 @@
-# Build outputs
-android/app/build/
-android/.gradle/
-android/build/
-android/local.properties
-ubuntu/build/
+# Android / Gradle
+.gradle/
+.cxx/
+**/build/
+local.properties
+*.apk
+*.aab
+*.jks
+*.keystore
+android/app/src/main/gstreamer_libs_min/
+android/app/src/main/assets/adbkey*
 
-# IDE
+# CMake / native builds
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+Testing/
+build-*/
+
+# Editors and operating systems
 .idea/
-*.iml
 .vscode/
-
-# OS
+*.iml
 .DS_Store
 Thumbs.db
 
-# Temp
-*.swp
-*.swo
-*~
-
-# Binary artifacts
-*.apk
-# 例外: 固件发布备份目录下的 APK 需纳入 git 版本管理
-!backup/release_*/*.apk
-
-# Deployment artifacts
-tun_nat_hub_pkg/
-tun_nat_hub_rk3588.tar.gz
-
-# Video streaming experiment (saved in branch)
-ubuntu/scripts/video_bridge.py
-ubuntu/scripts/video_streamer.py
-ubuntu/scripts/video_streamer_simple.py
-ubuntu/src/vid_bridge.h
-
-# One-off scripts
-scripts/dl_vlc*.py
-scripts/download_vlc.py
-scripts/get_vlc.py
-scripts/find_vlc_url.py
-scripts/test_gst_final.py
-scripts/test_gst_pipeline.py
-scripts/test_rtsp_pipe.py
-scripts/test_rtsp_raw.py
-scripts/test_loop.py
-scripts/deploy_v6.py
-scripts/deploy_and_test.py
-scripts/deploy_fixed_scripts.py
-scripts/start_streamer.py
-scripts/launch_streamer.py
-scripts/final_start.py
-scripts/fix_v6_only.py
-scripts/restart_pipe.sh
-scripts/launch_video_fix.sh
-scripts/diag_video_pipe.sh
-scripts/setup_gst_python.py
-scripts/debug_streamer.py
-scripts/check_vid.py
-
-# Python cache
-__pycache__/
-
-# Reference projects (submodules)
+# Local diagnostics and release artifacts
+backup/
+hardware/
+output/
 ref/
-build_v3s/
-android/app/src/main/assets/adbkey
+tmp/
+rootfs*.squashfs
+master-app-debug.apk
+easyeda_pcb_review.png
+elrs.lua
+*.log
+*.pcap
+*.pcapng
+*.squashfs
+*.img
+*.bin
+
+# Private agent/project metadata
+.agents/
+.claude/
+.codex/
+AGENTS.md
+CLAUDE.md
+
+# Internal documentation and deployment helpers. Keep only the reviewed public set.
+docs/*
+!docs/architecture.md
+!docs/getting-started.md
+!docs/protocol.md
+!docs/troubleshooting.md
+scripts/*
+!scripts/build-android.ps1
+!scripts/build-linux.sh
+!scripts/check-docs.py
+!scripts/check-public-tree.py
+ubuntu/scripts/*
+!ubuntu/scripts/S99tun_nat_hub_final
+!ubuntu/scripts/setup_gadget.sh
+!ubuntu/scripts/setup_nat.sh
+!ubuntu/scripts/setup_v3s.sh
+!ubuntu/scripts/v3s_start.sh
+
+# Local tooling and scratch work
+.deps/
+.superpowers/
+/app/
